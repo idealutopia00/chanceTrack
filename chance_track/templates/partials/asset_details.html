@@ -1,0 +1,158 @@
+{% for item in report['items'] %}
+    {% set r = item.get('result') %}
+    <section class="asset-detail"
+             data-detail="{{ item.asset.id }}"{% if not loop.first %} hidden{% endif %}>
+        <div class="panel signal-panel">
+            <div class="section-kicker">
+                SIGNAL MONITOR <span class="status-dot"></span>
+            </div>
+            <h3>最新日线信号</h3>
+            {% if r and r.strategies is defined %}
+                {% for s in r.strategies|sort(attribute='group') %}
+                    <div class="strategy-result">
+                        <small>{{ s.group }} · {{ s.version }}</small>
+                        <button type="button" data-focus-asset="{{ item.asset.id }}" data-focus-date="{{ s.bar_date if s.preview_event else s.event_date }}">{{ s.name }} ↗</button>
+                        {% if s.is_provisional %}<p>{{ s.bar_date }} · {{ s.preview_event or '无盘中事件' }} · 未收盘待确认</p>{% endif %}
+                        <p>{{ s.event_date }} · {{ s.event or ('无事件' if s.state == 'ready' else '无法判断') }} · 收盘参考</p>
+                        <small>{{ s.detail }}{% if s.historical_reference %} · 启用前历史参考{% endif %}</small>
+                        <details><summary>参数与规则版本</summary><pre>{{ s.config|tojson(indent=2) }}</pre></details>
+                    </div>
+                {% else %}<p>未绑定策略 · 仅观察行情</p>{% endfor %}
+            {% elif r %}
+                <div class="signal-pill {{ 'event' if r.event or r.preview_event or r.is_provisional else '' }}">
+                    {% if r.is_provisional %}{{ r.preview_event or ((r.session.label if r.session else '盘中观察') + ' · 未收盘') }}{% else %}{{ r.event or '等待交叉信号' }}{% endif %}
+                </div>
+                <p class="signal-copy">
+                    {% if r.is_provisional %}临时 MACD 随当前交易日价格变化，交叉可能在收盘前消失。{% elif r.event %}交叉日期 {{ r.event_date or r.bar_date or r.nav_date }} · {{ '本次首次记录' if r.new_event else '此前已记录' }}{% else %}最新已完成日线没有形成新的 MACD 交叉。{% endif %}
+                </p>
+                {% if r.is_provisional %}
+                    <div class="confirmed-signal">
+                        <small>上一收盘日参考 · {{ r.confirmed_date }}</small>
+                        <span>{{ r.event or '无收盘交叉事件' }}{% if r.new_event %} · 首次记录{% endif %}</span>
+                    </div>
+                {% endif %}
+                <dl class="signal-facts">
+                    <div>
+                        <dt>指标位置</dt>
+                        <dd>
+                            {{ r.position }}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt>零轴状态</dt>
+                        <dd>
+                            {{ r.zero_axis }}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt>动能变化</dt>
+                        <dd>
+                            {{ r.momentum }}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt>{{ '行情交易日' if report.rule.basis == 'market_ohlc' else '净值日期' }}</dt>
+                        <dd>
+                            {{ r.bar_date or r.nav_date }}
+                        </dd>
+                    </div>
+                    {% if item.snapshot and item.snapshot.provider %}
+                        <div>
+                            <dt>行情来源</dt>
+                            <dd>
+                                {{ 'Yahoo Finance' if item.snapshot.provider == 'yahoo' else '东方财富' }}
+                            </dd>
+                        </div>
+                    {% endif %}
+                    {% if r.session %}
+                        <div>
+                            <dt>日线状态</dt>
+                            <dd>{{ r.session.label }}{% if r.is_provisional %} · 未收盘{% endif %}
+                            </dd>
+                        </div>
+                        <div>
+                            <dt>本交易日收盘</dt>
+                            <dd>
+                                {{ r.session.close_at_beijing[:10] }} {{ r.session.close_at_beijing[11:16] }} 北京
+                            </dd>
+                        </div>
+                    {% endif %}
+                </dl>
+                {% for warning in r.warnings %}
+                    <p class="warning">{{ warning }}</p>
+                {% endfor %}
+            {% else %}
+                <p class="warning">{{ item.error }}</p>
+            {% endif %}
+            <dl class="signal-facts update-times">
+                <div>
+                    <dt>最近检查</dt>
+                    <dd>
+                        <time data-relative-time
+                              datetime="{{ item.checked_at or report.created_at }}">{{ (item.checked_at or report.created_at)[11:19] }}</time>
+                    </dd>
+                </div>
+                <div>
+                    <dt>成功采集时间</dt>
+                    <dd>
+                        {% if item.snapshot and item.snapshot.fetched_at %}
+                            <time datetime="{{ item.snapshot.fetched_at }}">{{ item.snapshot.fetched_at[:10] }} {{ item.snapshot.fetched_at[11:19] }}</time>
+{% else %}{{ '本次未成功' if item.status == 'error' else '历史未记录' }}{% endif %}
+    </dd>
+    </div>
+    {% if item.carried_forward %}
+        <div>
+            <dt>数据沿用</dt>
+            <dd>
+                <a href="/reports/{{ item.origin_report_id }}">来自报告 #{{ item.origin_report_id }}</a>
+            </dd>
+        </div>
+    {% endif %}
+    </dl>
+    <p class="small-note">
+        {% if item.asset.kind == "spot" %}黄金使用 Au99.99 现货行情，单位为元/克。{% elif report.rule.basis == "market_ohlc" %}基于指数真实日线，不使用基金净值替代。{% else %}历史报告使用基金净值。{% endif %}
+    </p>
+    </div>
+    <div class="panel decision-panel">
+        <div class="section-kicker">YOUR NEXT MOVE</div>
+        <h3>记录我的判断</h3>
+        <p>给未来的自己，留下一条依据。</p>
+        <form method="post" action="/decisions">
+            <label class="field-label">本次判断依据<select name="basis_choice" data-basis-choice><option value="report">原始报告信号</option><option value="exploration">当前探索结果（单独保存）</option></select></label>
+            <input type="hidden" name="exploration" value="" data-exploration-basis>
+            <small data-basis-help>原始报告不受图表探索影响。</small>
+            <input type="hidden" name="csrf" value="{{ token }}">
+            <input type="hidden" name="report_id" value="{{ report.id }}">
+            <input type="hidden" name="asset_id" value="{{ item.asset.id }}">
+            <fieldset>
+                <legend>本次决定</legend>
+                <div class="action-options">
+                    {% for action in ['观望','持有','买入','卖出'] %}
+                        <label>
+                            <input type="radio"
+                                   name="action"
+                                   value="{{ action }}"{% if loop.first %} checked{% endif %}>
+                            <span>{{ action }}</span>
+                        </label>
+                    {% endfor %}
+                </div>
+            </fieldset>
+            <label class="field-label">
+                执行情况<select name="execution">
+                <option>未执行</option>
+                <option>已提交</option>
+                </select>
+            </label>
+            <label class="field-label">
+                判断依据 <span>可选</span>
+                <textarea name="note" rows="3" maxlength="4000" placeholder="为什么行动，或为什么继续等待？">
+</textarea>
+            </label>
+            <button class="save-button">
+                保存本次判断 <span>↗</span>
+            </button>
+            <small>追加保存，历史决定不会被覆盖。</small>
+        </form>
+    </div>
+    </section>
+{% endfor %}

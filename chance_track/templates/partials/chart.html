@@ -1,0 +1,48 @@
+<section class="chart-panel panel">
+    <div class="chart-heading">
+        <div>
+            <div class="eyebrow" id="chart-market">MARKET OVERVIEW</div>
+            <h2 id="chart-title">选择观察标的</h2>
+        </div>
+        <div class="chart-tag" id="chart-session">日线</div>
+    </div>
+    <div class="chart-toolbar">
+        <div class="ohlc" id="ohlc">
+            <span>移动十字线查看开高低收</span>
+        </div>
+        <div class="range-buttons" aria-label="可视范围">
+            <button data-range="63">3个月</button>
+            <button class="active" data-range="126">6个月</button>
+            <button data-range="252">1年</button>
+            <button data-range="all">全部</button>
+        </div>
+    </div>
+    <div class="chart-layers" id="chart-layers"></div>
+    <div class="chart-shell">
+        <div id="chart" aria-label="日线蜡烛图和 MACD 副图"></div>
+        <div class="chart-empty" id="chart-empty" hidden></div>
+        <div class="macd-legend">
+            <span>MACD <small>所选配置</small> <small id="macd-session"></small>
+            </span>
+            <span class="dif-label">DIF <b id="legend-dif">—</b>
+            </span>
+            <span class="dea-label">DEA <b id="legend-dea">—</b>
+            </span>
+            <span>柱 <b id="legend-hist">—</b>
+            </span>
+        </div>
+    </div>
+    <div class="chart-footer">
+        <label>
+            <input id="show-markers" type="checkbox" checked>
+            显示策略事件
+        </label>
+        <span>
+            <i class="legend-square up-bg">
+            </i>涨 <i class="legend-square down-bg">
+            </i>跌 <span>·</span> 滚轮缩放，拖动回看</span>
+        </div>
+        <div class="chart-source">图表由 <a href="https://www.tradingview.com/"
+                                         target="_blank"
+                                         rel="noopener noreferrer">TradingView Lightweight Charts™</a> 驱动 <span>·</span> 图表与提醒使用同一份快照</div>
+    </section>

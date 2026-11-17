@@ -1,0 +1,76 @@
+{% if notification_view %}
+    <dialog id="notification-dialog"
+            aria-labelledby="notification-title"
+            aria-describedby="notification-date-help">
+        <div class="notification-dialog-head">
+            <div>
+                <div class="section-kicker">SIGNAL NOTIFICATION</div>
+                <h2 id="notification-title">市场信号摘要</h2>
+            </div>
+            <form method="dialog">
+                <button aria-label="关闭通知" autofocus>×</button>
+            </form>
+        </div>
+        <div class="notification-metadata">
+            <span>检查时间 <b>{{ notification_view.checked_at }}</b> 北京时间</span>
+            <span>报告 #{{ report.id }} · {{ notification_view.note }}</span>
+        </div>
+        <div class="notification-totals">
+            <span>
+                <b>{{ notification_view.confirmed }}</b> 最近收盘事件记录</span>
+            <span>
+                <b>{{ notification_view.pending }}</b> 盘中待确认事件</span>
+            <span>
+                <b>{{ notification_view.issues }}</b> 数据异常</span>
+        </div>
+        {% for group in notification_view.groups %}
+            {% if group.rows %}
+                <section class="notification-group" data-signal-section="{{ group.key }}">
+                    <h3>{{ group.title }}</h3>
+                    <p>{{ group.description }}</p>
+                    <div class="notification-table-wrap">
+                        <table class="notification-table">
+                            <thead>
+                                <tr>
+                                    <th>标的</th>
+                                    <th>K线交易日</th>
+                                    <th>策略事件</th>
+                                    <th>确认状态</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for row in group.rows %}
+                                    <tr>
+                                        <td data-label="标的">
+                                            <strong>{{ row.asset }}</strong>
+                                            <small>{{ row.ticker }}</small>
+                                        </td>
+                                        <td class="notification-date" data-label="K线交易日">{{ row.date }}</td>
+                                        <td data-label="策略事件">{{ row.signal }}</td>
+                                        <td data-label="确认状态">
+                                            <span class="signal-state state-{{ row.state }}">{{ row.status }}</span>
+                                            {% if row.detail %}
+                                                <small>{{ row.detail }}</small>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            {% endif %}
+        {% endfor %}
+        <p id="notification-date-help"
+           class="notification-help">表中日期是这根K线所属的市场交易日，不是今天的检查日期。未收盘事件可能消失；“无事件”不代表趋势判断。黄金夜盘的交易日可能晚于当前自然日。</p>
+        <details class="notification-original">
+            <summary>查看系统通知原文 / 预览</summary>
+            <p class="notification-dialog-note">{{ notification_view.note }}</p>
+            <h3>{{ notification_view.title }}</h3>
+            <pre id="notification-message">{{ notification_view.message }}</pre>
+        </details>
+        <form method="dialog" class="notification-dialog-footer">
+            <button>关闭</button>
+        </form>
+    </dialog>
+{% endif %}

@@ -1,0 +1,66 @@
+[
+  {
+    "id": "sp500",
+    "label": "标普500",
+    "ticker": "SPX",
+    "code": "^GSPC",
+    "provider": "yahoo",
+    "kind": "index",
+    "market": "美国 · S&P Dow Jones",
+    "currency": "点",
+    "enabled": true,
+    "session_profile": "us_equity"
+  },
+  {
+    "id": "nasdaq100",
+    "label": "纳斯达克100",
+    "ticker": "NDX",
+    "code": "^NDX",
+    "provider": "yahoo",
+    "kind": "index",
+    "market": "美国 · Nasdaq",
+    "currency": "点",
+    "enabled": true,
+    "session_profile": "us_equity"
+  },
+  {
+    "id": "gold",
+    "label": "黄金 Au99.99",
+    "ticker": "AU9999",
+    "code": "AU9999",
+    "secid": "118.AU9999",
+    "provider": "eastmoney",
+    "expected_name": "黄金9999",
+    "kind": "spot",
+    "market": "上海黄金交易所 · 现货",
+    "currency": "元/克",
+    "enabled": true,
+    "session_profile": "sge_gold"
+  },
+  {
+    "id": "star_chinext50",
+    "label": "科创创业50",
+    "ticker": "931643",
+    "code": "931643",
+    "secid": "2.931643",
+    "provider": "eastmoney",
+    "expected_name": "科创创业50",
+    "kind": "index",
+    "market": "中国 · 中证指数",
+    "currency": "点",
+    "enabled": true,
+    "session_profile": "cn_equity"
+  },
+  {
+    "id": "sox",
+    "label": "费城半导体",
+    "ticker": "SOX",
+    "code": "^SOX",
+    "provider": "yahoo",
+    "kind": "index",
+    "market": "美国 · Nasdaq PHLX",
+    "currency": "点",
+    "enabled": true,
+    "session_profile": "us_equity"
+  }
+]

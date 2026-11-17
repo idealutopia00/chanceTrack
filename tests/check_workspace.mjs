@@ -1,0 +1,185 @@
+// Optional integration check: PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node tests/check_workspace.mjs
+// Run against an isolated database on CHANCE_TEST_URL (default :8766); this check saves test templates/configuration.
+import assert from "node:assert/strict";
+const { chromium } = await import(
+  process.env.PLAYWRIGHT_MODULE || "playwright"
+);
+const browser = await chromium.launch({
+  headless: true,
+  executablePath:
+    process.env.CHROME_BIN ||
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+});
+const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+const errors = [];
+page.on("pageerror", (error) => errors.push(error.message));
+const base = process.env.CHANCE_TEST_URL || "http://127.0.0.1:8766";
+const state = () =>
+  page.evaluate(() => fetch("/api/workspace").then((r) => r.json()));
+try {
+  await page.goto(base);
+  await page.waitForSelector('#chart[data-ready="true"]');
+  await page.waitForSelector(".watchlist-symbol");
+  const before = await state();
+  await page
+    .locator('.workspace-header [data-open="indicator-dialog"]')
+    .click();
+  await page
+    .getByRole("button", { name: "布林突破 ＋", exact: true })
+    .first()
+    .click();
+  await page.waitForSelector("#exploration-panel:not([hidden])");
+  assert.equal(
+    (await state()).configuration.version,
+    before.configuration.version,
+  );
+  assert.equal(
+    await page.locator(".macd-legend").isVisible(),
+    false,
+    "Bollinger-only exploration must not show an unselected MACD",
+  );
+  await page.getByRole("button", { name: "布林突破 ⚙", exact: true }).click();
+  await page.getByLabel("布林周期", { exact: true }).fill("30");
+  await page.waitForFunction(() =>
+    document
+      .getElementById("workspace-status")
+      .textContent.includes("探索草稿已保留"),
+  );
+  await page.locator("#indicator-settings [data-close]").click();
+  await page.reload();
+  await page.waitForSelector("#exploration-panel:not([hidden])");
+  await page.getByRole("button", { name: "布林突破 ⚙", exact: true }).click();
+  assert.equal(
+    await page.getByLabel("布林周期", { exact: true }).inputValue(),
+    "30",
+  );
+  await page.locator("#indicator-settings [data-close]").click();
+  await page
+    .locator('.workspace-header [data-open="templates-dialog"]')
+    .click();
+  await page.getByLabel("模板名称").fill("工作台集成测试");
+  await page.getByRole("button", { name: "另存为新模板", exact: true }).click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#templates-dialog .dialog-status")
+      .textContent.includes("模板已保存"),
+  );
+  assert.equal(
+    (await state()).configuration.version,
+    before.configuration.version,
+  );
+  await page.locator("#templates-dialog [data-close]").click();
+  await page
+    .locator(".watchlist-symbol")
+    .filter({ hasText: "纳斯达克100" })
+    .click();
+  await page.waitForFunction(() =>
+    document.getElementById("chart-title").textContent.includes("纳斯达克100"),
+  );
+  await page.waitForSelector("#exploration-panel:not([hidden])");
+  assert.ok(
+    (await page.locator("#indicator-strip").innerText()).includes("布林突破"),
+  );
+  await page.getByRole("button", { name: "布林突破 ⚙", exact: true }).click();
+  await page
+    .getByRole("button", { name: "加入 / 更新监测", exact: true })
+    .click();
+  await page.getByRole("button", { name: "保存监测规则", exact: true }).click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#monitor-dialog .dialog-status")
+      .textContent.includes("已保存"),
+  );
+  const after = await state();
+  assert.equal(after.configuration.version, before.configuration.version + 1);
+  assert.deepEqual(
+    after.configuration.assets.find((a) => a.id === "sp500").strategies,
+    before.configuration.assets.find((a) => a.id === "sp500").strategies,
+  );
+  assert.equal(
+    after.configuration.assets.find((a) => a.id === "nasdaq100").strategies
+      .length,
+    before.configuration.assets.find((a) => a.id === "nasdaq100").strategies
+      .length + 1,
+  );
+  await page.locator("#monitor-dialog [data-close]").click();
+  await page.locator("#indicator-settings [data-close]").click();
+  await page.locator('.workspace-header [data-open="symbols-dialog"]').click();
+  await page.getByLabel("名称 / 代码").fill("SOX");
+  await page.waitForFunction(() =>
+    document
+      .getElementById("symbol-results")
+      .textContent.includes("费城半导体"),
+  );
+  await page.locator("#symbols-dialog [data-close]").click();
+  // Decision drafts survive a reload; exploration evidence is saved separately.
+  page.on("dialog", (dialog) => dialog.accept());
+  let form = page.locator(".asset-detail:not([hidden]) .decision-panel form");
+  await form.locator('[name="note"]').fill("工作台决策草稿恢复测试");
+  await page.reload();
+  await page.waitForSelector("#exploration-panel:not([hidden])");
+  form = page.locator(".asset-detail:not([hidden]) .decision-panel form");
+  assert.equal(
+    await form.locator('[name="note"]').inputValue(),
+    "工作台决策草稿恢复测试",
+  );
+  await form.locator("[data-basis-choice]").selectOption("exploration");
+  await Promise.all([
+    page.waitForURL("**/reports/*"),
+    form.locator(".save-button").click(),
+  ]);
+  await page.waitForLoadState("networkidle");
+  assert.ok(
+    (await page.locator("#journal").textContent()).includes(
+      "工作台决策草稿恢复测试",
+    ),
+  );
+  const evidence = await page
+    .locator('a[href^="/api/decisions/"]')
+    .last()
+    .getAttribute("href");
+  assert.equal(
+    (await (await page.request.get(base + evidence)).json()).mode,
+    "exploration",
+  );
+  await page.screenshot({
+    path: "/tmp/chance-workspace-desktop.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: "/tmp/chance-workspace-mobile.png",
+    fullPage: true,
+  });
+  assert.equal(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+    false,
+    "mobile must not overflow",
+  );
+  await page.goto(base + "/reports/11");
+  await page.waitForSelector(".watchlist-symbol");
+  assert.ok(
+    (await page.locator("#workspace-mode").innerText()).includes("历史报告"),
+  );
+  assert.equal(
+    await page.locator("#exploration-panel").isVisible(),
+    false,
+    "history defaults to original results",
+  );
+  assert.deepEqual(errors, []);
+  console.log(
+    "PASS: chart rendering, inline indicators, parameter/decision draft restore, template reuse, private monitoring, evidence, historical defaults and mobile overflow",
+  );
+} catch (error) {
+  console.error("page errors", errors);
+  console.error("status", await page.locator("#workspace-status").innerText());
+  await page.screenshot({
+    path: "/tmp/chance-workspace-failure.png",
+    fullPage: true,
+  });
+  throw error;
+} finally {
+  await browser.close();
+}

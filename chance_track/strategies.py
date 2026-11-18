@@ -207,3 +207,25 @@ def evaluate(snapshot, configs, asset, as_of):
                 }
             )
     return outputs, layers, calculated
+
+
+def chart_events(snapshot, strategies, calculated):
+    return [
+        {
+            "time": row["date"],
+            "name": strategy["name"],
+            "version": strategy["version"],
+            "config": strategy["config"],
+            "event": event,
+            "price": row["close"],
+            "detail": detail,
+            "provisional": snapshot.get("provisional_date") == row["date"],
+        }
+        for strategy in strategies
+        for row, event, detail in zip(
+            snapshot["rows"],
+            calculated[strategy["id"]]["events"],
+            calculated[strategy["id"]]["reasons"],
+        )
+        if event
+    ]

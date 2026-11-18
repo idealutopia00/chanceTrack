@@ -82,7 +82,9 @@
     if (updating || polling || document.hidden) return;
     polling = true;
     try {
-      const response = await fetch("/api/update-status", { cache: "no-store" });
+      const response = await fetch("/api/update-status", {
+        cache: "no-store",
+      });
       if (!response.ok) throw Error("无法获取更新状态");
       const state = await response.json();
       button.disabled = state.running;
@@ -149,6 +151,9 @@
   const container = document.getElementById("chart");
   const empty = document.getElementById("chart-empty");
   const markerToggle = document.getElementById("show-markers");
+  const eventPanel = document.getElementById("chart-events");
+  const eventList = document.getElementById("chart-event-list");
+  const eventDetail = document.getElementById("chart-event-detail");
   const library = window.LightweightCharts;
   let chart,
     candles,
@@ -228,27 +233,112 @@
         to: count + 3,
       });
   }
+  function chartEvents() {
+    return (
+      selected?.result?.chart?.strategy_events ??
+      selected?.result?.chart?.crosses ??
+      []
+    );
+  }
+  function showEvent(date) {
+    const rows = chartEvents().filter((event) => event.time === date);
+    const bars = selected.result.chart.candles;
+    const index = bars.findIndex((bar) => bar.time === date);
+    if (!rows.length || index < 0) return;
+    eventPanel.open = true;
+    eventDetail.replaceChildren();
+    for (const event of rows) {
+      const row = document.createElement("p");
+      const config = event.config;
+      const params = [
+        ...Object.entries(config?.params ?? {}).map(
+          ([key, value]) => `${key} ${value}`,
+        ),
+        ...Object.values(config?.dependencies ?? {}).map(
+          (rule) =>
+            `${rule.name} ${Object.entries(rule.params ?? {})
+              .map(([key, value]) => `${key} ${value}`)
+              .join(" / ")}`,
+        ),
+        config?.filter,
+      ]
+        .filter(Boolean)
+        .join(" / ");
+      row.textContent = [
+        date,
+        event.name ?? "MACD",
+        event.version,
+        params,
+        event.event ?? (event.kind === "golden" ? "金叉" : "死叉"),
+        event.provisional ? "待确认" : "收盘确认",
+        `价格 ${event.price ?? bars[index].close}`,
+        event.detail,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      eventDetail.append(row);
+    }
+    eventList
+      .querySelectorAll("button")
+      .forEach((button) =>
+        button.setAttribute(
+          "aria-current",
+          String(button.dataset.eventDate === date),
+        ),
+      );
+    chart.timeScale().setVisibleLogicalRange({
+      from: Math.max(0, index - 25),
+      to: index + 8,
+    });
+    chart.setCrosshairPosition(bars[index].close, date, candles);
+    showOHLC(bars[index]);
+  }
+  function renderEventList() {
+    eventList.replaceChildren();
+    eventDetail.replaceChildren();
+    const dates = new Map();
+    for (const { time } of chartEvents())
+      dates.set(time, (dates.get(time) ?? 0) + 1);
+    eventPanel.hidden = dates.size === 0;
+    for (const date of [...dates.keys()].sort().reverse()) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.eventDate = date;
+      button.textContent = `${date} · ${dates.get(date)} 条`;
+      button.addEventListener("click", () => showEvent(date));
+      eventList.append(button);
+    }
+  }
   function setMarkers() {
     if (!markers || !selected?.result?.chart) return;
+    const meanings = {
+      金叉: ["金叉", "up"],
+      死叉: ["死叉", "down"],
+      向上突破上轨: ["上破上轨", "up"],
+      向下突破下轨: ["下破下轨", "down"],
+      上轨外回归轨内: ["跌回上轨内", "down"],
+      下轨外回归轨内: ["升回下轨内", "up"],
+    };
     markers.setMarkers(
       markerToggle.checked
-        ? (
-            selected.result.chart.strategy_events ||
-            selected.result.chart.crosses
-          )
+        ? chartEvents()
             .slice()
             .sort((a, b) => a.time.localeCompare(b.time))
-            .map((cross) => ({
-              time: cross.time,
-              position:
-                cross.kind === "golden" ||
-                /金叉|向上|下轨外/.test(cross.event || "")
-                  ? "belowBar"
-                  : "aboveBar",
-              color: cross.kind === "golden" ? "#dfc080" : "#a896dd",
-              shape: cross.kind === "golden" ? "arrowUp" : "arrowDown",
-              text: `${cross.provisional ? "临时 " : ""}${{ 向上突破上轨: "上破", 向下突破下轨: "下破", 上轨外回归轨内: "回轨", 下轨外回归轨内: "回轨" }[cross.event] || cross.event || (cross.kind === "golden" ? "金叉" : "死叉")}`,
-            }))
+            .map((cross) => {
+              const event =
+                cross.event || (cross.kind === "golden" ? "金叉" : "死叉");
+              const [label, direction] = meanings[event] || [event, null];
+              const up = direction === "up";
+              return {
+                time: cross.time,
+                id: `event:${cross.time}`,
+                position: up ? "belowBar" : "aboveBar",
+                color: up ? "#dfc080" : "#a896dd",
+                shape: direction ? (up ? "arrowUp" : "arrowDown") : "circle",
+                size: cross.provisional ? 0 : 1,
+                text: `${cross.provisional ? "○ 待确认 " : ""}${label}`,
+              };
+            })
         : [],
     );
   }
@@ -281,7 +371,11 @@
         minimumWidth: 68,
         scaleMargins: { top: 0.12, bottom: 0.12 },
       },
-      timeScale: { borderColor: "#283740", timeVisible: false, rightOffset: 4 },
+      timeScale: {
+        borderColor: "#283740",
+        timeVisible: false,
+        rightOffset: 4,
+      },
       localization: { locale: "zh-CN" },
     });
     candles = chart.addSeries(library.CandlestickSeries, {
@@ -342,6 +436,10 @@
     chart.panes()[0].setHeight(380);
     chart.panes()[1].setHeight(180);
     markers = library.createSeriesMarkers(candles, []);
+    chart.subscribeClick((event) => {
+      if (event.hoveredObjectId?.startsWith?.("event:"))
+        showEvent(event.hoveredObjectId.slice(6));
+    });
     chart.subscribeCrosshairMove((param) => {
       const content = selected?.result?.chart;
       if (!content) return;
@@ -380,7 +478,9 @@
       };
       tag.textContent = selected.result?.is_provisional
         ? `日线 · ${pendingLabels[phase] || "盘中未收盘"}`
-        : selected.result?.bar_date ? "日线 · 已收盘" : "—";
+        : selected.result?.bar_date
+          ? "日线 · 已收盘"
+          : "—";
       tag.classList.toggle(
         "provisional",
         Boolean(selected.result?.is_provisional),
@@ -405,10 +505,13 @@
       ? `${selected.asset.market} · ${selected.asset.currency}`
       : "历史报告 · 基金净值";
     const content = selected.result?.chart;
-    const quoteTime = selected.fetched_at ||
-      selected.result?.bar_date || selected.result?.nav_date;
-    document.getElementById("chart-quote-time").textContent =
-      quoteTime ? `行情 ${quoteTime.replace("T", " ")}` : "";
+    const quoteTime =
+      selected.fetched_at ||
+      selected.result?.bar_date ||
+      selected.result?.nav_date;
+    document.getElementById("chart-quote-time").textContent = quoteTime
+      ? `行情 ${quoteTime.replace("T", " ")}`
+      : "";
     if (!content) {
       if (chart) {
         chart.remove();
@@ -520,10 +623,16 @@
         })),
       );
       dif.setData(
-        content.macd.map((point) => ({ time: point.time, value: point.dif })),
+        content.macd.map((point) => ({
+          time: point.time,
+          value: point.dif,
+        })),
       );
       dea.setData(
-        content.macd.map((point) => ({ time: point.time, value: point.dea })),
+        content.macd.map((point) => ({
+          time: point.time,
+          value: point.dea,
+        })),
       );
       drawMacd(activeMacd);
       const hasMacd = macdConfigs.length > 0;
@@ -539,6 +648,7 @@
         chart.panes()[1].setHeight(180);
       }
       setMarkers();
+      renderEventList();
       if (options.view) chart.timeScale().setVisibleLogicalRange(options.view);
       else if (previousId === id && previousRange && options.keepRange)
         chart.timeScale().setVisibleLogicalRange(previousRange);

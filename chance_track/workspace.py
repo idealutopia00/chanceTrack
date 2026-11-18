@@ -14,7 +14,7 @@ from .configuration import (
     validate_configuration,
 )
 from .data import TZ, fetch
-from .strategies import evaluate
+from .strategies import chart_events, evaluate
 
 
 def tables(db):
@@ -96,17 +96,7 @@ def preview(path, source, asset_id, strategies):
     ]
     if result["chart"]["macd_configs"]:
         result["chart"]["macd"] = result["chart"]["macd_configs"][0]["points"]
-    result["chart"]["strategy_events"] = [
-        {
-            "time": row["date"],
-            "name": s["name"],
-            "event": event,
-            "provisional": snapshot.get("provisional_date") == row["date"],
-        }
-        for s in strategies
-        for row, event in zip(snapshot["rows"], computed[s["id"]]["events"])
-        if event
-    ]
+    result["chart"]["strategy_events"] = chart_events(snapshot, results, computed)
     return {
         "asset": asset,
         "result": result,

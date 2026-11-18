@@ -497,6 +497,20 @@ h3 {
   align-items: center;
   gap: 6px;
 }
+#chart-events {
+  flex-basis: 100%;
+  font-size: 13px;
+}
+#chart-event-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 9rem;
+  overflow: auto;
+}
+#chart-event-list [aria-current="true"] {
+  border-color: #dfc080;
+}
 .chart-footer input {
   accent-color: #a1d6b7;
   width: 12px;

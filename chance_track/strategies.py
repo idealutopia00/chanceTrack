@@ -118,8 +118,9 @@ def evaluate(snapshot, configs, asset, as_of):
                     ):
                         events[i] = "下轨外回归轨内"
                 if kind.startswith("boll"):
+                    price_label = "盘中价格" if provisional and i == n - 1 else "收盘"
                     reasons[i] = (
-                        f"收盘 {values.iloc[i]:.4f}；下轨 {lower.iloc[i]:.4f}；中轨 {mid.iloc[i]:.4f}；上轨 {upper.iloc[i]:.4f}"
+                        f"{price_label} {values.iloc[i]:.4f}；下轨 {lower.iloc[i]:.4f}；中轨 {mid.iloc[i]:.4f}；上轨 {upper.iloc[i]:.4f}"
                     )
         result = {
             "events": events,

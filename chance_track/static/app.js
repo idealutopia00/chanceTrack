@@ -257,7 +257,13 @@
         (strategy) => strategy.name === event.name,
       );
       const saved = matches.length === 1 ? matches[0] : null;
-      const config = event.config ?? saved?.config;
+      const legacyMacd = event.kind
+        ? selected.result.chart.macd?.find((point) => point.time === date)
+        : null;
+      const config =
+        event.config ??
+        saved?.config ??
+        (legacyMacd ? { params: { fast: 12, slow: 26, signal: 9 } } : null);
       const params = [
         ...Object.entries(config?.params ?? {}).map(
           ([key, value]) => `${key} ${value}`,
@@ -280,7 +286,12 @@
         eventName(event),
         event.provisional ? "待确认" : "收盘确认",
         `价格 ${event.price ?? bars[index].close}`,
-        event.detail,
+        event.detail ??
+          (legacyMacd
+            ? `DIF ${legacyMacd.dif} · DEA ${legacyMacd.dea} · 柱 ${legacyMacd.histogram}`
+            : saved?.event_date === date && saved.event === event.event
+              ? saved.detail
+              : null),
       ]
         .filter(Boolean)
         .join(" · ");
@@ -347,22 +358,22 @@
             .sort(([left], [right]) => left.localeCompare(right))
             .map(([date, events]) => {
               const event = eventName(events[0]);
-              const [label, direction] = meanings[event] || [event, null];
+              const [label, firstDirection] = meanings[event] || [event, null];
               const grouped = events.length > 1;
-              const up = !grouped && direction === "up";
+              const direction = events.every(
+                (entry) => meanings[eventName(entry)]?.[1] === firstDirection,
+              )
+                ? firstDirection
+                : null;
+              const up = direction === "up";
               const provisional = events.some((entry) => entry.provisional);
-              const glyph = grouped || !direction ? "○" : up ? "⇧" : "⇩";
+              const glyph = !direction ? "○" : up ? "⇧" : "⇩";
               return {
                 time: date,
                 id: `event:${date}`,
                 position: up ? "belowBar" : "aboveBar",
                 color: up ? "#dfc080" : "#a896dd",
-                shape:
-                  grouped || !direction
-                    ? "circle"
-                    : up
-                      ? "arrowUp"
-                      : "arrowDown",
+                shape: !direction ? "circle" : up ? "arrowUp" : "arrowDown",
                 size: provisional ? 0 : 1,
                 text: `${provisional ? `${glyph} 待确认 ` : ""}${grouped ? `${events.length} 条事件` : label}`,
               };

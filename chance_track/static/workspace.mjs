@@ -151,7 +151,22 @@ import {
       seen = new Set(result.map((s) => s.id));
     for (const s of result)
       if (s.kind === "combination")
-        for (const id of [s.trigger, ...(s.filter ? [s.band] : [])])
+        for (const field of ["trigger", ...(s.filter ? ["band"] : [])]) {
+          const id = s[field];
+          const pinned = s.dependencies?.[id];
+          const visible = result.find((rule) => rule.id === id);
+          if (
+            pinned &&
+            visible &&
+            JSON.stringify(pinned.params) !== JSON.stringify(visible.params)
+          ) {
+            let alias = `explore_dep_${result.length}`;
+            while (seen.has(alias)) alias += "_";
+            result.push({ ...pinned, id: alias });
+            seen.add(alias);
+            s[field] = alias;
+            continue;
+          }
           if (!seen.has(id)) {
             const dependency =
               s.dependencies?.[id] ||
@@ -161,6 +176,7 @@ import {
               seen.add(id);
             }
           }
+        }
     return result;
   }
   function reportStrategies(id) {
@@ -291,9 +307,8 @@ import {
           (key) => JSON.stringify(rule[key]) === JSON.stringify(s[key]),
         );
       pill.append(
-        button(
-          bound && same ? "监测中" : bound ? "保存监测" : "加入监测",
-          () => monitor(s.id),
+        button(bound && same ? "监测中" : bound ? "保存监测" : "加入监测", () =>
+          monitor(s.id),
         ),
         button("×", () => {
           draft = draft.filter((x) => x.id !== s.id);
@@ -423,7 +438,7 @@ import {
         },
         config.strategies
           .filter((x) => x.kind !== "combination")
-          .map((x) => [x.id, x.name]),
+          .map((x) => [x.id, describeRule(x)]),
       );
       field(
         node,
@@ -449,7 +464,7 @@ import {
         },
         config.strategies
           .filter((x) => x.kind.startsWith("boll"))
-          .map((x) => [x.id, x.name]),
+          .map((x) => [x.id, describeRule(x)]),
       );
     } else
       for (const key of Object.keys(s.params)) {
@@ -477,6 +492,27 @@ import {
     node.append(button("加入 / 更新监测", () => monitor(id)));
     openDialog("indicator-settings");
   }
+  const kindNames = {
+    macd: "MACD",
+    ma: "双均线",
+    boll_break: "布林突破",
+    boll_return: "布林回归",
+  };
+  function describeRule(rule) {
+    return `${rule.name} · ${kindNames[rule.kind]} · ${describeParams(rule.params)}`;
+  }
+  function describeParams(params, keys = Object.keys(params)) {
+    return [
+      ["fast", "快线"],
+      ["slow", "慢线"],
+      ["signal", "信号线"],
+      ["period", "周期"],
+      ["stddev", "标准差倍数"],
+    ]
+      .filter(([key]) => keys.includes(key))
+      .map(([key, label]) => `${label} ${params[key]}`)
+      .join(" / ");
+  }
   function renderCatalog() {
     const dialog = $("indicator-dialog");
     const catalog = dialog.querySelector(".indicator-catalog");
@@ -489,31 +525,15 @@ import {
       schedulePreview();
       dialog.close();
     };
-    const describe = (params, keys = Object.keys(params)) =>
-      [
-        ["fast", "快线"],
-        ["slow", "慢线"],
-        ["signal", "信号线"],
-        ["period", "周期"],
-        ["stddev", "标准差倍数"],
-      ]
-        .filter(([key]) => keys.includes(key))
-        .map(([key, label]) => `${label} ${params[key]}`)
-        .join(" / ");
     for (const [kind, name, meaning, params] of [
       ["macd", "MACD", "副图", { fast: 12, slow: 26, signal: 9 }],
       ["ma", "双均线", "主图", { fast: 20, slow: 60 }],
       ["boll_break", "布林突破", "突破轨道", { period: 20, stddev: 2 }],
-      [
-        "boll_return",
-        "布林回归",
-        "从轨外回到轨内",
-        { period: 20, stddev: 2 },
-      ],
+      ["boll_return", "布林回归", "从轨外回到轨内", { period: 20, stddev: 2 }],
     ]) {
       const row = document.createElement("section");
       row.append(
-        text("strong", `${name} · ${meaning} · ${describe(params)}`),
+        text("strong", `${name} · ${meaning} · ${describeParams(params)}`),
         button(`${name} ＋`, () =>
           add({
             id: `explore_${Date.now()}_${draft.length}`,
@@ -532,7 +552,7 @@ import {
         details.append(text("summary", "已存配置"));
         for (const strategy of saved) {
           const keys = Object.keys(params);
-          const values = describe(strategy.params, keys);
+          const values = describeParams(strategy.params, keys);
           const matching = keys.every(
             (key) => strategy.params[key] === params[key],
           )
@@ -564,12 +584,23 @@ import {
         );
         const filter =
           strategy.filter && band
-            ? `${strategy.filter === "above_mid" ? "高于" : "低于"} ${band.name} 中轨 ${describe(band.params)}`
+            ? `${strategy.filter === "above_mid" ? "高于" : "低于"} ${describeRule(band)} 中轨`
             : "无过滤";
         details.append(
           button(
-            `${strategy.name} · ${trigger.name} ${describe(trigger.params)} · ${filter}`,
-            () => add({ ...clone(strategy), origin_id: strategy.id }),
+            `${strategy.name} · ${describeRule(trigger)} · ${filter}`,
+            () =>
+              add({
+                ...clone(strategy),
+                origin_id: strategy.id,
+                dependencies: clone(
+                  Object.fromEntries(
+                    [trigger, ...(strategy.filter && band ? [band] : [])].map(
+                      (rule) => [rule.id, rule],
+                    ),
+                  ),
+                ),
+              }),
           ),
         );
       }
@@ -578,9 +609,7 @@ import {
     combinations.append(
       button("创建组合策略…", () => {
         if (!selected) return status("请先选择标的", true);
-        const trigger = config.strategies.find(
-            (s) => s.kind !== "combination",
-          ),
+        const trigger = config.strategies.find((s) => s.kind !== "combination"),
           band = config.strategies.find((s) => s.kind.startsWith("boll"));
         if (!trigger) return dialogStatus(dialog, "请先保存基础策略", true);
         draft.push({
@@ -679,11 +708,7 @@ import {
       scope.append(global);
     }
     content.append(scope);
-    const impact = text(
-      "p",
-      "默认仅修改当前标的，其他标的配置保留。",
-      "muted",
-    );
+    const impact = text("p", "默认仅修改当前标的，其他标的配置保留。", "muted");
     content.append(impact);
     scope.addEventListener("change", () => {
       impact.textContent =
@@ -922,11 +947,7 @@ import {
         ),
         button("应用到图表", () => {
           if (!selected)
-            return dialogStatus(
-              $("templates-dialog"),
-              "请先选择标的",
-              true,
-            );
+            return dialogStatus($("templates-dialog"), "请先选择标的", true);
           draft = clone(t.strategies);
           activeTemplate = t.template_id;
           state.template = t.template_id;
@@ -1084,9 +1105,7 @@ import {
         form.dispatchEvent(new Event("input", { bubbles: true }));
         return;
       }
-      const submit = form.querySelector(
-        'button[type="submit"], .save-button',
-      );
+      const submit = form.querySelector('button[type="submit"], .save-button');
       if (submit) submit.disabled = true;
       try {
         const response = await fetch(form.getAttribute("action"), {

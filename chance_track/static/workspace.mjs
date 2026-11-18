@@ -441,6 +441,8 @@ import {
     });
     if (s.kind === "combination") {
       const choices = new Map(config.strategies.map((rule) => [rule.id, rule]));
+      for (const rule of draft)
+        if (rule.kind !== "combination") choices.set(rule.id, rule);
       for (const rule of Object.values(s.dependencies ?? {}))
         choices.set(rule.id, rule);
       const rules = [...choices.values()];

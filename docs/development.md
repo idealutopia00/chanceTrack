@@ -47,4 +47,35 @@ node tests/check_updates.mjs
 
 `tests/test_workspace.py` 验证探索无正式副作用、模板与配置并发版本、局部绑定的影响范围、独立行情引用、决策探索依据与组合依赖参数。
 
-可选的 `tests/check_workspace.mjs` 使用 Playwright + 本机 Chrome 做完整交互测试，不是运行依赖。先把正式 SQLite 备份到测试文件，再用该文件启动测试服务（默认127.0.0.1:8766）；不要指向正式数据库。通过 `PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node tests/check_workspace.mjs` 执行，`CHANCE_TEST_URL` 和 `CHROME_BIN` 可覆盖测试地址与浏览器路径。测试会保存测试模板、监测配置和决策，并检查桌面/手机布局、指标参数和决策草稿恢复、跨标的模板、历史默认状态及独立依据。
+可选的 `tests/check_workspace.mjs` 使用 Playwright + 本机 Chrome 验证完整交互。在仓库根目录运行以下命令，以合成日线创建临时 SQLite，并监听本机测试端口。测试需要当前报告没有预选指标，也需要历史报告 #11。
+
+```sh
+PYTHONPATH=tests uv run python - <<'PY'
+from datetime import timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import uvicorn
+from test_loop import NOW, sample
+
+from chance_track import storage
+from chance_track.configuration import load_configuration
+from chance_track.runner import run
+from chance_track.web import create_app
+
+with TemporaryDirectory() as directory:
+    path = str(Path(directory) / "workspace.sqlite")
+    storage.initialize(path)
+    assets = [
+        {**asset, "strategies": []}
+        for asset in load_configuration(path)["assets"]
+    ]
+    for minutes in range(11, -1, -1):
+        run(path, watchlist=assets, send=False,
+            now=NOW - timedelta(minutes=minutes),
+            fetcher=lambda *_: sample())
+    uvicorn.run(create_app(path), host="127.0.0.1", port=8766)
+PY
+```
+
+在另一终端执行 `PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node tests/check_workspace.mjs`。`CHANCE_TEST_URL` 和 `CHROME_BIN` 可覆盖测试地址与浏览器路径。测试会保存测试模板、监测配置和决策。验证完成后停止测试服务。

@@ -994,6 +994,17 @@
       persist();
     });
   });
+  $("journal-record-decision")?.addEventListener("click", () => {
+    const note = document.querySelector(
+      '[data-detail]:not([hidden]) textarea[name="note"]',
+    );
+    if (!note) {
+      status("当前标的没有正式报告，无法记录判断。", true);
+      return;
+    }
+    note.closest("details").open = true;
+    note.focus();
+  });
   document.querySelectorAll(".decision-panel form").forEach((form) => {
     const assetId = form.querySelector('[name="asset_id"]').value;
     const key = `chanceTrack.decision.${boot.report_id}.${assetId}`;

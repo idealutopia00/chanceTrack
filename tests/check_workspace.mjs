@@ -20,6 +20,23 @@ try {
   await page.goto(base);
   await page.waitForSelector('#chart[data-ready="true"]');
   await page.waitForSelector(".watchlist-symbol");
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.locator('[data-layout="signals"]').evaluate((panel) => {
+      panel.open = false;
+    });
+    await page.locator('[data-layout="journal"]').evaluate((panel) => {
+      panel.open = true;
+    });
+    await page.getByRole("button", { name: "前往记录判断" }).click();
+    assert.equal(
+      await page
+        .locator('[data-detail]:not([hidden]) textarea[name="note"]')
+        .evaluate((note) => document.activeElement === note),
+      true,
+    );
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const before = await state();
   await page
     .locator('.workspace-header [data-open="indicator-dialog"]')

@@ -995,13 +995,15 @@
     });
   });
   $("journal-record-decision")?.addEventListener("click", () => {
+    const feedback = $("journal-record-status");
     const note = document.querySelector(
       '[data-detail]:not([hidden]) textarea[name="note"]',
     );
     if (!note) {
-      status("当前标的没有正式报告，无法记录判断。", true);
+      feedback.textContent = "当前标的没有正式报告，无法记录判断。";
       return;
     }
+    feedback.textContent = "";
     note.closest("details").open = true;
     note.focus();
   });

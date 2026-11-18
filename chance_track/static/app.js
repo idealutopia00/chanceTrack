@@ -248,7 +248,7 @@
     if (!rows.length) return;
     const bars = selected.result.chart.candles;
     const index = bars.findIndex((bar) => bar.time === date);
-    if (!rows.length || index < 0) return;
+    if (index < 0) return;
     eventPanel.open = true;
     eventDetail.replaceChildren();
     for (const event of rows) {
@@ -257,9 +257,13 @@
         (strategy) => strategy.name === event.name,
       );
       const saved = matches.length === 1 ? matches[0] : null;
-      const legacyMacd = event.kind
-        ? selected.result.chart.macd?.find((point) => point.time === date)
-        : null;
+      const macdPoints = event.kind
+        ? selected.result.chart.macd
+        : selected.result.chart.macd_configs?.find(
+            (series) => series.id === (event.config?.id ?? saved?.id),
+          )?.points;
+      const macd = macdPoints?.find((point) => point.time === date);
+      const legacyMacd = event.kind ? macd : null;
       const config =
         event.config ??
         saved?.config ??
@@ -284,14 +288,17 @@
         event.version ?? saved?.version,
         params,
         eventName(event),
-        event.provisional ? "待确认" : "收盘确认",
+        event.provisional === true
+          ? "待确认"
+          : event.provisional === false
+            ? "收盘确认"
+            : "确认状态未记录",
         `价格 ${event.price ?? bars[index].close}`,
+        macd && `DIF ${macd.dif} · DEA ${macd.dea} · 柱 ${macd.histogram}`,
         event.detail ??
-          (legacyMacd
-            ? `DIF ${legacyMacd.dif} · DEA ${legacyMacd.dea} · 柱 ${legacyMacd.histogram}`
-            : saved?.event_date === date && saved.event === event.event
-              ? saved.detail
-              : null),
+          (saved?.event_date === date && saved.event === event.event
+            ? saved.detail
+            : null),
       ]
         .filter(Boolean)
         .join(" · ");
@@ -366,7 +373,12 @@
                 ? firstDirection
                 : null;
               const up = direction === "up";
-              const provisional = events.some((entry) => entry.provisional);
+              const provisional = events.every(
+                (entry) => entry.provisional === true,
+              );
+              const pendingCount = events.filter(
+                (entry) => entry.provisional === true,
+              ).length;
               const glyph = !direction ? "○" : up ? "⇧" : "⇩";
               return {
                 time: date,
@@ -375,7 +387,7 @@
                 color: up ? "#dfc080" : "#a896dd",
                 shape: !direction ? "circle" : up ? "arrowUp" : "arrowDown",
                 size: provisional ? 0 : 1,
-                text: `${provisional ? `${glyph} 待确认 ` : ""}${grouped ? `${events.length} 条事件` : label}`,
+                text: `${provisional ? `${glyph} 待确认 ` : ""}${grouped ? `${events.length} 条事件` : label}${pendingCount && !provisional ? `（${pendingCount} 条待确认）` : ""}`,
               };
             })
         : [],

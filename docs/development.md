@@ -47,7 +47,7 @@ node tests/check_updates.mjs
 
 `tests/test_workspace.py` 验证探索无正式副作用、模板与配置并发版本、局部绑定的影响范围、独立行情引用、决策探索依据与组合依赖参数。
 
-可选的 `tests/check_workspace.mjs` 使用 Playwright + 本机 Chrome 验证完整交互。在仓库根目录运行以下命令，以合成日线创建临时 SQLite，并监听本机测试端口。测试需要当前报告没有预选指标，也需要历史报告 #11。
+可选的 `tests/check_workspace.mjs` 使用 Playwright + 本机 Chrome 验证完整交互。在仓库根目录运行以下命令，以合成日线创建临时 SQLite，并监听本机测试端口。生成报告时使用未绑定策略的标的，让图表探索从空指标列表开始。生成 12 份报告，让测试可打开历史报告 #11。
 
 ```sh
 PYTHONPATH=tests uv run python - <<'PY'
@@ -78,4 +78,4 @@ with TemporaryDirectory() as directory:
 PY
 ```
 
-在另一终端执行 `PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node tests/check_workspace.mjs`。`CHANCE_TEST_URL` 和 `CHROME_BIN` 可覆盖测试地址与浏览器路径。测试会保存测试模板、监测配置和决策。验证完成后停止测试服务。
+确认上面的测试服务成功启动后，在另一终端执行 `CHANCE_TEST_URL=http://127.0.0.1:8766 PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node tests/check_workspace.mjs`。`CHROME_BIN` 可覆盖浏览器路径。测试会保存测试模板、监测配置和决策。验证完成后停止测试服务。

@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+import pytest
 from test_loop import ASSET, NOW, sample
 
 from chance_track import storage
@@ -111,13 +112,31 @@ def test_failed_delivery_does_not_consume_signal_and_retry_preserves_message(tmp
     assert storage.notification(path, rid)["sent_at"]
 
 
+@pytest.mark.parametrize("entry", ["web", "cli"])
 def test_legacy_migration_only_backfills_signals_actually_counted_by_old_popup(
-    tmp_path,
+    tmp_path, monkeypatch, entry
 ):
     import json
     import sqlite3
 
     from chance_track.analysis import RULE
+    from chance_track.cli import main
+    from chance_track.web import create_app
+
+    def start(path):
+        if entry == "web":
+            create_app(path)
+        else:
+            monkeypatch.setattr(
+                "sys.argv",
+                ["chance-track", "--db", str(path), "check", "--scheduled", "--no-notify"],
+            )
+            monkeypatch.setattr("chance_track.runner.due", lambda now: False)
+            main()
+
+    fresh = tmp_path / "new" / "fresh.sqlite3"
+    start(fresh)
+    assert storage.reports(fresh) == []
 
     path = tmp_path / "legacy.sqlite3"
     with sqlite3.connect(path) as db:
@@ -158,13 +177,16 @@ def test_legacy_migration_only_backfills_signals_actually_counted_by_old_popup(
                         None if delivered else "failed",
                     ),
                 )
+    start(path)
+    assert storage.report(path, 1)["items"][0]["asset"]["id"] == "notified"
     keys = storage.notified_event_keys(path)
     assert len(keys) == 1 and next(iter(keys)).startswith("notified:")
     assert storage.notification(path, 2)["sent_at"] == NOW.isoformat()
     assert storage.notification(path, 2)["message"] is None
-    assert (
-        storage.notified_event_keys(path) == keys
-    )  # Reopening does not repeat migration.
+    with storage.connect(path) as db:
+        db.execute("DELETE FROM notification_events")
+    start(path)
+    assert storage.notified_event_keys(path) == set()
 
 
 def test_preview_is_named_but_never_counted_as_a_confirmed_notification():

@@ -16,7 +16,8 @@ def validate_source(root):
     package = root / "chance_track"
     for path in package.rglob("*.py"):
         compile(path.read_bytes(), str(path), "exec")
-    for name in ("app.css", "app.js", "manage.js", "workspace.js"):
+    scripts = ("app.js", "manage.js", "workspace.mjs", "watchlist.mjs")
+    for name in ("app.css", *scripts):
         text = (package / "static" / name).read_text()
         if "<!doctype" in text.lower() or "<html" in text.lower():
             raise ValueError(f"拒绝部署：{name} 被误写成 HTML")
@@ -39,7 +40,7 @@ def validate_source(root):
         raise ValueError("uv.lock 与项目版本不一致，请先 uv sync")
     node = shutil.which("node")
     if node:
-        for script in ("app.js", "manage.js", "workspace.js"):
+        for script in scripts:
             subprocess.run(
                 [node, "--check", str(package / "static" / script)], check=True
             )

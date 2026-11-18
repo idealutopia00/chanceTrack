@@ -1,4 +1,8 @@
 /* Workspace commands and drafts. Chart rendering stays in app.js; calculations stay in Python. */
+import {
+  renderWatchlist as renderAssets,
+  reorderAssets,
+} from "./watchlist.mjs";
 (() => {
   const root = document.getElementById("workspace-bootstrap");
   if (!root) return;
@@ -349,6 +353,7 @@
           if (selected !== id) return;
           source = value.source;
         } catch (error) {
+          if (selected !== id) return;
           status(error.message, true);
           renderIndicators();
           renderWatchlist();
@@ -723,88 +728,28 @@
     }
   });
   async function choose(id) {
-    await selectAsset(id);
-  }
-  function groupName(a) {
-    return (
-      a.group ||
-      (a.session_profile === "us_equity"
-        ? "美国指数"
-        : a.session_profile === "sge_gold"
-          ? "黄金"
-          : "国内指数")
-    );
+    const selection = selectAsset(id);
+    if (compactWatchlist.matches) setWatchlistHidden(true);
+    await selection;
   }
   function renderWatchlist() {
     $("workspace-configuration").textContent =
       `当前监测 v${config.version} · 本报告配置 ${boot.configuration_version ? "v" + boot.configuration_version : "历史未记录"}${boot.configuration_version && boot.configuration_version !== config.version ? " · 新规则下次检查生效" : ""}`;
-    const node = $("watchlist-items"),
-      filter = $("watchlist-filter").value.toLowerCase();
-    node.replaceChildren();
-    const groups = new Map();
-    for (const a of config.assets) {
-      if (a.archived || !`${a.label} ${a.code}`.toLowerCase().includes(filter))
-        continue;
-      const group = groupName(a);
-      if (!groups.has(group)) groups.set(group, []);
-      groups.get(group).push(a);
-    }
-    for (const [group, assets] of groups) {
-      node.append(text("h4", group, "watchlist-group"));
-      for (const a of assets) {
-        const row = text(
-          "div",
-          "",
-          `watchlist-row ${selected === a.id ? "active" : ""}`,
-        );
-        const main = button("", () => choose(a.id), "watchlist-symbol");
-        main.append(
-          text("strong", a.label),
-          text(
-            "small",
-            `${a.ticker || a.code} · ${a.enabled ? `${a.strategies.length} 个监测` : "已停用"}`,
-          ),
-        );
-        const price = originals.get(a.id)?.result;
-        main.append(
-          text(
-            "span",
-            price?.close
-              ? price.close.toLocaleString("zh-CN", {
-                  maximumFractionDigits: 2,
-                })
-              : "加载行情",
-          ),
-        );
-        row.append(main);
-        const actions = text("div", "", "watchlist-actions");
-        actions.append(
-          button("⚙", () => assetSettings(a.id)),
-          button("↑", () => reorder(a.id, -1)),
-          button("↓", () => reorder(a.id, 1)),
-        );
-        row.append(actions);
-        node.append(row);
-      }
-    }
-    if (!groups.size)
-      node.append(text("p", "列表为空，可搜索添加或从目录恢复归档标的。"));
+    renderAssets(
+      $("watchlist-items"),
+      $("watchlist-filter").value.toLowerCase(),
+      config.assets,
+      selected,
+      originals,
+      { text, button, choose, assetSettings, reorder },
+    );
   }
   $("watchlist-filter").addEventListener("input", () => {
     if (config) renderWatchlist();
   });
   async function reorder(id, delta) {
-    const ids = config.assets.map((a) => a.id),
-      asset = config.assets.find((a) => a.id === id);
-    const peers = config.assets.filter(
-      (a) => !a.archived && groupName(a) === groupName(asset),
-    );
-    const position = peers.findIndex((a) => a.id === id),
-      target = peers[position + delta];
-    if (!target) return;
-    const i = ids.indexOf(id),
-      j = ids.indexOf(target.id);
-    [ids[i], ids[j]] = [ids[j], ids[i]];
+    const ids = reorderAssets(config.assets, id, delta);
+    if (!ids) return;
     try {
       await mutate({ action: "order", ids });
     } catch {
@@ -977,15 +922,36 @@
     persist();
     status("已还原当时报告；自动监测配置保持当前已保存版本");
   });
-  $("toggle-watchlist").addEventListener("click", () => {
-    state.watchlistHidden = !state.watchlistHidden;
-    document.body.classList.toggle("watchlist-hidden", state.watchlistHidden);
-    persist();
+  const compactWatchlist = matchMedia("(max-width: 720px)");
+  const watchlistToggle = $("toggle-watchlist");
+  function setWatchlistHidden(hidden) {
+    document.body.classList.toggle("watchlist-hidden", hidden);
+    watchlistToggle.setAttribute("aria-expanded", String(!hidden));
+  }
+  function resetWatchlist() {
+    setWatchlistHidden(
+      compactWatchlist.matches || Boolean(state.watchlistHidden),
+    );
+  }
+  compactWatchlist.addEventListener("change", resetWatchlist);
+  resetWatchlist();
+  watchlistToggle.addEventListener("click", () => {
+    const hidden = watchlistToggle.getAttribute("aria-expanded") === "true";
+    setWatchlistHidden(hidden);
+    if (!compactWatchlist.matches) {
+      state.watchlistHidden = hidden;
+      persist();
+    }
   });
-  document.body.classList.toggle(
-    "watchlist-hidden",
-    Boolean(state.watchlistHidden),
-  );
+  let nextSignal = 0;
+  $("new-signals")?.addEventListener("click", () => {
+    const signals = [...document.querySelectorAll("[data-new-signal]")];
+    const signal = signals[nextSignal++ % signals.length];
+    if (!signal) return;
+    selectAsset(signal.closest("[data-detail]").dataset.detail);
+    signal.closest('details[data-layout="signals"]').open = true;
+    signal.focus();
+  });
   document.querySelectorAll("[data-layout]").forEach((panel) => {
     if (panel.dataset.layout in state.layout)
       panel.open = state.layout[panel.dataset.layout];

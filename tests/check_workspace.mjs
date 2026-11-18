@@ -23,6 +23,15 @@ try {
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     const assetId = width === 1440 ? "nasdaq100" : "sp500";
+    if (width === 390) {
+      await page.locator("#watchlist-panel").waitFor({ state: "hidden" });
+      assert.ok((await page.locator("#chart").boundingBox()).y < 844);
+      assert.match(
+        await page.locator("#ohlc").innerText(),
+        /开[\s\S]*高[\s\S]*低[\s\S]*[收现]/,
+      );
+      await page.locator("#toggle-watchlist").click();
+    }
     await page
       .locator(".watchlist-symbol")
       .filter({ hasText: width === 1440 ? "纳斯达克100" : "标普500" })
@@ -54,9 +63,7 @@ try {
   });
   await page.setViewportSize({ width: 1440, height: 1000 });
   const before = await state();
-  await page
-    .locator('.workspace-header [data-open="indicator-dialog"]')
-    .click();
+  await page.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
   await page
     .getByRole("button", { name: "布林突破 ＋", exact: true })
     .first()
@@ -87,9 +94,7 @@ try {
     "30",
   );
   await page.locator("#indicator-settings [data-close]").click();
-  await page
-    .locator('.workspace-header [data-open="templates-dialog"]')
-    .click();
+  await page.locator('.chart-toolbar [data-open="templates-dialog"]').click();
   await page.getByLabel("模板名称").fill("工作台集成测试");
   await page.getByRole("button", { name: "另存为新模板", exact: true }).click();
   await page.waitForFunction(() =>
@@ -180,6 +185,65 @@ try {
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#toggle-watchlist").click();
+  await page
+    .locator(".watchlist-symbol")
+    .filter({ hasText: "标普500" })
+    .click();
+  const official = page.locator('[data-detail="sp500"]:not([hidden])');
+  await official
+    .getByRole("heading", { name: "最新日线信号" })
+    .scrollIntoViewIfNeeded();
+  const officialForm = official.locator("form");
+  await officialForm.locator("[data-basis-choice]").selectOption("report");
+  await officialForm.locator('[name="note"]').fill("窄屏正式判断验收");
+  await Promise.all([
+    page.waitForNavigation(),
+    officialForm.locator(".save-button").click(),
+  ]);
+  const officialEntry = await page
+    .locator("#journal tr")
+    .filter({ hasText: "窄屏正式判断验收" })
+    .textContent();
+  assert.match(officialEntry, /标普500/);
+  assert.match(officialEntry, /原始报告依据/);
+  const release = Promise.withResolvers();
+  await page.route("**/api/workspace/preview", async (route) => {
+    if (route.request().postDataJSON().asset_id !== "sp500")
+      return route.continue();
+    const response = await route.fetch();
+    await release.promise;
+    await route.fulfill({ response });
+  });
+  const pending = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/workspace/preview") &&
+      request.postDataJSON().asset_id === "sp500",
+  );
+  await page.evaluate(() => {
+    document.querySelector(".watchlist-symbol[aria-pressed=true]").click();
+  });
+  await pending;
+  await page.locator("#toggle-watchlist").click();
+  await page
+    .locator(".watchlist-symbol")
+    .filter({ hasText: "纳斯达克100" })
+    .click();
+  await page.waitForSelector("#exploration-panel:not([hidden])");
+  const currentPreview = await page.locator("#exploration-panel").innerText();
+  const late = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/workspace/preview") &&
+      response.request().postDataJSON().asset_id === "sp500",
+  );
+  release.resolve();
+  await (await late).finished();
+  await page.waitForLoadState("networkidle");
+  assert.match(await page.locator("#chart-title").innerText(), /纳斯达克100/);
+  assert.equal(
+    await page.locator("#exploration-panel").innerText(),
+    currentPreview,
+  );
   await page.screenshot({
     path: "/tmp/chance-workspace-mobile.png",
     fullPage: true,
@@ -192,7 +256,7 @@ try {
     "mobile must not overflow",
   );
   await page.goto(base + "/reports/11");
-  await page.waitForSelector(".watchlist-symbol");
+  await page.waitForSelector('#chart[data-ready="true"]');
   assert.ok(
     (await page.locator("#workspace-mode").innerText()).includes("历史报告"),
   );

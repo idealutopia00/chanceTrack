@@ -93,6 +93,7 @@ def test_schedule_notification_retry_and_rule_upgrade(tmp_path):
         "rule": {"version": "old"},
         "items": [],
     }
+    storage.initialize(path)
     storage.save_report(path, old)
     calls = []
 
@@ -277,6 +278,7 @@ def test_legacy_nav_report_retains_its_original_basis(tmp_path):
             }
         ],
     }
+    storage.initialize(path)
     rid, _ = storage.save_report(path, legacy)
     response = TestClient(create_app(path)).get(f"/reports/{rid}")
     assert response.status_code == 200

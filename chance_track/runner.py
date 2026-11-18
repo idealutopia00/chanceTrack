@@ -119,6 +119,7 @@ def run(
 ):
     # CLI, scheduler and HTTP updates share the same cross-process lock.
     with check_lock(db_path):
+        storage.initialize(db_path)
         return _run(db_path, watchlist, scheduled, send, now, fetcher, sender)
 
 

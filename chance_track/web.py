@@ -25,6 +25,7 @@ from .workspace import preview, register_routes
 
 
 def create_app(db_path):
+    storage.initialize(db_path)
     app = FastAPI(title="Chance Track", docs_url=None, redoc_url=None)
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"]
@@ -40,7 +41,7 @@ def create_app(db_path):
         static = Path(__file__).parent / "static"
         return max(
             (static / name).stat().st_mtime_ns
-            for name in ("app.css", "app.js", "workspace.js", "manage.js")
+            for name in ("app.css", "app.js", "workspace.mjs", "watchlist.mjs", "manage.js")
         )
 
     token = secrets.token_urlsafe(32)
@@ -54,7 +55,12 @@ def create_app(db_path):
             raise HTTPException(404, "报告不存在")
         items = selected["items"] if selected else []
         chart_items = [
-            {"asset": item["asset"], "result": item.get("result")} for item in items
+            {
+                "asset": item["asset"],
+                "result": item.get("result"),
+                "fetched_at": (item.get("snapshot") or {}).get("fetched_at"),
+            }
+            for item in items
         ]
         summary = {
             "total": len(items),

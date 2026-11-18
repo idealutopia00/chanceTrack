@@ -9,7 +9,7 @@
             <h3>最新日线信号</h3>
             {% if r and r.strategies is defined %}
                 {% for s in r.strategies|sort(attribute='group') %}
-                    <div class="strategy-result">
+                    <div class="strategy-result"{% if s.new_event %} data-new-signal tabindex="-1"{% endif %}>
                         <small>{{ s.group }} · {{ s.version }}</small>
                         <button type="button" data-focus-asset="{{ item.asset.id }}" data-focus-date="{{ s.bar_date if s.preview_event else s.event_date }}">{{ s.name }} ↗</button>
                         {% if s.is_provisional %}<p>{{ s.bar_date }} · {{ s.preview_event or '无盘中事件' }} · 未收盘待确认</p>{% endif %}
@@ -19,7 +19,7 @@
                     </div>
                 {% else %}<p>未绑定策略 · 仅观察行情</p>{% endfor %}
             {% elif r %}
-                <div class="signal-pill {{ 'event' if r.event or r.preview_event or r.is_provisional else '' }}">
+                <div class="signal-pill {{ 'event' if r.event or r.preview_event or r.is_provisional else '' }}"{% if r.new_event %} data-new-signal tabindex="-1"{% endif %}>
                     {% if r.is_provisional %}{{ r.preview_event or ((r.session.label if r.session else '盘中观察') + ' · 未收盘') }}{% else %}{{ r.event or '等待交叉信号' }}{% endif %}
                 </div>
                 <p class="signal-copy">

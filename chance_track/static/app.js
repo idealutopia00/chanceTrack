@@ -380,7 +380,7 @@
       };
       tag.textContent = selected.result?.is_provisional
         ? `日线 · ${pendingLabels[phase] || "盘中未收盘"}`
-        : "日线 · 已收盘";
+        : selected.result?.bar_date ? "日线 · 已收盘" : "—";
       tag.classList.toggle(
         "provisional",
         Boolean(selected.result?.is_provisional),
@@ -405,6 +405,10 @@
       ? `${selected.asset.market} · ${selected.asset.currency}`
       : "历史报告 · 基金净值";
     const content = selected.result?.chart;
+    const quoteTime = selected.fetched_at ||
+      selected.result?.bar_date || selected.result?.nav_date;
+    document.getElementById("chart-quote-time").textContent =
+      quoteTime ? `行情 ${quoteTime.replace("T", " ")}` : "";
     if (!content) {
       if (chart) {
         chart.remove();

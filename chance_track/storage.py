@@ -44,12 +44,23 @@ def migrate_notifications(db):
 
 @contextmanager
 def connect(path):
+    db = sqlite3.connect(path, timeout=30)
+    try:
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        yield db
+        db.commit()
+    finally:
+        db.close()
+
+
+def initialize(path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path, timeout=30)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA foreign_keys=ON")
-    db.executescript("""
+    with connect(path) as db:
+        if db.execute("PRAGMA user_version").fetchone()[0] >= 2:
+            return
+        db.executescript("""
     CREATE TABLE IF NOT EXISTS reports (
       id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, day TEXT NOT NULL,
       kind TEXT NOT NULL, payload TEXT NOT NULL);
@@ -66,12 +77,8 @@ def connect(path):
     CREATE TABLE IF NOT EXISTS notifications (
       report_id INTEGER PRIMARY KEY REFERENCES reports(id), sent_at TEXT, error TEXT);
     """)
-    migrate_notifications(db)
-    try:
-        yield db
-        db.commit()
-    finally:
-        db.close()
+        migrate_notifications(db)
+        db.execute("PRAGMA user_version=2")
 
 
 def save_report(path, report):
@@ -178,9 +185,6 @@ def add_decision(path, report_id, asset_id, action, execution, note, now, contex
         )
         if context is not None:
             db.execute(
-                "CREATE TABLE IF NOT EXISTS decision_contexts (decision_id INTEGER PRIMARY KEY REFERENCES decisions(id), payload TEXT NOT NULL)"
-            )
-            db.execute(
                 "INSERT INTO decision_contexts VALUES(?,?)",
                 (cursor.lastrowid, json.dumps(context, ensure_ascii=False)),
             )
@@ -188,9 +192,6 @@ def add_decision(path, report_id, asset_id, action, execution, note, now, contex
 
 def decision_context(path, decision_id):
     with connect(path) as db:
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS decision_contexts (decision_id INTEGER PRIMARY KEY REFERENCES decisions(id), payload TEXT NOT NULL)"
-        )
         row = db.execute(
             "SELECT payload FROM decision_contexts WHERE decision_id=?", (decision_id,)
         ).fetchone()

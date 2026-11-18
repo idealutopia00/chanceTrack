@@ -195,7 +195,10 @@ import {
 
       hidden.value =
         choice.value === "exploration" && usable
-          ? JSON.stringify({ source, strategies: expandDependencies(draft) })
+          ? JSON.stringify({
+              source,
+              strategies: expandDependencies(draft),
+            })
           : "";
       form.querySelector("[data-basis-help]").textContent = hidden.value
         ? "将单独保存当前参数、行情引用和探索计算结果。"
@@ -288,8 +291,9 @@ import {
           (key) => JSON.stringify(rule[key]) === JSON.stringify(s[key]),
         );
       pill.append(
-        button(bound && same ? "监测中" : bound ? "保存监测" : "加入监测", () =>
-          monitor(s.id),
+        button(
+          bound && same ? "监测中" : bound ? "保存监测" : "加入监测",
+          () => monitor(s.id),
         ),
         button("×", () => {
           draft = draft.filter((x) => x.id !== s.id);
@@ -479,16 +483,13 @@ import {
     catalog.replaceChildren();
     const add = (strategy) => {
       if (!selected) return status("请先选择标的", true);
-      if (draft.some((entry) => entry.id === strategy.id)) {
-        status("图表中已有此配置，可直接修改参数");
-      } else {
-        draft.push(strategy);
-        renderIndicators();
-        schedulePreview();
-      }
+      const index = draft.findIndex((entry) => entry.id === strategy.id);
+      if (index < 0) draft.push(strategy);
+      else draft[index] = strategy;
+      schedulePreview();
       dialog.close();
     };
-    const describe = (params) =>
+    const describe = (params, keys = Object.keys(params)) =>
       [
         ["fast", "快线"],
         ["slow", "慢线"],
@@ -496,14 +497,19 @@ import {
         ["period", "周期"],
         ["stddev", "标准差倍数"],
       ]
-        .filter(([key]) => key in params)
+        .filter(([key]) => keys.includes(key))
         .map(([key, label]) => `${label} ${params[key]}`)
         .join(" / ");
     for (const [kind, name, meaning, params] of [
       ["macd", "MACD", "副图", { fast: 12, slow: 26, signal: 9 }],
       ["ma", "双均线", "主图", { fast: 20, slow: 60 }],
       ["boll_break", "布林突破", "突破轨道", { period: 20, stddev: 2 }],
-      ["boll_return", "布林回归", "从轨外回到轨内", { period: 20, stddev: 2 }],
+      [
+        "boll_return",
+        "布林回归",
+        "从轨外回到轨内",
+        { period: 20, stddev: 2 },
+      ],
     ]) {
       const row = document.createElement("section");
       row.append(
@@ -525,9 +531,13 @@ import {
         const details = document.createElement("details");
         details.append(text("summary", "已存配置"));
         for (const strategy of saved) {
-          const values = describe(strategy.params);
-          const matching =
-            values === describe(params) ? " · 与默认参数相同" : "";
+          const keys = Object.keys(params);
+          const values = describe(strategy.params, keys);
+          const matching = keys.every(
+            (key) => strategy.params[key] === params[key],
+          )
+            ? " · 与默认参数相同"
+            : "";
           details.append(
             button(`${strategy.name} · ${values}${matching}`, () =>
               add({ ...clone(strategy), origin_id: strategy.id }),
@@ -545,18 +555,32 @@ import {
     if (savedCombinations.length) {
       const details = document.createElement("details");
       details.append(text("summary", "已存组合策略"));
-      for (const strategy of savedCombinations)
+      for (const strategy of savedCombinations) {
+        const trigger = config.strategies.find(
+          (rule) => rule.id === strategy.trigger,
+        );
+        const band = config.strategies.find(
+          (rule) => rule.id === strategy.band,
+        );
+        const filter =
+          strategy.filter && band
+            ? `${strategy.filter === "above_mid" ? "高于" : "低于"} ${band.name} 中轨 ${describe(band.params)}`
+            : "无过滤";
         details.append(
-          button(strategy.name, () =>
-            add({ ...clone(strategy), origin_id: strategy.id }),
+          button(
+            `${strategy.name} · ${trigger.name} ${describe(trigger.params)} · ${filter}`,
+            () => add({ ...clone(strategy), origin_id: strategy.id }),
           ),
         );
+      }
       combinations.append(details);
     }
     combinations.append(
       button("创建组合策略…", () => {
         if (!selected) return status("请先选择标的", true);
-        const trigger = config.strategies.find((s) => s.kind !== "combination"),
+        const trigger = config.strategies.find(
+            (s) => s.kind !== "combination",
+          ),
           band = config.strategies.find((s) => s.kind.startsWith("boll"));
         if (!trigger) return dialogStatus(dialog, "请先保存基础策略", true);
         draft.push({
@@ -634,7 +658,11 @@ import {
       text(
         "pre",
         JSON.stringify(
-          s.params || { trigger: s.trigger, filter: s.filter, band: s.band },
+          s.params || {
+            trigger: s.trigger,
+            filter: s.filter,
+            band: s.band,
+          },
           null,
           2,
         ),
@@ -651,7 +679,11 @@ import {
       scope.append(global);
     }
     content.append(scope);
-    const impact = text("p", "默认仅修改当前标的，其他标的配置保留。", "muted");
+    const impact = text(
+      "p",
+      "默认仅修改当前标的，其他标的配置保留。",
+      "muted",
+    );
     content.append(impact);
     scope.addEventListener("change", () => {
       impact.textContent =
@@ -890,7 +922,11 @@ import {
         ),
         button("应用到图表", () => {
           if (!selected)
-            return dialogStatus($("templates-dialog"), "请先选择标的", true);
+            return dialogStatus(
+              $("templates-dialog"),
+              "请先选择标的",
+              true,
+            );
           draft = clone(t.strategies);
           activeTemplate = t.template_id;
           state.template = t.template_id;
@@ -1048,7 +1084,9 @@ import {
         form.dispatchEvent(new Event("input", { bubbles: true }));
         return;
       }
-      const submit = form.querySelector('button[type="submit"], .save-button');
+      const submit = form.querySelector(
+        'button[type="submit"], .save-button',
+      );
       if (submit) submit.disabled = true;
       try {
         const response = await fetch(form.getAttribute("action"), {

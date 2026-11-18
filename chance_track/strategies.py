@@ -95,6 +95,11 @@ def evaluate(snapshot, configs, asset, as_of):
                     reasons[i] = (
                         f"前值差 {spread.iloc[i - 1]:.6f} → 本值差 {spread.iloc[i]:.6f}"
                     )
+                    if kind == "ma":
+                        reasons[i] += f"；短均线 {short.iloc[i]:.4f}；长均线 {long.iloc[i]:.4f}"
+                    else:
+                        point = macd[i]
+                        reasons[i] += f"；DIF {point['dif']:.6f}；DEA {point['dea']:.6f}；柱 {point['histogram']:.6f}"
                 elif kind == "boll_break":
                     if (
                         values.iloc[i - 1] <= upper.iloc[i - 1]

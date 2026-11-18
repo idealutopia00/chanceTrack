@@ -236,7 +236,10 @@
   function chartEvents() {
     return (
       selected?.result?.chart?.strategy_events ??
-      selected?.result?.chart?.crosses ??
+      selected?.result?.chart?.crosses?.map((event) => ({
+        provisional: false,
+        ...event,
+      })) ??
       []
     );
   }
@@ -257,10 +260,11 @@
         (strategy) => strategy.name === event.name,
       );
       const saved = matches.length === 1 ? matches[0] : null;
+      const rule = event.config ?? saved?.config;
       const macdPoints = event.kind
         ? selected.result.chart.macd
         : selected.result.chart.macd_configs?.find(
-            (series) => series.id === (event.config?.id ?? saved?.id),
+            (series) => series.id === (rule?.trigger ?? rule?.id),
           )?.points;
       const macd = macdPoints?.find((point) => point.time === date);
       const legacyMacd = event.kind ? macd : null;

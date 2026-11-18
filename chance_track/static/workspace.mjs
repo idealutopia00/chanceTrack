@@ -474,35 +474,91 @@ import {
     openDialog("indicator-settings");
   }
   function renderCatalog() {
-    const catalog = $("indicator-dialog").querySelector(".indicator-catalog");
+    const dialog = $("indicator-dialog");
+    const catalog = dialog.querySelector(".indicator-catalog");
     catalog.replaceChildren();
-    for (const [kind, name, params] of [
-      ["macd", "MACD", { fast: 12, slow: 26, signal: 9 }],
-      ["ma", "双均线", { fast: 20, slow: 60 }],
-      ["boll_break", "布林突破", { period: 20, stddev: 2 }],
-      ["boll_return", "布林回归", { period: 20, stddev: 2 }],
+    const add = (strategy) => {
+      if (!selected) return status("请先选择标的", true);
+      if (draft.some((entry) => entry.id === strategy.id)) {
+        status("图表中已有此配置，可直接修改参数");
+      } else {
+        draft.push(strategy);
+        renderIndicators();
+        schedulePreview();
+      }
+      dialog.close();
+    };
+    const describe = (params) =>
+      [
+        ["fast", "快线"],
+        ["slow", "慢线"],
+        ["signal", "信号线"],
+        ["period", "周期"],
+        ["stddev", "标准差倍数"],
+      ]
+        .filter(([key]) => key in params)
+        .map(([key, label]) => `${label} ${params[key]}`)
+        .join(" / ");
+    for (const [kind, name, meaning, params] of [
+      ["macd", "MACD", "副图", { fast: 12, slow: 26, signal: 9 }],
+      ["ma", "双均线", "主图", { fast: 20, slow: 60 }],
+      ["boll_break", "布林突破", "突破轨道", { period: 20, stddev: 2 }],
+      ["boll_return", "布林回归", "从轨外回到轨内", { period: 20, stddev: 2 }],
     ]) {
-      catalog.append(
-        button(`${name} ＋`, () => {
-          if (!selected) return status("请先选择标的", true);
-          draft.push({
+      const row = document.createElement("section");
+      row.append(
+        text("strong", `${name} · ${meaning} · ${describe(params)}`),
+        button(`${name} ＋`, () =>
+          add({
             id: `explore_${Date.now()}_${draft.length}`,
             name,
             kind,
             group: "探索",
-            params,
-          });
-          renderIndicators();
-          schedulePreview();
-          $("indicator-dialog").close();
-        }),
+            params: { ...params },
+          }),
+        ),
       );
+      const saved = config.strategies.filter(
+        (strategy) => strategy.kind === kind,
+      );
+      if (saved.length) {
+        const details = document.createElement("details");
+        details.append(text("summary", "已存配置"));
+        for (const strategy of saved) {
+          const values = describe(strategy.params);
+          const matching =
+            values === describe(params) ? " · 与默认参数相同" : "";
+          details.append(
+            button(`${strategy.name} · ${values}${matching}`, () =>
+              add({ ...clone(strategy), origin_id: strategy.id }),
+            ),
+          );
+        }
+        row.append(details);
+      }
+      catalog.append(row);
     }
-    catalog.append(
-      button("组合策略 ＋", () => {
+    const combinations = document.createElement("section");
+    const savedCombinations = config.strategies.filter(
+      (strategy) => strategy.kind === "combination",
+    );
+    if (savedCombinations.length) {
+      const details = document.createElement("details");
+      details.append(text("summary", "已存组合策略"));
+      for (const strategy of savedCombinations)
+        details.append(
+          button(strategy.name, () =>
+            add({ ...clone(strategy), origin_id: strategy.id }),
+          ),
+        );
+      combinations.append(details);
+    }
+    combinations.append(
+      button("创建组合策略…", () => {
         if (!selected) return status("请先选择标的", true);
         const trigger = config.strategies.find((s) => s.kind !== "combination"),
           band = config.strategies.find((s) => s.kind.startsWith("boll"));
+        if (!trigger) return dialogStatus(dialog, "请先保存基础策略", true);
         draft.push({
           id: `explore_${Date.now()}`,
           name: "组合观察",
@@ -518,22 +574,7 @@ import {
         editIndicator(draft.at(-1).id);
       }),
     );
-    catalog.append(text("h3", "已保存策略配置"));
-    for (const s of config.strategies)
-      catalog.append(
-        button(`${s.name} ＋`, () => {
-          if (!selected) return status("请先选择标的", true);
-          if (draft.some((x) => x.id === s.id)) {
-            status("图表中已有此配置，可直接修改参数");
-            $("indicator-dialog").close();
-            return;
-          }
-          draft.push({ ...clone(s), origin_id: s.id });
-          renderIndicators();
-          schedulePreview();
-          $("indicator-dialog").close();
-        }),
-      );
+    catalog.append(combinations);
   }
   async function mutate(payload, dialog) {
     if (configurationBusy) throw Error("配置正在保存，请稍候");

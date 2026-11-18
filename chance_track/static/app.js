@@ -240,8 +240,12 @@
       []
     );
   }
+  function eventName(event) {
+    return event.event ?? (event.kind === "golden" ? "金叉" : "死叉");
+  }
   function showEvent(date) {
     const rows = chartEvents().filter((event) => event.time === date);
+    if (!rows.length) return;
     const bars = selected.result.chart.candles;
     const index = bars.findIndex((bar) => bar.time === date);
     if (!rows.length || index < 0) return;
@@ -249,7 +253,11 @@
     eventDetail.replaceChildren();
     for (const event of rows) {
       const row = document.createElement("p");
-      const config = event.config;
+      const matches = (selected.result.strategies ?? []).filter(
+        (strategy) => strategy.name === event.name,
+      );
+      const saved = matches.length === 1 ? matches[0] : null;
+      const config = event.config ?? saved?.config;
       const params = [
         ...Object.entries(config?.params ?? {}).map(
           ([key, value]) => `${key} ${value}`,
@@ -267,9 +275,9 @@
       row.textContent = [
         date,
         event.name ?? "MACD",
-        event.version,
+        event.version ?? saved?.version,
         params,
-        event.event ?? (event.kind === "golden" ? "金叉" : "死叉"),
+        eventName(event),
         event.provisional ? "待确认" : "收盘确认",
         `价格 ${event.price ?? bars[index].close}`,
         event.detail,
@@ -286,6 +294,9 @@
           String(button.dataset.eventDate === date),
         ),
       );
+    eventList.querySelector('[aria-current="true"]')?.scrollIntoView({
+      block: "nearest",
+    });
     chart.timeScale().setVisibleLogicalRange({
       from: Math.max(0, index - 25),
       to: index + 8,
@@ -293,18 +304,29 @@
     chart.setCrosshairPosition(bars[index].close, date, candles);
     showOHLC(bars[index]);
   }
-  function renderEventList() {
+  function resetEventPanel() {
     eventList.replaceChildren();
     eventDetail.replaceChildren();
+    eventPanel.hidden = true;
+    eventPanel.open = false;
+  }
+  function eventsByDate() {
     const dates = new Map();
-    for (const { time } of chartEvents())
-      dates.set(time, (dates.get(time) ?? 0) + 1);
+    for (const event of chartEvents()) {
+      if (!dates.has(event.time)) dates.set(event.time, []);
+      dates.get(event.time).push(event);
+    }
+    return dates;
+  }
+  function renderEventList() {
+    resetEventPanel();
+    const dates = eventsByDate();
     eventPanel.hidden = dates.size === 0;
     for (const date of [...dates.keys()].sort().reverse()) {
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.eventDate = date;
-      button.textContent = `${date} · ${dates.get(date)} 条`;
+      button.textContent = `${date} · ${dates.get(date).length} 条`;
       button.addEventListener("click", () => showEvent(date));
       eventList.append(button);
     }
@@ -321,22 +343,28 @@
     };
     markers.setMarkers(
       markerToggle.checked
-        ? chartEvents()
-            .slice()
-            .sort((a, b) => a.time.localeCompare(b.time))
-            .map((cross) => {
-              const event =
-                cross.event || (cross.kind === "golden" ? "金叉" : "死叉");
+        ? [...eventsByDate()]
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([date, events]) => {
+              const event = eventName(events[0]);
               const [label, direction] = meanings[event] || [event, null];
-              const up = direction === "up";
+              const grouped = events.length > 1;
+              const up = !grouped && direction === "up";
+              const provisional = events.some((entry) => entry.provisional);
+              const glyph = grouped || !direction ? "○" : up ? "⇧" : "⇩";
               return {
-                time: cross.time,
-                id: `event:${cross.time}`,
+                time: date,
+                id: `event:${date}`,
                 position: up ? "belowBar" : "aboveBar",
                 color: up ? "#dfc080" : "#a896dd",
-                shape: direction ? (up ? "arrowUp" : "arrowDown") : "circle",
-                size: cross.provisional ? 0 : 1,
-                text: `${cross.provisional ? "○ 待确认 " : ""}${label}`,
+                shape:
+                  grouped || !direction
+                    ? "circle"
+                    : up
+                      ? "arrowUp"
+                      : "arrowDown",
+                size: provisional ? 0 : 1,
+                text: `${provisional ? `${glyph} 待确认 ` : ""}${grouped ? `${events.length} 条事件` : label}`,
               };
             })
         : [],
@@ -513,6 +541,7 @@
       ? `行情 ${quoteTime.replace("T", " ")}`
       : "";
     if (!content) {
+      resetEventPanel();
       if (chart) {
         chart.remove();
         chart = null;
@@ -530,6 +559,7 @@
       return;
     }
     if (!library) {
+      resetEventPanel();
       message("图表组件未加载", "请刷新页面，或检查本地图表静态资源。");
       return;
     }
@@ -658,6 +688,7 @@
       empty.hidden = true;
       container.dataset.ready = "true";
     } catch (error) {
+      resetEventPanel();
       container.dataset.ready = "false";
       console.error(error);
       message("图表加载失败", "请刷新页面；完整行情快照仍可在下方查看。");

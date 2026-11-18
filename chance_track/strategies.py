@@ -75,9 +75,10 @@ def evaluate(snapshot, configs, asset, as_of):
                 )
                 if event and allowed:
                     events[i] = event
-                    reasons[i] = "触发条件成立；" + (
-                        "布林中轨过滤通过" if band else "无附加过滤"
-                    )
+                    reasons[i] = f"触发条件成立：{trigger['reasons'][i]}"
+                    if band:
+                        midpoint = band["overlays"]["中轨"].iloc[i]
+                        reasons[i] += f"；布林中轨 {midpoint:.4f}，过滤通过"
                 elif event:
                     reasons[i] = "触发事件存在，但布林中轨过滤条件未满足"
                 else:

@@ -154,27 +154,36 @@ import {
       ...config.strategies.map((rule) => rule.id),
       ...result.flatMap((rule) => [rule.trigger, rule.band]),
     ]);
+    const available = new Map(config.strategies.map((rule) => [rule.id, rule]));
+    for (const rule of draft) available.set(rule.id, rule);
+    const aliases = new Map();
     for (const s of result)
       if (s.kind === "combination")
         for (const field of ["trigger", ...(s.filter ? ["band"] : [])]) {
           const id = s[field];
-          const pinned = s.dependencies?.[id];
+          const pinned = s.dependencies?.[id] ?? available.get(id);
           const visible = result.find((rule) => rule.id === id);
           if (pinned && visible && !sameBaseRule(pinned, visible)) {
-            let alias = `explore_dep_${result.length}`;
-            while (reserved.has(alias)) alias += "_";
-            result.push({ ...pinned, id: alias });
-            reserved.add(alias);
-            seen.add(alias);
+            const copies = aliases.get(id) ?? [];
+            let alias = copies.find((rule) => sameBaseRule(pinned, rule))?.id;
+            if (!alias) {
+              alias = `explore_dep_${result.length}`;
+              while (reserved.has(alias)) alias += "_";
+              const copy = { ...pinned, id: alias };
+              result.push(copy);
+              copies.push(copy);
+              aliases.set(id, copies);
+              reserved.add(alias);
+              seen.add(alias);
+            }
+            s.dependencies ??= {};
             s.dependencies[alias] = { ...pinned, id: alias };
             if (s.trigger !== s.band) delete s.dependencies[id];
             s[field] = alias;
             continue;
           }
           if (!seen.has(id)) {
-            const dependency =
-              s.dependencies?.[id] ||
-              config.strategies.find((x) => x.id === id);
+            const dependency = pinned;
             if (dependency) {
               result.push(clone(dependency));
               seen.add(id);
@@ -627,8 +636,9 @@ import {
     combinations.append(
       button("创建组合策略…", () => {
         if (!selected) return status("请先选择标的", true);
-        const trigger = config.strategies.find((s) => s.kind !== "combination"),
-          band = config.strategies.find((s) => s.kind.startsWith("boll"));
+        const available = [...config.strategies, ...draft];
+        const trigger = available.find((s) => s.kind !== "combination"),
+          band = available.find((s) => s.kind.startsWith("boll"));
         if (!trigger) return dialogStatus(dialog, "请先保存基础策略", true);
         draft.push({
           id: `explore_${Date.now()}`,

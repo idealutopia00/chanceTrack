@@ -149,19 +149,56 @@ import {
   function expandDependencies(strategies) {
     const result = clone(strategies),
       seen = new Set(result.map((s) => s.id));
+    const reserved = new Set([
+      ...seen,
+      ...config.strategies.map((rule) => rule.id),
+      ...result.flatMap((rule) => [rule.trigger, rule.band]),
+    ]);
+    const available = new Map(config.strategies.map((rule) => [rule.id, rule]));
+    for (const rule of draft) available.set(rule.id, rule);
+    const aliases = new Map();
     for (const s of result)
       if (s.kind === "combination")
-        for (const id of [s.trigger, ...(s.filter ? [s.band] : [])])
+        for (const field of ["trigger", ...(s.filter ? ["band"] : [])]) {
+          const id = s[field];
+          const pinned = s.dependencies?.[id] ?? available.get(id);
+          const visible = result.find((rule) => rule.id === id);
+          if (pinned && visible && !sameBaseRule(pinned, visible)) {
+            const copies = aliases.get(id) ?? [];
+            let alias = copies.find((rule) => sameBaseRule(pinned, rule))?.id;
+            if (!alias) {
+              alias = `explore_dep_${result.length}`;
+              while (reserved.has(alias)) alias += "_";
+              const copy = { ...pinned, id: alias };
+              result.push(copy);
+              copies.push(copy);
+              aliases.set(id, copies);
+              reserved.add(alias);
+              seen.add(alias);
+            }
+            s.dependencies ??= {};
+            s.dependencies[alias] = { ...pinned, id: alias };
+            if (s.trigger !== s.band) delete s.dependencies[id];
+            s[field] = alias;
+            continue;
+          }
           if (!seen.has(id)) {
-            const dependency =
-              s.dependencies?.[id] ||
-              config.strategies.find((x) => x.id === id);
+            const dependency = pinned;
             if (dependency) {
               result.push(clone(dependency));
               seen.add(id);
             }
           }
+        }
     return result;
+  }
+  function sameBaseRule(left, right) {
+    const keys = Object.keys(left.params);
+    return (
+      left.kind === right.kind &&
+      keys.length === Object.keys(right.params).length &&
+      keys.every((key) => left.params[key] === right.params[key])
+    );
   }
   function reportStrategies(id) {
     const saved = originals.get(id)?.result?.strategies;
@@ -195,7 +232,10 @@ import {
 
       hidden.value =
         choice.value === "exploration" && usable
-          ? JSON.stringify({ source, strategies: expandDependencies(draft) })
+          ? JSON.stringify({
+              source,
+              strategies: expandDependencies(draft),
+            })
           : "";
       form.querySelector("[data-basis-help]").textContent = hidden.value
         ? "将单独保存当前参数、行情引用和探索计算结果。"
@@ -409,6 +449,12 @@ import {
       schedulePreview();
     });
     if (s.kind === "combination") {
+      const choices = new Map(config.strategies.map((rule) => [rule.id, rule]));
+      for (const rule of draft)
+        if (rule.kind !== "combination") choices.set(rule.id, rule);
+      for (const rule of Object.values(s.dependencies ?? {}))
+        choices.set(rule.id, rule);
+      const rules = [...choices.values()];
       field(
         node,
         "触发规则",
@@ -417,9 +463,9 @@ import {
           s.trigger = value;
           schedulePreview();
         },
-        config.strategies
+        rules
           .filter((x) => x.kind !== "combination")
-          .map((x) => [x.id, x.name]),
+          .map((x) => [x.id, describeRule(x)]),
       );
       field(
         node,
@@ -443,9 +489,9 @@ import {
           s.band = value;
           schedulePreview();
         },
-        config.strategies
+        rules
           .filter((x) => x.kind.startsWith("boll"))
-          .map((x) => [x.id, x.name]),
+          .map((x) => [x.id, describeRule(x)]),
       );
     } else
       for (const key of Object.keys(s.params)) {
@@ -473,36 +519,127 @@ import {
     node.append(button("加入 / 更新监测", () => monitor(id)));
     openDialog("indicator-settings");
   }
+  const kindNames = {
+    macd: "MACD",
+    ma: "双均线",
+    boll_break: "布林突破",
+    boll_return: "布林回归",
+  };
+  function describeRule(rule) {
+    return `${rule.name} · ${kindNames[rule.kind]} · ${describeParams(rule.params)}`;
+  }
+  function describeParams(params, keys = Object.keys(params)) {
+    return [
+      ["fast", "快线"],
+      ["slow", "慢线"],
+      ["signal", "信号线"],
+      ["period", "周期"],
+      ["stddev", "标准差倍数"],
+    ]
+      .filter(([key]) => keys.includes(key))
+      .map(([key, label]) => `${label} ${params[key]}`)
+      .join(" / ");
+  }
   function renderCatalog() {
-    const catalog = $("indicator-dialog").querySelector(".indicator-catalog");
+    const dialog = $("indicator-dialog");
+    const catalog = dialog.querySelector(".indicator-catalog");
     catalog.replaceChildren();
-    for (const [kind, name, params] of [
-      ["macd", "MACD", { fast: 12, slow: 26, signal: 9 }],
-      ["ma", "双均线", { fast: 20, slow: 60 }],
-      ["boll_break", "布林突破", { period: 20, stddev: 2 }],
-      ["boll_return", "布林回归", { period: 20, stddev: 2 }],
+    const add = (strategy) => {
+      if (!selected) return status("请先选择标的", true);
+      const index = draft.findIndex((entry) => entry.id === strategy.id);
+      if (index < 0) draft.push(strategy);
+      else draft[index] = strategy;
+      schedulePreview();
+      dialog.close();
+    };
+    for (const [kind, name, meaning, params] of [
+      ["macd", "MACD", "副图", { fast: 12, slow: 26, signal: 9 }],
+      ["ma", "双均线", "主图", { fast: 20, slow: 60 }],
+      ["boll_break", "布林突破", "突破轨道", { period: 20, stddev: 2 }],
+      ["boll_return", "布林回归", "从轨外回到轨内", { period: 20, stddev: 2 }],
     ]) {
-      catalog.append(
-        button(`${name} ＋`, () => {
-          if (!selected) return status("请先选择标的", true);
-          draft.push({
+      const row = document.createElement("section");
+      row.append(
+        text("strong", `${name} · ${meaning} · ${describeParams(params)}`),
+        button(`${name} ＋`, () =>
+          add({
             id: `explore_${Date.now()}_${draft.length}`,
             name,
             kind,
             group: "探索",
-            params,
-          });
-          renderIndicators();
-          schedulePreview();
-          $("indicator-dialog").close();
-        }),
+            params: { ...params },
+          }),
+        ),
       );
+      const saved = config.strategies.filter(
+        (strategy) => strategy.kind === kind,
+      );
+      if (saved.length) {
+        const details = document.createElement("details");
+        details.append(text("summary", "已存配置"));
+        for (const strategy of saved) {
+          const keys = Object.keys(params);
+          const values = describeParams(strategy.params, keys);
+          const matching = keys.every(
+            (key) => strategy.params[key] === params[key],
+          )
+            ? " · 与默认参数相同"
+            : "";
+          details.append(
+            button(`${strategy.name} · ${values}${matching}`, () =>
+              add({ ...clone(strategy), origin_id: strategy.id }),
+            ),
+          );
+        }
+        row.append(details);
+      }
+      catalog.append(row);
     }
-    catalog.append(
-      button("组合策略 ＋", () => {
+    const combinations = document.createElement("section");
+    const savedCombinations = config.strategies.filter(
+      (strategy) => strategy.kind === "combination",
+    );
+    if (savedCombinations.length) {
+      const details = document.createElement("details");
+      details.append(text("summary", "已存组合策略"));
+      for (const strategy of savedCombinations) {
+        const trigger = config.strategies.find(
+          (rule) => rule.id === strategy.trigger,
+        );
+        const band = config.strategies.find(
+          (rule) => rule.id === strategy.band,
+        );
+        const filter =
+          strategy.filter && band
+            ? `${strategy.filter === "above_mid" ? "高于" : "低于"} ${describeRule(band)} 中轨`
+            : "无过滤";
+        details.append(
+          button(
+            `${strategy.name} · ${describeRule(trigger)} · ${filter}`,
+            () =>
+              add({
+                ...clone(strategy),
+                origin_id: strategy.id,
+                dependencies: clone(
+                  Object.fromEntries(
+                    [trigger, ...(strategy.filter && band ? [band] : [])].map(
+                      (rule) => [rule.id, rule],
+                    ),
+                  ),
+                ),
+              }),
+          ),
+        );
+      }
+      combinations.append(details);
+    }
+    combinations.append(
+      button("创建组合策略…", () => {
         if (!selected) return status("请先选择标的", true);
-        const trigger = config.strategies.find((s) => s.kind !== "combination"),
-          band = config.strategies.find((s) => s.kind.startsWith("boll"));
+        const available = [...config.strategies, ...draft];
+        const trigger = available.find((s) => s.kind !== "combination"),
+          band = available.find((s) => s.kind.startsWith("boll"));
+        if (!trigger) return dialogStatus(dialog, "请先保存基础策略", true);
         draft.push({
           id: `explore_${Date.now()}`,
           name: "组合观察",
@@ -518,22 +655,7 @@ import {
         editIndicator(draft.at(-1).id);
       }),
     );
-    catalog.append(text("h3", "已保存策略配置"));
-    for (const s of config.strategies)
-      catalog.append(
-        button(`${s.name} ＋`, () => {
-          if (!selected) return status("请先选择标的", true);
-          if (draft.some((x) => x.id === s.id)) {
-            status("图表中已有此配置，可直接修改参数");
-            $("indicator-dialog").close();
-            return;
-          }
-          draft.push({ ...clone(s), origin_id: s.id });
-          renderIndicators();
-          schedulePreview();
-          $("indicator-dialog").close();
-        }),
-      );
+    catalog.append(combinations);
   }
   async function mutate(payload, dialog) {
     if (configurationBusy) throw Error("配置正在保存，请稍候");
@@ -593,7 +715,11 @@ import {
       text(
         "pre",
         JSON.stringify(
-          s.params || { trigger: s.trigger, filter: s.filter, band: s.band },
+          s.params || {
+            trigger: s.trigger,
+            filter: s.filter,
+            band: s.band,
+          },
           null,
           2,
         ),

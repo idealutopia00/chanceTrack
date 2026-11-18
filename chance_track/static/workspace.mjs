@@ -149,21 +149,25 @@ import {
   function expandDependencies(strategies) {
     const result = clone(strategies),
       seen = new Set(result.map((s) => s.id));
+    const reserved = new Set([
+      ...seen,
+      ...config.strategies.map((rule) => rule.id),
+      ...result.flatMap((rule) => [rule.trigger, rule.band]),
+    ]);
     for (const s of result)
       if (s.kind === "combination")
         for (const field of ["trigger", ...(s.filter ? ["band"] : [])]) {
           const id = s[field];
           const pinned = s.dependencies?.[id];
           const visible = result.find((rule) => rule.id === id);
-          if (
-            pinned &&
-            visible &&
-            JSON.stringify(pinned.params) !== JSON.stringify(visible.params)
-          ) {
+          if (pinned && visible && !sameBaseRule(pinned, visible)) {
             let alias = `explore_dep_${result.length}`;
-            while (seen.has(alias)) alias += "_";
+            while (reserved.has(alias)) alias += "_";
             result.push({ ...pinned, id: alias });
+            reserved.add(alias);
             seen.add(alias);
+            s.dependencies[alias] = { ...pinned, id: alias };
+            if (s.trigger !== s.band) delete s.dependencies[id];
             s[field] = alias;
             continue;
           }
@@ -178,6 +182,14 @@ import {
           }
         }
     return result;
+  }
+  function sameBaseRule(left, right) {
+    const keys = Object.keys(left.params);
+    return (
+      left.kind === right.kind &&
+      keys.length === Object.keys(right.params).length &&
+      keys.every((key) => left.params[key] === right.params[key])
+    );
   }
   function reportStrategies(id) {
     const saved = originals.get(id)?.result?.strategies;
@@ -428,6 +440,10 @@ import {
       schedulePreview();
     });
     if (s.kind === "combination") {
+      const choices = new Map(config.strategies.map((rule) => [rule.id, rule]));
+      for (const rule of Object.values(s.dependencies ?? {}))
+        choices.set(rule.id, rule);
+      const rules = [...choices.values()];
       field(
         node,
         "触发规则",
@@ -436,7 +452,7 @@ import {
           s.trigger = value;
           schedulePreview();
         },
-        config.strategies
+        rules
           .filter((x) => x.kind !== "combination")
           .map((x) => [x.id, describeRule(x)]),
       );
@@ -462,7 +478,7 @@ import {
           s.band = value;
           schedulePreview();
         },
-        config.strategies
+        rules
           .filter((x) => x.kind.startsWith("boll"))
           .map((x) => [x.id, describeRule(x)]),
       );

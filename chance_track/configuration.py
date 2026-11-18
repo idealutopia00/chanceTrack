@@ -111,6 +111,12 @@ def validate_configuration(config):
                 or not 0.1 <= p["stddev"] <= 10
             ):
                 raise ValueError("布林周期须为2至250，标准差倍数须为0.1至10")
+        elif kind == "donchian":
+            if any(
+                type(p.get(key)) is not int or not 2 <= p[key] <= 250
+                for key in ("entry", "exit")
+            ):
+                raise ValueError("唐奇安突破和退出周期须为2至250整数")
         elif kind == "combination":
             trigger = strategies.get(s.get("trigger"))
             if not trigger or trigger["kind"] == "combination":

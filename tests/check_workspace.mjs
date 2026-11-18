@@ -20,6 +20,39 @@ try {
   await page.goto(base);
   await page.waitForSelector('#chart[data-ready="true"]');
   await page.waitForSelector(".watchlist-symbol");
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    const assetId = width === 1440 ? "nasdaq100" : "sp500";
+    await page
+      .locator(".watchlist-symbol")
+      .filter({ hasText: width === 1440 ? "纳斯达克100" : "标普500" })
+      .click();
+    await page.locator('[data-layout="signals"]').evaluate((panel) => {
+      panel.open = false;
+    });
+    await page.locator('[data-layout="journal"]').evaluate((panel) => {
+      panel.open = true;
+    });
+    await page.getByRole("button", { name: "前往记录判断" }).click();
+    assert.equal(
+      await page
+        .locator(`[data-detail="${assetId}"] textarea[name="note"]`)
+        .evaluate((note) => document.activeElement === note),
+      true,
+    );
+  }
+  await page.locator('[data-detail="sp500"]').evaluate((panel) => {
+    panel.hidden = true;
+  });
+  await page.getByRole("button", { name: "前往记录判断" }).click();
+  assert.match(
+    await page.locator("#journal-record-status").innerText(),
+    /当前标的没有正式报告/,
+  );
+  await page.locator('[data-detail="sp500"]').evaluate((panel) => {
+    panel.hidden = false;
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const before = await state();
   await page
     .locator('.workspace-header [data-open="indicator-dialog"]')

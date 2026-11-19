@@ -742,10 +742,14 @@ import {
         ),
       ),
     );
+    const candidates =
+      s.kind === "combination"
+        ? []
+        : config.strategies.filter((entry) => matchesConfiguration(s, entry));
     const matching =
-      s.kind !== "combination" &&
-      ((shared && matchesConfiguration(s, shared) && shared) ||
-        config.strategies.find((entry) => matchesConfiguration(s, entry)));
+      candidates.find((entry) => asset.strategies.includes(entry.id)) ||
+      candidates.find((entry) => entry.id === originalId) ||
+      candidates[0];
     const scope = document.createElement("select");
     scope.setAttribute("aria-label", "监测更新范围");
     const own = text("option", "仅当前标的（复制为独立配置）");

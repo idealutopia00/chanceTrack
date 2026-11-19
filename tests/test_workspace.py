@@ -282,3 +282,12 @@ def test_reuse_duplicate_monitor_preserves_existing_ids(tmp_path):
     saved = load_configuration(path)
     assert saved["strategies"][-1]["id"] == "legacy"
     assert saved["assets"][0]["strategies"] == ["legacy"]
+
+    data.update(version=saved["version"], asset_id=saved["assets"][0]["id"])
+    response = client.post(
+        "/api/workspace/edit",
+        json={**data, "reuse_id": "macd", "replace_id": "macd"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["strategy_id"] == "legacy"
+    assert load_configuration(path)["assets"][0]["strategies"] == ["legacy"]

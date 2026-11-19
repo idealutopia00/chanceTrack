@@ -225,11 +225,20 @@ def edit(path, payload, fetcher=fetch):
                 existing
             ):
                 raise ValueError("待复用配置已变化，请重新选择")
-            strategy = existing
+            bound = next(
+                (
+                    entry
+                    for entry in config["strategies"]
+                    if entry["id"] in a.get("strategies", [])
+                    and strategy_signature(entry) == strategy_signature(existing)
+                ),
+                None,
+            )
+            strategy = bound or existing
             a["strategies"] = [
                 sid
                 for sid in a.get("strategies", [])
-                if sid != payload.get("replace_id") or sid == reuse_id
+                if sid != payload.get("replace_id") or sid == strategy["id"]
             ]
         elif shared:
             if not old:

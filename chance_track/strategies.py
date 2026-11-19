@@ -75,9 +75,10 @@ def evaluate(snapshot, configs, asset, as_of):
                 )
                 if event and allowed:
                     events[i] = event
-                    reasons[i] = "触发条件成立；" + (
-                        "布林中轨过滤通过" if band else "无附加过滤"
-                    )
+                    reasons[i] = f"触发条件成立：{trigger['reasons'][i]}"
+                    if band:
+                        midpoint = band["overlays"]["中轨"].iloc[i]
+                        reasons[i] += f"；布林中轨 {midpoint:.4f}，过滤通过"
                 elif event:
                     reasons[i] = "触发事件存在，但布林中轨过滤条件未满足"
                 else:
@@ -94,6 +95,11 @@ def evaluate(snapshot, configs, asset, as_of):
                     reasons[i] = (
                         f"前值差 {spread.iloc[i - 1]:.6f} → 本值差 {spread.iloc[i]:.6f}"
                     )
+                    if kind == "ma":
+                        reasons[i] += f"；短均线 {short.iloc[i]:.4f}；长均线 {long.iloc[i]:.4f}"
+                    else:
+                        point = macd[i]
+                        reasons[i] += f"；DIF {point['dif']:.6f}；DEA {point['dea']:.6f}；柱 {point['histogram']:.6f}"
                 elif kind == "boll_break":
                     if (
                         values.iloc[i - 1] <= upper.iloc[i - 1]
@@ -117,8 +123,9 @@ def evaluate(snapshot, configs, asset, as_of):
                     ):
                         events[i] = "下轨外回归轨内"
                 if kind.startswith("boll"):
+                    price_label = "盘中价格" if provisional and i == n - 1 else "收盘"
                     reasons[i] = (
-                        f"收盘 {values.iloc[i]:.4f}；下轨 {lower.iloc[i]:.4f}；中轨 {mid.iloc[i]:.4f}；上轨 {upper.iloc[i]:.4f}"
+                        f"{price_label} {values.iloc[i]:.4f}；下轨 {lower.iloc[i]:.4f}；中轨 {mid.iloc[i]:.4f}；上轨 {upper.iloc[i]:.4f}"
                     )
         result = {
             "events": events,
@@ -207,3 +214,25 @@ def evaluate(snapshot, configs, asset, as_of):
                 }
             )
     return outputs, layers, calculated
+
+
+def chart_events(snapshot, strategies, calculated):
+    return [
+        {
+            "time": row["date"],
+            "name": strategy["name"],
+            "version": strategy["version"],
+            "config": strategy["config"],
+            "event": event,
+            "price": row["close"],
+            "detail": detail,
+            "provisional": snapshot.get("provisional_date") == row["date"],
+        }
+        for strategy in strategies
+        for row, event, detail in zip(
+            snapshot["rows"],
+            calculated[strategy["id"]]["events"],
+            calculated[strategy["id"]]["reasons"],
+        )
+        if event
+    ]

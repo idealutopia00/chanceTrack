@@ -13,7 +13,7 @@ from .analysis import RULE, analyze
 from .configuration import load_configuration
 from .data import TZ, fetch
 from .notifications import NOTIFICATION_TITLE, build_message, notify
-from .strategies import evaluate
+from .strategies import chart_events, evaluate
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_ATTEMPTS = 3
@@ -204,21 +204,9 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                     )
                     if selected_macd:
                         item["result"]["chart"]["macd"] = selected_macd
-                    item["result"]["chart"]["strategy_events"] = [
-                        {
-                            "time": rows_date,
-                            "name": s["name"],
-                            "event": event,
-                            "provisional": snapshot.get("provisional_date")
-                            == rows_date,
-                        }
-                        for s in strategies
-                        for rows_date, event in zip(
-                            [r["date"] for r in snapshot["rows"]],
-                            calculated[s["id"]]["events"],
-                        )
-                        if event
-                    ]
+                    item["result"]["chart"]["strategy_events"] = chart_events(
+                        snapshot, strategies, calculated
+                    )
                 item["status"] = "warning" if item["result"]["warnings"] else "ok"
             except Exception as exc:
                 item.update(status="error", error=f"{type(exc).__name__}: {exc}")

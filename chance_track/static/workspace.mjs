@@ -32,6 +32,8 @@ import {
   const viewKey = "chanceTrack.workspace.v1";
   const state = read(viewKey, { views: {}, layers: {}, layout: {} });
   state.views ||= {};
+  const assetViewKey = (id, period = chart.period()) =>
+    period === "week" ? `${id}:week` : id;
   state.layers ||= {};
   state.layout ||= {};
   let config,
@@ -286,7 +288,7 @@ import {
       });
       if (sequence !== previewSequence || selected !== id) return;
       currentPreview = result;
-      chart.show(result, { view: state.views[id] });
+      chart.show(result, { view: state.views[assetViewKey(id)] });
       restoreLayers();
       $("exploration-panel").hidden = false;
       $("exploration-time").textContent =
@@ -375,7 +377,7 @@ import {
     }
     exploring = Boolean(saved || activeTemplate || !original);
     if (original) {
-      chart.show(clone(original), { view: state.views[id] });
+      chart.show(clone(original), { view: state.views[assetViewKey(id)] });
       setMode(false);
       $("exploration-panel").hidden = true;
     } else {
@@ -417,7 +419,8 @@ import {
   });
   window.addEventListener("chart:range", (event) => {
     if (event.detail.asset_id) {
-      state.views[event.detail.asset_id] = event.detail.view;
+      state.views[assetViewKey(event.detail.asset_id, event.detail.period)] =
+        event.detail.view;
       persist();
     }
   });
@@ -857,7 +860,6 @@ import {
               if (
                 !existing ||
                 existing.archived ||
-                !existing.enabled ||
                 existing.watchlisted === false
               )
                 result = await mutate(
@@ -1115,7 +1117,7 @@ import {
     } catch {}
     if (originals.has(selected))
       chart.show(clone(originals.get(selected)), {
-        view: state.views[selected],
+        view: state.views[assetViewKey(selected)],
       });
     $("exploration-panel").hidden = true;
     setMode(false);

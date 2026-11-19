@@ -167,6 +167,13 @@
     selected,
     range = 126;
   let overlaySeries = [];
+  let period = "day",
+    displayedBars = [],
+    displayedDay = new Map();
+  const previousEventButton = document.getElementById("chart-previous-event");
+  const nextEventButton = document.getElementById("chart-next-event");
+  const latestButton = document.getElementById("chart-latest");
+  const crosshairReadings = document.getElementById("chart-crosshair-readings");
   const number = (value) =>
     Number(value).toLocaleString("en-US", {
       minimumFractionDigits: 2,
@@ -228,14 +235,149 @@
   }
   function setRange() {
     if (!chart || !selected?.result?.chart) return;
-    const count = selected.result.chart.candles.length;
+    const count = displayedBars.length;
+    const windowSize =
+      period === "week" ? Math.ceil(Number(range) / 5) : Number(range);
     if (range === "all") chart.timeScale().fitContent();
     else
       chart.timeScale().setVisibleLogicalRange({
-        from: Math.max(0, count - Number(range)),
+        from: Math.max(0, count - windowSize),
         to: count + 3,
       });
   }
+  function displayCandles(daily) {
+    displayedDay = new Map();
+    if (period === "day") {
+      for (const bar of daily) displayedDay.set(bar.time, bar.time);
+      return daily;
+    }
+    const weeks = new Map();
+    for (const bar of daily) {
+      const monday = new Date(`${bar.time}T00:00:00Z`);
+      monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+      const key = monday.toISOString().slice(0, 10);
+      if (!weeks.has(key)) weeks.set(key, { candle: { ...bar }, dates: [] });
+      const { candle, dates } = weeks.get(key);
+      dates.push(bar.time);
+      Object.assign(candle, {
+        time: bar.time,
+        close: bar.close,
+        high: Math.max(candle.high, bar.high),
+        low: Math.min(candle.low, bar.low),
+      });
+    }
+    for (const { candle, dates } of weeks.values())
+      for (const date of dates) displayedDay.set(date, candle.time);
+    return [...weeks.values()].map(({ candle }) => candle);
+  }
+  function displayedPoints(points) {
+    return period === "day"
+      ? points
+      : points.filter((point) => displayedDay.get(point.time) === point.time);
+  }
+  function syncCrosshair(row) {
+    showOHLC(row);
+    crosshairReadings.replaceChildren();
+    if (!row) return;
+    const content = selected.result.chart;
+    const date = row.time;
+    const macd = (selected.activeMacd ?? content.macd).find(
+      (point) => point.time === date,
+    );
+    const readings = macd
+      ? [
+          `DIF ${number(macd.dif)} · DEA ${number(macd.dea)} · 柱 ${number(macd.histogram)}`,
+        ]
+      : [];
+    for (const layer of content.overlays ?? []) {
+      const point = layer.points.find((entry) => entry.time === date);
+      if (point) readings.push(`${layer.name} ${number(point.value)}`);
+    }
+    const configList = selected.result.strategies ?? [];
+    for (const strategy of configList) {
+      const config = strategy.config;
+      if (!config) continue;
+      const params = [config, ...Object.values(config.dependencies ?? {})]
+        .map((rule) =>
+          Object.entries(rule.params ?? {})
+            .map(([key, value]) => `${key} ${value}`)
+            .join(" / "),
+        )
+        .filter(Boolean);
+      readings.push(
+        [strategy.name, strategy.version, ...params]
+          .filter(Boolean)
+          .join(" · "),
+      );
+    }
+    if (!configList.length && macd && !content.macd_configs)
+      readings.push("MACD 历史配置 · fast 12 / slow 26 / signal 9");
+    for (const event of chartEvents().filter(
+      (entry) => displayedDay.get(entry.time) === date,
+    )) {
+      readings.push(
+        `${event.time} · ${eventTitle(event, eventReadings(event).macd)} · ${eventState(event)}`,
+      );
+    }
+    legend(macd);
+    if (!readings.length) return;
+    const heading = document.createElement("strong");
+    heading.textContent = `${date} · 日线指标与策略`;
+    const list = document.createElement("ul");
+    for (const reading of readings) {
+      const item = document.createElement("li");
+      item.textContent = reading;
+      list.append(item);
+    }
+    crosshairReadings.append(heading, list);
+  }
+  function adjacentEvent(direction) {
+    const dates = [...eventsByDate().keys()].sort();
+    const reference = eventSelection?.date ?? displayedBars.at(-1)?.time;
+    if (direction < 0)
+      return dates.findLast((date) =>
+        eventSelection ? date < reference : date <= reference,
+      );
+    return dates.find((date) => date > reference);
+  }
+  function syncEventNavigation() {
+    previousEventButton.disabled = !adjacentEvent(-1);
+    nextEventButton.disabled = !adjacentEvent(1);
+    latestButton.disabled = !displayedBars.length;
+  }
+  previousEventButton.addEventListener("click", () =>
+    showEvent(adjacentEvent(-1)),
+  );
+  nextEventButton.addEventListener("click", () => showEvent(adjacentEvent(1)));
+  latestButton.addEventListener("click", () => {
+    const previous = displayedBars.find(
+      (bar) => bar.time === displayedDay.get(eventSelection?.date),
+    );
+    if (previous) candles.update({ ...previous }, true);
+    eventSelection = undefined;
+    eventDetail.replaceChildren();
+    for (const button of eventList.querySelectorAll("button"))
+      button.removeAttribute("aria-current");
+    setMarkers();
+    setRange();
+    chart.clearCrosshairPosition();
+    syncCrosshair(displayedBars.at(-1));
+    syncEventNavigation();
+  });
+  document
+    .getElementById("chart-period")
+    .addEventListener("change", (event) => {
+      period = event.currentTarget.value;
+      if (!selected) return;
+      const layers = Object.fromEntries(
+        [...document.querySelectorAll("[data-layer-id]")].map((input) => [
+          input.dataset.layerId,
+          input.checked,
+        ]),
+      );
+      select(selected.asset.id, { silent: true });
+      window.ChanceChart.layers(layers);
+    });
   function chartEvents() {
     return (
       selected?.result?.chart?.strategy_events ??
@@ -319,14 +461,17 @@
   function showEvent(date, locate = true, offset = undefined) {
     const rows = eventsByDate().get(date);
     if (!rows?.length) return;
-    const bars = selected.result.chart.candles;
-    const index = bars.findIndex((bar) => bar.time === date);
+    const bars = displayedBars;
+    const time = displayedDay.get(date);
+    const index = bars.findIndex((bar) => bar.time === time);
     if (index < 0) return;
     offset ??= eventSelection?.date === date ? eventSelection.offset : 0;
     const event = rows[offset] ?? rows[0];
     const activeOffset = rows.indexOf(event);
     if (eventSelection?.date !== date) {
-      const previous = bars.find((bar) => bar.time === eventSelection?.date);
+      const previous = bars.find(
+        (bar) => bar.time === displayedDay.get(eventSelection?.date),
+      );
       if (previous) candles.update({ ...previous }, true);
       candles.update(
         { ...bars[index], borderColor: "#dfc080", wickColor: "#dfc080" },
@@ -383,6 +528,7 @@
     }
     eventDetail.replaceChildren(details);
     setMarkers();
+    syncEventNavigation();
     if (!locate) return;
     if (active) {
       const rowBounds = active.getBoundingClientRect();
@@ -396,8 +542,8 @@
       from: Math.max(0, index - 25),
       to: index + 8,
     });
-    chart.setCrosshairPosition(bars[index].close, date, candles);
-    showOHLC(bars[index]);
+    chart.setCrosshairPosition(bars[index].close, time, candles);
+    syncCrosshair(bars[index]);
   }
   function resetEventPanel() {
     eventList.replaceChildren();
@@ -471,6 +617,7 @@
       markerToggle.checked
         ? [...eventsByDate()]
             .sort(([left], [right]) => left.localeCompare(right))
+            .filter(([date]) => displayedDay.has(date))
             .map(([date, events]) => {
               const event = eventName(events[0]);
               const [label, firstDirection] = meanings[event] || [event, null];
@@ -490,7 +637,7 @@
               const active = eventSelection?.date === date;
               const glyph = !direction ? "○" : up ? "⇧" : "⇩";
               return {
-                time: date,
+                time: displayedDay.get(date),
                 id: `event:${date}`,
                 position: up ? "belowBar" : "aboveBar",
                 color: active ? "#ffffff" : up ? "#dfc080" : "#a896dd",
@@ -589,7 +736,7 @@
       if (view)
         window.dispatchEvent(
           new CustomEvent("chart:range", {
-            detail: { asset_id: selected?.asset.id, view },
+            detail: { asset_id: selected?.asset.id, view, period },
           }),
         );
     });
@@ -604,14 +751,9 @@
       const content = selected?.result?.chart;
       if (!content) return;
       const key = dayKey(param.time);
-      const point =
-        (selected.activeMacd || content.macd).find((row) => row.time === key) ||
-        (selected.activeMacd || content.macd).at(-1);
       const row =
-        content.candles.find((row) => row.time === key) ||
-        content.candles.at(-1);
-      legend(point);
-      showOHLC(row);
+        displayedBars.find((bar) => bar.time === key) || displayedBars.at(-1);
+      syncCrosshair(row);
     });
     return true;
   }
@@ -668,6 +810,10 @@
       ? `${selected.asset.market} · ${selected.asset.currency}`
       : "历史报告 · 基金净值";
     const content = selected.result?.chart;
+    displayedBars = displayCandles(content?.candles ?? []);
+    document.getElementById("chart-period-label").textContent =
+      `K 线 ${period === "week" ? "周线" : "日线"} · 信号 日线`;
+    syncEventNavigation();
     const quoteTime =
       selected.fetched_at ||
       selected.result?.bar_date ||
@@ -690,7 +836,7 @@
       }
       document.getElementById("chart-layers").replaceChildren();
       legend(null);
-      showOHLC(null);
+      syncCrosshair(null);
       message(
         "暂无可用 K 线",
         selected.result
@@ -706,7 +852,7 @@
     }
     try {
       if (!chart) initialize();
-      candles.setData(content.candles);
+      candles.setData(displayedBars.map((bar) => ({ ...bar })));
       for (const entry of overlaySeries) chart.removeSeries(entry.series);
       overlaySeries = [];
       const layerControls = document.getElementById("chart-layers");
@@ -719,7 +865,9 @@
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        series.setData(layer.points);
+        series.setData(
+          displayedPoints(layer.points).map((point) => ({ ...point })),
+        );
         overlaySeries.push({ id: layer.id, series });
         const label = document.createElement("label"),
           input = document.createElement("input");
@@ -743,15 +891,16 @@
       let activeMacd = macdConfigs[0]?.points || content.macd;
       function drawMacd(points) {
         activeMacd = points;
+        const visiblePoints = displayedPoints(points);
         histogram.setData(
-          points.map((p) => ({
+          visiblePoints.map((p) => ({
             time: p.time,
             value: p.histogram,
             color: p.histogram >= 0 ? "#ed7e8499" : "#64c9af99",
           })),
         );
-        dif.setData(points.map((p) => ({ time: p.time, value: p.dif })));
-        dea.setData(points.map((p) => ({ time: p.time, value: p.dea })));
+        dif.setData(visiblePoints.map((p) => ({ time: p.time, value: p.dif })));
+        dea.setData(visiblePoints.map((p) => ({ time: p.time, value: p.dea })));
         legend(points.at(-1));
         selected.activeMacd = points;
       }
@@ -786,25 +935,6 @@
       });
       macdLabel.append(macdInput, document.createTextNode("MACD 副图"));
       layerControls.append(macdLabel);
-      histogram.setData(
-        content.macd.map((point) => ({
-          time: point.time,
-          value: point.histogram,
-          color: point.histogram >= 0 ? "#ed7e8499" : "#64c9af99",
-        })),
-      );
-      dif.setData(
-        content.macd.map((point) => ({
-          time: point.time,
-          value: point.dif,
-        })),
-      );
-      dea.setData(
-        content.macd.map((point) => ({
-          time: point.time,
-          value: point.dea,
-        })),
-      );
       drawMacd(activeMacd);
       const hasMacd = macdConfigs.length > 0;
       macdLabel.hidden = !hasMacd;
@@ -828,8 +958,8 @@
       else if (previousId === id && previousRange && options.keepRange)
         chart.timeScale().setVisibleLogicalRange(previousRange);
       else setRange();
-      legend(activeMacd.at(-1));
-      showOHLC(content.candles.at(-1));
+      syncCrosshair(displayedBars.at(-1));
+      syncEventNavigation();
       empty.hidden = true;
       container.dataset.ready = "true";
     } catch (error) {
@@ -857,9 +987,10 @@
     button.addEventListener("click", () => {
       select(button.dataset.focusAsset);
       if (!chart || !selected?.result?.chart) return;
-      const index = selected.result.chart.candles.findIndex(
-        (row) => row.time === button.dataset.focusDate,
+      const index = displayedBars.findIndex(
+        (row) => row.time === displayedDay.get(button.dataset.focusDate),
       );
+      showEvent(button.dataset.focusDate);
       if (index >= 0) {
         chart.timeScale().setVisibleLogicalRange({
           from: Math.max(0, index - 25),
@@ -878,6 +1009,7 @@
       container.scrollIntoView({ block: "center" });
     },
     current: () => selected,
+    period: () => period,
     view: () => chart?.timeScale().getVisibleLogicalRange(),
     restoreView: (view) => {
       if (chart && view) chart.timeScale().setVisibleLogicalRange(view);

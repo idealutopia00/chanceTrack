@@ -20,6 +20,12 @@
             <button data-range="all">全部</button>
         </div>
     </div>
+    <div class="chart-period">
+        <label>K 线周期
+            <select id="chart-period"><option value="day">日线</option><option value="week">周线</option></select>
+        </label>
+        <small id="chart-period-label">K 线 日线 · 信号 日线</small>
+    </div>
     <div class="chart-layers" id="chart-layers"></div>
     <div class="chart-shell">
         <div id="chart" aria-label="日线蜡烛图和 MACD 副图"></div>
@@ -45,6 +51,15 @@
             </i>涨 <i class="legend-square down-bg">
             </i>跌 <span>·</span> 滚轮缩放，拖动回看</span>
         </div>
+        <div class="chart-review-controls">
+            <button type="button" id="chart-previous-event" disabled>上一事件</button>
+            <button type="button" id="chart-next-event" disabled>下一事件</button>
+            <button type="button" id="chart-latest" disabled>回到最新</button>
+        </div>
+        <details class="chart-crosshair">
+            <summary>十字线读数</summary>
+            <div id="chart-crosshair-readings"></div>
+        </details>
         <details id="chart-events" hidden>
             <summary>策略事件</summary>
             <div id="chart-event-list"></div>

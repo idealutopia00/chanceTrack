@@ -82,7 +82,9 @@
     if (updating || polling || document.hidden) return;
     polling = true;
     try {
-      const response = await fetch("/api/update-status", { cache: "no-store" });
+      const response = await fetch("/api/update-status", {
+        cache: "no-store",
+      });
       if (!response.ok) throw Error("无法获取更新状态");
       const state = await response.json();
       button.disabled = state.running;
@@ -149,6 +151,9 @@
   const container = document.getElementById("chart");
   const empty = document.getElementById("chart-empty");
   const markerToggle = document.getElementById("show-markers");
+  const eventPanel = document.getElementById("chart-events");
+  const eventList = document.getElementById("chart-event-list");
+  const eventDetail = document.getElementById("chart-event-detail");
   const library = window.LightweightCharts;
   let chart,
     candles,
@@ -228,27 +233,176 @@
         to: count + 3,
       });
   }
+  function chartEvents() {
+    return (
+      selected?.result?.chart?.strategy_events ??
+      selected?.result?.chart?.crosses ??
+      []
+    );
+  }
+  function eventName(event) {
+    return event.event ?? (event.kind === "golden" ? "金叉" : "死叉");
+  }
+  function showEvent(date, locate = true) {
+    const rows = chartEvents().filter((event) => event.time === date);
+    if (!rows.length) return;
+    const bars = selected.result.chart.candles;
+    const index = bars.findIndex((bar) => bar.time === date);
+    if (index < 0) return;
+    eventPanel.open = true;
+    eventDetail.replaceChildren();
+    for (const event of rows) {
+      const row = document.createElement("p");
+      const matches = (selected.result.strategies ?? []).filter(
+        (strategy) => strategy.name === event.name,
+      );
+      const saved = matches.length === 1 ? matches[0] : null;
+      const rule = event.config ?? saved?.config;
+      const macdPoints = event.kind
+        ? selected.result.chart.macd
+        : selected.result.chart.macd_configs?.find(
+            (series) => series.id === (rule?.trigger ?? rule?.id),
+          )?.points;
+      const macd = macdPoints?.find((point) => point.time === date);
+      const legacyMacd = event.kind ? macd : null;
+      const overlayIds = [rule?.id, rule?.trigger, rule?.filter && rule?.band].filter(Boolean);
+      const overlays = (selected.result.chart.overlays ?? [])
+        .filter((layer) => overlayIds.some((id) => layer.id.startsWith(`${id}:`)))
+        .flatMap((layer) => {
+          const point = layer.points.find((reading) => reading.time === date);
+          return point ? [`${layer.name} ${number(point.value)}`] : [];
+        });
+      const config =
+        event.config ??
+        saved?.config ??
+        (legacyMacd ? { params: { fast: 12, slow: 26, signal: 9 } } : null);
+      const params = [
+        ...Object.entries(config?.params ?? {}).map(
+          ([key, value]) => `${key} ${value}`,
+        ),
+        ...Object.values(config?.dependencies ?? {}).map(
+          (rule) =>
+            `${rule.name} ${Object.entries(rule.params ?? {})
+              .map(([key, value]) => `${key} ${value}`)
+              .join(" / ")}`,
+        ),
+        config?.filter,
+      ]
+        .filter(Boolean)
+        .join(" / ");
+      row.textContent = [
+        date,
+        event.name ?? "MACD",
+        event.version ?? saved?.version,
+        params,
+        eventName(event),
+        event.provisional === true
+          ? "待确认"
+          : event.provisional === false
+            ? "收盘确认"
+            : "确认状态未记录",
+        `价格 ${event.price ?? bars[index].close}`,
+        macd && `DIF ${macd.dif} · DEA ${macd.dea} · 柱 ${macd.histogram}`,
+        ...overlays,
+        event.detail ??
+          (saved?.event_date === date && saved.event === event.event
+            ? saved.detail
+            : null),
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      eventDetail.append(row);
+    }
+    eventList
+      .querySelectorAll("button")
+      .forEach((button) =>
+        button.setAttribute(
+          "aria-current",
+          String(button.dataset.eventDate === date),
+        ),
+      );
+    setMarkers();
+    if (!locate) return;
+    eventList.querySelector('[aria-current="true"]')?.scrollIntoView({
+      block: "nearest",
+    });
+    chart.timeScale().setVisibleLogicalRange({
+      from: Math.max(0, index - 25),
+      to: index + 8,
+    });
+    chart.setCrosshairPosition(bars[index].close, date, candles);
+    showOHLC(bars[index]);
+  }
+  function resetEventPanel() {
+    eventList.replaceChildren();
+    eventDetail.replaceChildren();
+    eventPanel.hidden = true;
+    eventPanel.open = false;
+  }
+  function eventsByDate() {
+    const dates = new Map();
+    for (const event of chartEvents()) {
+      if (!dates.has(event.time)) dates.set(event.time, []);
+      dates.get(event.time).push(event);
+    }
+    return dates;
+  }
+  function renderEventList() {
+    resetEventPanel();
+    const dates = eventsByDate();
+    eventPanel.hidden = dates.size === 0;
+    for (const date of [...dates.keys()].sort().reverse()) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.eventDate = date;
+      button.textContent = `${date} · ${dates.get(date).length} 条`;
+      button.addEventListener("click", () => showEvent(date));
+      eventList.append(button);
+    }
+  }
   function setMarkers() {
     if (!markers || !selected?.result?.chart) return;
+    const meanings = {
+      金叉: ["金叉", "up"],
+      死叉: ["死叉", "down"],
+      向上突破上轨: ["上破上轨", "up"],
+      向下突破下轨: ["下破下轨", "down"],
+      上轨外回归轨内: ["跌回上轨内", "down"],
+      下轨外回归轨内: ["升回下轨内", "up"],
+    };
     markers.setMarkers(
       markerToggle.checked
-        ? (
-            selected.result.chart.strategy_events ||
-            selected.result.chart.crosses
-          )
-            .slice()
-            .sort((a, b) => a.time.localeCompare(b.time))
-            .map((cross) => ({
-              time: cross.time,
-              position:
-                cross.kind === "golden" ||
-                /金叉|向上|下轨外/.test(cross.event || "")
-                  ? "belowBar"
-                  : "aboveBar",
-              color: cross.kind === "golden" ? "#dfc080" : "#a896dd",
-              shape: cross.kind === "golden" ? "arrowUp" : "arrowDown",
-              text: `${cross.provisional ? "临时 " : ""}${{ 向上突破上轨: "上破", 向下突破下轨: "下破", 上轨外回归轨内: "回轨", 下轨外回归轨内: "回轨" }[cross.event] || cross.event || (cross.kind === "golden" ? "金叉" : "死叉")}`,
-            }))
+        ? [...eventsByDate()]
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([date, events]) => {
+              const event = eventName(events[0]);
+              const [label, firstDirection] = meanings[event] || [event, null];
+              const grouped = events.length > 1;
+              const direction = events.every(
+                (entry) => meanings[eventName(entry)]?.[1] === firstDirection,
+              )
+                ? firstDirection
+                : null;
+              const up = direction === "up";
+              const provisional = events.every(
+                (entry) => entry.provisional === true,
+              );
+              const pendingCount = events.filter(
+                (entry) => entry.provisional === true,
+              ).length;
+              const active = eventList.querySelector('[aria-current="true"]')
+                ?.dataset.eventDate === date;
+              const glyph = !direction ? "○" : up ? "⇧" : "⇩";
+              return {
+                time: date,
+                id: `event:${date}`,
+                position: up ? "belowBar" : "aboveBar",
+                color: active ? "#ffffff" : up ? "#dfc080" : "#a896dd",
+                shape: !direction ? "circle" : up ? "arrowUp" : "arrowDown",
+                size: provisional ? 0 : 1,
+                text: `${provisional ? `${glyph} 待确认 ` : ""}${grouped ? `${events.length} 条事件` : label}${pendingCount && !provisional ? `（${pendingCount} 条待确认）` : ""}`,
+              };
+            })
         : [],
     );
   }
@@ -281,7 +435,11 @@
         minimumWidth: 68,
         scaleMargins: { top: 0.12, bottom: 0.12 },
       },
-      timeScale: { borderColor: "#283740", timeVisible: false, rightOffset: 4 },
+      timeScale: {
+        borderColor: "#283740",
+        timeVisible: false,
+        rightOffset: 4,
+      },
       localization: { locale: "zh-CN" },
     });
     candles = chart.addSeries(library.CandlestickSeries, {
@@ -342,6 +500,10 @@
     chart.panes()[0].setHeight(380);
     chart.panes()[1].setHeight(180);
     markers = library.createSeriesMarkers(candles, []);
+    chart.subscribeClick((event) => {
+      if (event.hoveredObjectId?.startsWith?.("event:"))
+        showEvent(event.hoveredObjectId.slice(6));
+    });
     chart.subscribeCrosshairMove((param) => {
       const content = selected?.result?.chart;
       if (!content) return;
@@ -359,6 +521,9 @@
   }
   function select(id, options = {}) {
     const previousId = selected?.asset.id;
+    const eventDate = previousId === id
+      ? eventList.querySelector('[aria-current="true"]')?.dataset.eventDate
+      : null;
     const previousRange = chart?.timeScale().getVisibleLogicalRange();
     selected = items.find((item) => item.asset.id === id);
     if (!selected) return;
@@ -380,7 +545,9 @@
       };
       tag.textContent = selected.result?.is_provisional
         ? `日线 · ${pendingLabels[phase] || "盘中未收盘"}`
-        : selected.result?.bar_date ? "日线 · 已收盘" : "—";
+        : selected.result?.bar_date
+          ? "日线 · 已收盘"
+          : "—";
       tag.classList.toggle(
         "provisional",
         Boolean(selected.result?.is_provisional),
@@ -405,11 +572,15 @@
       ? `${selected.asset.market} · ${selected.asset.currency}`
       : "历史报告 · 基金净值";
     const content = selected.result?.chart;
-    const quoteTime = selected.fetched_at ||
-      selected.result?.bar_date || selected.result?.nav_date;
-    document.getElementById("chart-quote-time").textContent =
-      quoteTime ? `行情 ${quoteTime.replace("T", " ")}` : "";
+    const quoteTime =
+      selected.fetched_at ||
+      selected.result?.bar_date ||
+      selected.result?.nav_date;
+    document.getElementById("chart-quote-time").textContent = quoteTime
+      ? `行情 ${quoteTime.replace("T", " ")}`
+      : "";
     if (!content) {
+      resetEventPanel();
       if (chart) {
         chart.remove();
         chart = null;
@@ -427,6 +598,7 @@
       return;
     }
     if (!library) {
+      resetEventPanel();
       message("图表组件未加载", "请刷新页面，或检查本地图表静态资源。");
       return;
     }
@@ -520,10 +692,16 @@
         })),
       );
       dif.setData(
-        content.macd.map((point) => ({ time: point.time, value: point.dif })),
+        content.macd.map((point) => ({
+          time: point.time,
+          value: point.dif,
+        })),
       );
       dea.setData(
-        content.macd.map((point) => ({ time: point.time, value: point.dea })),
+        content.macd.map((point) => ({
+          time: point.time,
+          value: point.dea,
+        })),
       );
       drawMacd(activeMacd);
       const hasMacd = macdConfigs.length > 0;
@@ -538,7 +716,9 @@
         chart.panes()[0].setHeight(380);
         chart.panes()[1].setHeight(180);
       }
+      renderEventList();
       setMarkers();
+      if (eventDate) showEvent(eventDate, false);
       if (options.view) chart.timeScale().setVisibleLogicalRange(options.view);
       else if (previousId === id && previousRange && options.keepRange)
         chart.timeScale().setVisibleLogicalRange(previousRange);
@@ -548,6 +728,7 @@
       empty.hidden = true;
       container.dataset.ready = "true";
     } catch (error) {
+      resetEventPanel();
       container.dataset.ready = "false";
       console.error(error);
       message("图表加载失败", "请刷新页面；完整行情快照仍可在下方查看。");

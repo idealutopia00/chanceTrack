@@ -65,13 +65,13 @@ def test_live_fetch_requests_today_instead_of_yesterday(monkeypatch):
             rows = rows[:1]
         return httpx.Response(200, json={"data": {**PAYLOAD["data"], "klines": rows}})
 
-    real_client = httpx.Client
+    real_client = httpx.AsyncClient
 
     def client(**kwargs):
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_client(**kwargs)
 
-    monkeypatch.setattr(data.httpx, "Client", client)
+    monkeypatch.setattr(data.httpx, "AsyncClient", client)
     snapshot = data.fetch({**ASSET, "provider": "eastmoney"}, "2026-11-17")
     assert urls[0].params["end"] >= "20261117"
     assert "_" in urls[0].params

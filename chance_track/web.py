@@ -73,6 +73,8 @@ def create_app(db_path):
                 "asset": item["asset"],
                 "result": item.get("result"),
                 "fetched_at": (item.get("snapshot") or {}).get("fetched_at"),
+                "status": item["status"],
+                "last_quote": item.get("last_quote"),
             }
             for item in items
         ]

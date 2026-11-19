@@ -70,8 +70,12 @@ def test_donchian_replays_one_entry_and_exit_without_using_current_extremes():
     rows[-3].update(high=106, close=105)
     rows[-2].update(high=108, close=107)
     rows[-1].update(low=95, close=98)
-    config = {"id": "channel", "name": "唐奇安", "kind": "donchian",
-              "params": {"entry": 20, "exit": 10}}
+    config = {
+        "id": "channel",
+        "name": "唐奇安",
+        "kind": "donchian",
+        "params": {"entry": 20, "exit": 10},
+    }
     validate_configuration({"assets": [], "strategies": [config]})
     asset = {**ASSET, "strategies": ["channel"]}
     snapshot["provisional_date"] = rows[-1]["date"]
@@ -84,7 +88,9 @@ def test_donchian_replays_one_entry_and_exit_without_using_current_extremes():
     outputs, _, replayed = evaluate(snapshot, [config], asset, "2026-11-17")
     assert outputs[0]["event"] == "通道退出"
     assert replayed["channel"]["events"] == calculated["channel"]["events"]
-    repeated_outputs, _, repeated = evaluate(deepcopy(snapshot), [config], asset, "2026-11-17")
+    repeated_outputs, _, repeated = evaluate(
+        deepcopy(snapshot), [config], asset, "2026-11-17"
+    )
     assert repeated_outputs == outputs
     assert repeated["channel"]["reasons"] == replayed["channel"]["reasons"]
     assert "98.0000" in outputs[0]["detail"] and "99.0000" in outputs[0]["detail"]
@@ -303,3 +309,64 @@ def test_enabling_new_asset_validates_source_timezone_without_saving(tmp_path):
     with pytest.raises(ValueError, match="时区"):
         save_configuration(path, config, config["version"], fetcher=wrong_market)
     assert calls == ["new"] and load_configuration(path)["version"] == 1
+
+
+def test_stateful_preset_replay_warmup_and_provisional_events():
+    cases = [
+        (
+            {
+                "id": "rsi",
+                "name": "回调",
+                "kind": "pullback",
+                "params": {"trend": 20, "recovery": 3, "rsi": 2, "threshold": 10},
+            },
+            [1] * 20 + [25, 24, 23, 22, 21, 20, 19, 18, 17, 22],
+            ["短线回调", "回调修复"],
+        ),
+        (
+            {
+                "id": "atr",
+                "name": "跟踪退出",
+                "kind": "trailing_exit",
+                "params": {"entry": 3, "period": 3, "multiple": 1},
+            },
+            [10, 10, 10, 12, 14, 14, 10],
+            ["向上突破", "跟踪退出"],
+        ),
+        (
+            {
+                "id": "squeeze",
+                "name": "收缩释放",
+                "kind": "squeeze",
+                "params": {
+                    "period": 3,
+                    "stddev": 2,
+                    "multiple": 1.5,
+                    "range": "high_low",
+                },
+            },
+            [10, 10, 10, 10, 10, 10, 10, 14],
+            ["释放 · 向上"],
+        ),
+    ]
+    for config, closes, expected in cases:
+        snapshot = sample()
+        snapshot["rows"] = snapshot["rows"][-len(closes) :]
+        rows = snapshot["rows"]
+        for row, close in zip(rows, closes):
+            row.update(open=close, high=close + 0.5, low=close - 0.5, close=close)
+        validate_configuration({"assets": [], "strategies": [config]})
+        asset = {"strategies": [config["id"]]}
+        day = rows[-1]["date"]
+        snapshot["provisional_date"] = day
+        preview, _, computed = evaluate(snapshot, [config], asset, day)
+        signals = computed[config["id"]]
+        assert [event for event in signals["events"] if event] == expected
+        assert "预热还需" in signals["reasons"][0]
+        assert preview[0]["event"] is None
+        assert preview[0]["preview_event"] == expected[-1]
+        snapshot.pop("provisional_date")
+        confirmed, _, replayed = evaluate(snapshot, [config], asset, day)
+        assert confirmed[0]["event"] == expected[-1]
+        assert replayed[config["id"]]["events"] == signals["events"]
+        assert replayed[config["id"]]["reasons"] == signals["reasons"]

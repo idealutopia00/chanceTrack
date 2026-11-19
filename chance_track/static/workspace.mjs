@@ -256,7 +256,7 @@ import {
             "p",
             `${s.bar_date} · ${s.preview_event || "无盘中事件"} · 未收盘待确认`,
           ),
-          ...(s.kind === "donchian" && s.preview_detail
+          ...((s.stateful || s.kind === "donchian") && s.preview_detail
             ? [text("small", s.preview_detail)]
             : []),
         );
@@ -508,10 +508,36 @@ import {
           signal: "信号周期",
           period: "布林周期",
           stddev: "标准差倍数",
+          trend: "趋势均线",
+          recovery: "修复均线",
+          rsi: "RSI 周期",
+          threshold: "RSI 阈值",
+          entry: "突破周期",
+          exit: "退出周期",
+          multiple: "通道倍数",
         };
+        if (key === "range") {
+          field(
+            node,
+            "振幅口径",
+            s.params[key],
+            (value) => {
+              s.params[key] = value;
+              schedulePreview();
+            },
+            [
+              ["true_range", "真实振幅"],
+              ["high_low", "最高价减最低价"],
+            ],
+          );
+          continue;
+        }
+        const factor = ["stddev", "multiple"].includes(key);
         const input = field(
           node,
-          labels[key] || key,
+          key === "period" && s.kind === "trailing_exit"
+            ? "ATR 周期"
+            : labels[key] || key,
           s.params[key],
           (value) => {
             s.params[key] = Number(value);
@@ -519,9 +545,9 @@ import {
           },
         );
         input.type = "number";
-        input.min = key === "stddev" ? "0.1" : "2";
-        input.max = key === "stddev" ? "10" : "250";
-        input.step = key === "stddev" ? "0.1" : "1";
+        input.min = factor || key === "threshold" ? "0.1" : "2";
+        input.max = factor ? "10" : key === "threshold" ? "99.9" : "250";
+        input.step = factor || key === "threshold" ? "0.1" : "1";
       }
     node.append(button("加入 / 更新监测", () => monitor(id)));
     openDialog("indicator-settings");
@@ -531,6 +557,10 @@ import {
     ma: "双均线",
     boll_break: "布林突破",
     boll_return: "布林回归",
+    donchian: "唐奇安通道",
+    pullback: "短线回调",
+    trailing_exit: "ATR 跟踪退出",
+    squeeze: "波动收缩释放",
   };
   function describeRule(rule) {
     return `${rule.name} · ${kindNames[rule.kind]} · ${describeParams(rule.params)}`;
@@ -542,9 +572,20 @@ import {
       ["signal", "信号线"],
       ["period", "周期"],
       ["stddev", "标准差倍数"],
+      ["trend", "趋势均线"],
+      ["recovery", "修复均线"],
+      ["rsi", "RSI 周期"],
+      ["threshold", "RSI 阈值"],
+      ["entry", "突破周期"],
+      ["exit", "退出周期"],
+      ["multiple", "通道倍数"],
+      ["range", "振幅口径"],
     ]
       .filter(([key]) => keys.includes(key))
-      .map(([key, label]) => `${label} ${params[key]}`)
+      .map(
+        ([key, label]) =>
+          `${label} ${key === "range" ? (params[key] === "true_range" ? "真实振幅" : "高低价差") : params[key]}`,
+      )
       .join(" / ");
   }
   function matchesConfiguration(a, b) {
@@ -574,6 +615,25 @@ import {
       ["ma", "双均线", "主图", { fast: 20, slow: 60 }],
       ["boll_break", "布林突破", "突破轨道", { period: 20, stddev: 2 }],
       ["boll_return", "布林回归", "从轨外回到轨内", { period: 20, stddev: 2 }],
+      [
+        "pullback",
+        "短线回调",
+        "长期上行",
+        { trend: 200, recovery: 5, rsi: 2, threshold: 10 },
+      ],
+      ["donchian", "唐奇安通道", "突破与退出", { entry: 20, exit: 10 }],
+      [
+        "squeeze",
+        "波动收缩释放",
+        "肯特纳通道",
+        { period: 20, stddev: 2, multiple: 1.5, range: "true_range" },
+      ],
+      [
+        "trailing_exit",
+        "ATR 跟踪退出",
+        "突破后跟踪",
+        { entry: 20, period: 22, multiple: 3 },
+      ],
     ]) {
       const row = document.createElement("section");
       row.append(

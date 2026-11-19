@@ -117,6 +117,31 @@ def validate_configuration(config):
                 for key in ("entry", "exit")
             ):
                 raise ValueError("唐奇安突破和退出周期须为2至250整数")
+        elif kind in ("pullback", "trailing_exit", "squeeze"):
+            periods = {
+                "pullback": ("trend", "recovery", "rsi"),
+                "trailing_exit": ("entry", "period"),
+                "squeeze": ("period",),
+            }[kind]
+            if any(
+                type(p.get(key)) is not int or not 2 <= p[key] <= 250 for key in periods
+            ):
+                raise ValueError("周期须为2至250整数")
+            if kind == "pullback":
+                if (
+                    type(p.get("threshold")) not in (int, float)
+                    or not 0 < p["threshold"] < 100
+                ):
+                    raise ValueError("RSI 阈值须在 0 与 100 之间")
+            else:
+                factors = ("stddev", "multiple") if kind == "squeeze" else ("multiple",)
+                if any(
+                    type(p.get(key)) not in (int, float) or not 0.1 <= p[key] <= 10
+                    for key in factors
+                ):
+                    raise ValueError("通道倍数须为0.1至10")
+            if kind == "squeeze" and p.get("range") not in ("true_range", "high_low"):
+                raise ValueError("未知肯特纳振幅口径")
         elif kind == "combination":
             trigger = strategies.get(s.get("trigger"))
             if not trigger or trigger["kind"] == "combination":

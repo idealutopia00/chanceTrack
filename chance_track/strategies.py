@@ -31,6 +31,149 @@ def donchian(rows, closes, entry_period, exit_period):
     return events, reasons, ready, {"突破轨": upper, "退出轨": lower}
 
 
+def wilder(values, period):
+    averages = values.rolling(period).mean()
+    start = averages.first_valid_index()
+    if start is not None:
+        seeded = values.loc[start:].copy()
+        seeded.iloc[0] = averages.loc[start]
+        averages.loc[start:] = seeded.ewm(alpha=1 / period, adjust=False).mean()
+    return averages
+
+
+def pullback(closes, p):
+    trend = closes.rolling(p["trend"]).mean()
+    recovery = closes.rolling(p["recovery"]).mean()
+    change = closes.diff()
+    gain = wilder(change.clip(lower=0), p["rsi"])
+    loss = wilder(-change.clip(upper=0), p["rsi"])
+    rsi = (100 * gain / (gain + loss)).mask((gain == 0) & (loss == 0), 50)
+    required = max(p["trend"], p["recovery"], p["rsi"] + 2)
+    ready = pd.Series(range(1, len(closes) + 1)) >= required
+    events, reasons = [None] * len(closes), [""] * len(closes)
+    watching = False
+    for i, close in enumerate(closes):
+        if not ready.iloc[i]:
+            reasons[i] = f"预热还需 {required - i - 1} 根日线"
+            continue
+        level, repair, strength = trend.iloc[i], recovery.iloc[i], rsi.iloc[i]
+        reasons[i] = (
+            f"价格 {close:.4f}；SMA{p['trend']} {level:.4f}；"
+            f"SMA{p['recovery']} {repair:.4f}；RSI {rsi.iloc[i - 1]:.4f} → {strength:.4f}；阈值 {p['threshold']}"
+        )
+        if watching:
+            if close < level:
+                events[i] = "趋势失效"
+            elif close > repair:
+                events[i] = "回调修复"
+            if events[i]:
+                watching = False
+        elif close > level and rsi.iloc[i - 1] >= p["threshold"] > strength:
+            events[i] = "短线回调"
+            watching = True
+    return events, reasons, ready, {"趋势均线": trend, "修复均线": recovery}
+
+
+def true_range(highs, lows, closes):
+    previous = closes.shift()
+    return pd.concat(
+        [highs - lows, (highs - previous).abs(), (lows - previous).abs()], axis=1
+    ).max(axis=1)
+
+
+def trailing_exit(highs, lows, closes, p):
+    breakout = highs.shift().rolling(p["entry"]).max()
+    atr = wilder(true_range(highs, lows, closes), p["period"])
+    candidate = highs.rolling(p["period"]).max() - p["multiple"] * atr
+    line = pd.Series(float("nan"), index=closes.index)
+    required = max(p["entry"] + 1, p["period"])
+    ready = pd.Series(range(1, len(closes) + 1)) >= required
+    events, reasons = [None] * len(closes), [""] * len(closes)
+    trailing = None
+    for i, close in enumerate(closes):
+        if not ready.iloc[i]:
+            reasons[i] = f"预热还需 {required - i - 1} 根日线"
+            continue
+        ceiling, next_line = breakout.iloc[i], candidate.iloc[i]
+        if trailing is None:
+            reasons[i] = (
+                f"价格 {close:.4f}；突破轨 {ceiling:.4f}；ATR {atr.iloc[i]:.4f}；候选线 {next_line:.4f}"
+            )
+            if close > ceiling:
+                trailing = next_line
+                events[i] = "向上突破"
+        else:
+            reasons[i] = (
+                f"价格 {close:.4f}；前一日跟踪线 {trailing:.4f}；ATR {atr.iloc[i]:.4f}；候选线 {next_line:.4f}"
+            )
+            if close < trailing:
+                events[i] = "跟踪退出"
+                line.iloc[i] = trailing
+                trailing = None
+            else:
+                trailing = max(trailing, next_line)
+        if trailing is not None:
+            line.iloc[i] = trailing
+    return events, reasons, ready, {"突破轨": breakout, "跟踪线": line}
+
+
+def squeeze(highs, lows, closes, p):
+    period = p["period"]
+    mean = closes.rolling(period).mean()
+    boll = closes.rolling(period).std(ddof=0) * p["stddev"]
+    ranges = (
+        true_range(highs, lows, closes) if p["range"] == "true_range" else highs - lows
+    )
+    channel = ranges.rolling(period).mean() * p["multiple"]
+    midpoint = (highs.rolling(period).max() + lows.rolling(period).min()) / 2
+    centered = closes - (midpoint + mean) / 2
+    # Endpoint of the least-squares line over the rolling, equally spaced samples.
+    center = (period - 1) / 2
+    weights = [i - center for i in range(period)]
+    denominator = sum(x * x for x in weights)
+    momentum = centered.rolling(period).apply(
+        lambda values: values.mean() + center * (values * weights).sum() / denominator,
+        raw=True,
+    )
+    ready = momentum.notna()
+    required = period * 2 - 1
+    events, reasons = [None] * len(closes), [""] * len(closes)
+    days = 0
+    for i in range(len(closes)):
+        if not ready.iloc[i]:
+            reasons[i] = f"预热还需 {required - i - 1} 根日线"
+        if i < period - 1:
+            continue
+        if boll.iloc[i] < channel.iloc[i]:
+            days += 1
+            if ready.iloc[i]:
+                reasons[i] = f"已收缩 {days} 个交易日"
+        elif days:
+            if ready.iloc[i]:
+                value = momentum.iloc[i]
+                direction = "向上" if value > 0 else "向下" if value < 0 else "方向未定"
+                events[i] = f"释放 · {direction}"
+                reasons[i] = (
+                    f"收缩 {days} 个交易日；回归动量 {value:.6f}；"
+                    f"布林半宽 {boll.iloc[i]:.4f}；肯特纳半宽 {channel.iloc[i]:.4f}"
+                )
+            days = 0
+    return (
+        events,
+        reasons,
+        ready,
+        {
+            "布林上轨": mean + boll,
+            "布林下轨": mean - boll,
+            "肯特纳上轨": mean + channel,
+            "肯特纳下轨": mean - channel,
+        },
+    )
+
+
+STATEFUL = {"donchian", "pullback", "trailing_exit", "squeeze"}
+
+
 def evaluate(snapshot, configs, asset, as_of):
     rows = snapshot["rows"]
     values = pd.Series([r["close"] for r in rows], dtype=float)
@@ -88,6 +231,14 @@ def evaluate(snapshot, configs, asset, as_of):
             events, reasons, ready, overlays = donchian(
                 rows, values, p["entry"], p["exit"]
             )
+        elif kind in {"pullback", "trailing_exit", "squeeze"}:
+            if kind == "pullback":
+                events, reasons, ready, overlays = pullback(values, p)
+            else:
+                highs = pd.Series([row["high"] for row in rows], dtype=float)
+                lows = pd.Series([row["low"] for row in rows], dtype=float)
+                calculate = trailing_exit if kind == "trailing_exit" else squeeze
+                events, reasons, ready, overlays = calculate(highs, lows, values, p)
         elif kind == "combination":
             trigger = compute(s["trigger"])
             ready = trigger["ready"].copy()
@@ -126,10 +277,14 @@ def evaluate(snapshot, configs, asset, as_of):
                         f"前值差 {spread.iloc[i - 1]:.6f} → 本值差 {spread.iloc[i]:.6f}"
                     )
                     if kind == "ma":
-                        reasons[i] += f"；短均线 {short.iloc[i]:.4f}；长均线 {long.iloc[i]:.4f}"
+                        reasons[i] += (
+                            f"；短均线 {short.iloc[i]:.4f}；长均线 {long.iloc[i]:.4f}"
+                        )
                     else:
                         point = macd[i]
-                        reasons[i] += f"；DIF {point['dif']:.6f}；DEA {point['dea']:.6f}；柱 {point['histogram']:.6f}"
+                        reasons[i] += (
+                            f"；DIF {point['dif']:.6f}；DEA {point['dea']:.6f}；柱 {point['histogram']:.6f}"
+                        )
                 elif kind == "boll_break":
                     if (
                         values.iloc[i - 1] <= upper.iloc[i - 1]
@@ -227,10 +382,11 @@ def evaluate(snapshot, configs, asset, as_of):
                     "行情过期"
                     if stale
                     else c["reasons"][ci]
-                    if s["kind"] == "donchian"
+                    if s["kind"] in STATEFUL
                     else "历史样本不足"
                 ),
                 "preview_detail": c["reasons"][-1] if provisional else "",
+                "stateful": s["kind"] in STATEFUL,
                 "historical_reference": historical,
             }
         )

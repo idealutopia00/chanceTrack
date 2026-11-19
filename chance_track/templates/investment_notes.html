@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>投资备忘录 · Chance Track</title>
+    <link rel="stylesheet" href="/static/app.css?v={{ asset_version }}">
+</head>
+<body>
+<main class="management investment-notes">
+    <a href="/">← 返回工作台</a>
+    <h1>投资备忘录</h1>
+    <section class="panel">
+        {% if editing %}
+            <h2>{{ '编辑备忘' if note else '新建备忘' }}</h2>
+            {% if error %}<p class="warning" role="alert">{{ error }}</p>{% endif %}
+            <form method="post" action="/investment-notes">
+                <input type="hidden" name="csrf" value="{{ token }}">
+                {% if note %}<input type="hidden" name="note_id" value="{{ note.id }}">{% endif %}
+                <label for="investment-markdown">Markdown</label>
+                <textarea id="investment-markdown" name="raw" rows="10" maxlength="20000" required>
+{{ raw }}</textarea>
+                <button type="submit">保存备忘</button>
+                {% if note %}<a href="/investment-notes/{{ note.id }}">取消</a>{% endif %}
+            </form>
+        {% elif note %}
+            <article class="investment-markdown">{{ note.markdown|investment_markdown }}</article>
+            <div class="investment-actions">
+                <a href="/investment-notes/{{ note.id }}?edit=true">编辑</a>
+                {% if note.pinned %}<span>已置顶</span>{% else %}
+                    <form method="post" action="/investment-notes/{{ note.id }}/pin">
+                        <input type="hidden" name="csrf" value="{{ token }}">
+                        <button type="submit">置顶</button>
+                    </form>
+                {% endif %}
+                <a href="/investment-notes">新建备忘</a>
+            </div>
+        {% endif %}
+    </section>
+    <section class="panel">
+        <h2>历史备忘</h2>
+        {% if notes %}
+            <ul>{% for record in notes %}
+                <li><a href="/investment-notes/{{ record.id }}">{{ record.title }}</a> · <time datetime="{{ record.created_at }}">{{ record.created_at[:10] }}</time>{% if record.pinned %} · 置顶{% endif %}</li>
+            {% endfor %}</ul>
+        {% else %}<p>暂无历史备忘。</p>{% endif %}
+    </section>
+</main>
+</body>
+</html>

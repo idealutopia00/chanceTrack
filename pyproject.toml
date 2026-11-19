@@ -3,7 +3,16 @@ name = "chance-track"
 version = "0.8.0"
 description = "Local index strategy observations and decision journal"
 requires-python = ">=3.12"
-dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "jinja2>=3.1,<4", "httpx>=0.27,<1", "pandas>=2.2,<3", "python-multipart>=0.0.18", "chinese-calendar>=1.10,<2"]
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "jinja2>=3.1,<4",
+    "httpx>=0.27,<1",
+    "pandas>=2.2,<3",
+    "python-multipart>=0.0.18",
+    "chinese-calendar>=1.10,<2",
+    "markdown-it-py>=4,<5",
+]
 
 [dependency-groups]
 dev = ["pytest>=8,<10"]

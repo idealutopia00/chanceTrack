@@ -487,3 +487,74 @@ def test_refresh_endpoint_csrf_busy_status_and_empty_dashboard(tmp_path, monkeyp
     response = client.post("/refresh", data={"csrf": token}, follow_redirects=False)
     assert response.status_code == 303 and response.headers["location"] == "/reports/2"
     assert storage.report(path, 1)["id"] == 1
+
+
+def test_market_get_retries_and_cools_only_failing_provider(monkeypatch):
+    import httpx
+
+    from chance_track import data
+
+    requests = []
+    waits = []
+    outcomes = iter([False, True, False, False, False, True, True])
+    now = [100]
+    monkeypatch.setattr(data, "monotonic", lambda: now[0])
+    monkeypatch.setattr(data, "sleep", waits.append)
+    monkeypatch.setattr(data, "uniform", lambda low, high: high)
+    monkeypatch.setattr(data, "_cooldowns", {})
+
+    def respond(request):
+        requests.append(request.url.host)
+        if not next(outcomes):
+            raise httpx.RemoteProtocolError("disconnected")
+        return httpx.Response(200)
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        east = ("eastmoney", "https://example.test", {})
+        yahoo = ("yahoo", "https://other.example.test", {})
+        assert data.get_market_response(client, *east).is_success
+        with pytest.raises(httpx.RemoteProtocolError):
+            data.get_market_response(client, *east)
+        with pytest.raises(data.SourceCoolingDown):
+            data.get_market_response(client, *east)
+        assert len(requests) == 5 and waits == [0.5, 0.5, 1.0]
+        assert data.get_market_response(client, *yahoo).is_success
+        now[0] += data.SOURCE_COOLDOWN
+        assert data.get_market_response(client, *east).is_success
+    assert len(requests) == 7
+
+
+def test_failed_refresh_displays_last_quote_without_new_signal(tmp_path):
+    import httpx
+
+    from chance_track.notifications import build_message
+
+    path = tmp_path / "last-quote.sqlite3"
+    first = run(path, [ASSET], send=False, now=NOW, fetcher=fetcher)
+    original = storage.report(path, first)
+    missing = {**ASSET, "id": "missing"}
+
+    def fail(*_):
+        raise httpx.RemoteProtocolError("disconnected")
+
+    failed = run(
+        path, [ASSET, missing], send=False, now=NOW + timedelta(minutes=1), fetcher=fail
+    )
+    report = storage.report(path, failed)
+    item, other = report["items"]
+    assert item["status"] == other["status"] == "error"
+    assert "RemoteProtocolError" in item["error"]
+    assert item["last_quote"] == {
+        "report_id": first,
+        "fetched_at": NOW.isoformat(),
+        "bar_date": original["items"][0]["result"]["bar_date"],
+        "close": original["items"][0]["result"]["close"],
+    }
+    assert other["last_quote"] is None and "result" not in item
+    assert not build_message(report, set())[1]
+    assert storage.report(path, first) == original
+    client = TestClient(create_app(path))
+    html = client.get("/").text
+    assert "本次更新失败" in html and "无可用行情" in html and "上次成功" in html
+    assert item["last_quote"]["bar_date"] in html and f"/reports/{first}" in html
+    assert client.get(f"/reports/{first}").status_code == 200

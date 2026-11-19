@@ -55,7 +55,8 @@ export function renderWatchlist(
       );
       const main = button("", () => choose(asset.id), "watchlist-symbol");
       main.setAttribute("aria-pressed", String(selected === asset.id));
-      const price = originals.get(asset.id)?.result?.close;
+      const item = originals.get(asset.id);
+      const price = item?.result?.close ?? item?.last_quote?.close;
       main.append(
         text("strong", asset.label),
         text(
@@ -65,8 +66,11 @@ export function renderWatchlist(
         text(
           "span",
           price == null
-            ? "加载行情"
-            : price.toLocaleString("zh-CN", { maximumFractionDigits: 2 }),
+            ? item?.status === "error"
+              ? "无可用行情"
+              : "加载行情"
+            : price.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) +
+                (item.status === "error" ? " · 本次更新失败" : ""),
         ),
       );
       const controls = text("div", "", "watchlist-actions");

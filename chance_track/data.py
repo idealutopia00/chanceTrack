@@ -2,6 +2,9 @@
 
 import math
 from datetime import date, datetime
+from random import uniform
+from threading import Lock
+from time import monotonic, sleep
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -116,11 +119,45 @@ def parse_yahoo(payload, asset, as_of, now=None):
     }
 
 
+REQUEST_RETRY_DELAYS = (0.25, 0.5)
+SOURCE_COOLDOWN = 30
+_cooldowns = {}
+_cooldown_lock = Lock()
+
+
+class SourceCoolingDown(ValueError):
+    pass
+
+
+def get_market_response(client, provider, url, params):
+    with _cooldown_lock:
+        if _cooldowns.get(provider, 0) > monotonic():
+            raise SourceCoolingDown(f"{provider} 连续断连，暂缓请求")
+    disconnects = 0
+    for delay in (*REQUEST_RETRY_DELAYS, None):
+        try:
+            return client.get(url, params=params)
+        except (
+            httpx.RemoteProtocolError,
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+        ) as exc:
+            if isinstance(exc, httpx.RemoteProtocolError):
+                disconnects += 1
+            else:
+                disconnects = 0
+            if delay is None:
+                if disconnects == len(REQUEST_RETRY_DELAYS) + 1:
+                    with _cooldown_lock:
+                        _cooldowns[provider] = monotonic() + SOURCE_COOLDOWN
+                raise
+            sleep(delay + uniform(0, delay))
+
+
 def fetch(asset, as_of):
     with httpx.Client(
         timeout=20,
         follow_redirects=True,
-        transport=httpx.HTTPTransport(retries=2),
         headers={"User-Agent": "Mozilla/5.0 ChanceTrack/0.5"},
     ) as client:
         if asset["provider"] == "eastmoney":
@@ -135,12 +172,14 @@ def fetch(asset, as_of):
                 "fields2": "f51,f52,f53,f54,f55,f56",
             }
             params["_"] = str(int(datetime.now(TZ).timestamp() * 1000))
-            response = client.get(url, params=params)
+            response = get_market_response(client, asset["provider"], url, params)
             response.raise_for_status()
             snapshot = parse_eastmoney(response.json(), asset, as_of)
         elif asset["provider"] == "yahoo":
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(asset['code'], safe='')}"
-            response = client.get(url, params={"range": "2y", "interval": "1d"})
+            response = get_market_response(
+                client, asset["provider"], url, {"range": "2y", "interval": "1d"}
+            )
             response.raise_for_status()
             snapshot = parse_yahoo(response.json(), asset, as_of)
         else:

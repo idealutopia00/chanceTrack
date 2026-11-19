@@ -265,9 +265,15 @@
           )?.points;
       const macd = macdPoints?.find((point) => point.time === date);
       const legacyMacd = event.kind ? macd : null;
-      const overlayIds = [rule?.id, rule?.trigger, rule?.filter && rule?.band].filter(Boolean);
+      const overlayIds = [
+        rule?.id,
+        rule?.trigger,
+        rule?.filter && rule?.band,
+      ].filter(Boolean);
       const overlays = (selected.result.chart.overlays ?? [])
-        .filter((layer) => overlayIds.some((id) => layer.id.startsWith(`${id}:`)))
+        .filter((layer) =>
+          overlayIds.some((id) => layer.id.startsWith(`${id}:`)),
+        )
         .flatMap((layer) => {
           const point = layer.points.find((reading) => reading.time === date);
           return point ? [`${layer.name} ${number(point.value)}`] : [];
@@ -390,8 +396,9 @@
               const pendingCount = events.filter(
                 (entry) => entry.provisional === true,
               ).length;
-              const active = eventList.querySelector('[aria-current="true"]')
-                ?.dataset.eventDate === date;
+              const active =
+                eventList.querySelector('[aria-current="true"]')?.dataset
+                  .eventDate === date;
               const glyph = !direction ? "○" : up ? "⇧" : "⇩";
               return {
                 time: date,
@@ -521,9 +528,10 @@
   }
   function select(id, options = {}) {
     const previousId = selected?.asset.id;
-    const eventDate = previousId === id
-      ? eventList.querySelector('[aria-current="true"]')?.dataset.eventDate
-      : null;
+    const eventDate =
+      previousId === id
+        ? eventList.querySelector('[aria-current="true"]')?.dataset.eventDate
+        : null;
     const previousRange = chart?.timeScale().getVisibleLogicalRange();
     selected = items.find((item) => item.asset.id === id);
     if (!selected) return;
@@ -576,9 +584,15 @@
       selected.fetched_at ||
       selected.result?.bar_date ||
       selected.result?.nav_date;
-    document.getElementById("chart-quote-time").textContent = quoteTime
-      ? `行情 ${quoteTime.replace("T", " ")}`
-      : "";
+    const lastQuote = selected.last_quote;
+    document.getElementById("chart-quote-time").textContent =
+      selected.status === "error"
+        ? lastQuote
+          ? `本次更新失败 · 行情交易日 ${lastQuote.bar_date}${lastQuote.fetched_at ? ` · 上次成功采集 ${lastQuote.fetched_at.replace("T", " ")}` : ""}`
+          : "本次更新失败 · 无可用行情"
+        : quoteTime
+          ? `行情 ${quoteTime.replace("T", " ")}`
+          : "";
     if (!content) {
       resetEventPanel();
       if (chart) {

@@ -41,7 +41,13 @@ def create_app(db_path):
         static = Path(__file__).parent / "static"
         return max(
             (static / name).stat().st_mtime_ns
-            for name in ("app.css", "app.js", "workspace.mjs", "watchlist.mjs", "manage.js")
+            for name in (
+                "app.css",
+                "app.js",
+                "workspace.mjs",
+                "watchlist.mjs",
+                "manage.js",
+            )
         )
 
     token = secrets.token_urlsafe(32)
@@ -59,6 +65,8 @@ def create_app(db_path):
                 "asset": item["asset"],
                 "result": item.get("result"),
                 "fetched_at": (item.get("snapshot") or {}).get("fetched_at"),
+                "status": item["status"],
+                "last_quote": item.get("last_quote"),
             }
             for item in items
         ]

@@ -209,7 +209,13 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                     )
                 item["status"] = "warning" if item["result"]["warnings"] else "ok"
             except Exception as exc:
-                item.update(status="error", error=f"{type(exc).__name__}: {exc}")
+                item.pop("snapshot", None)
+                item.pop("result", None)
+                item.update(
+                    status="error",
+                    error=f"{type(exc).__name__}: {exc}",
+                    last_quote=storage.last_market_quote(db_path, asset["id"]),
+                )
         report["items"].append(item)
     report_id, _ = storage.save_report(db_path, report)
     if send:

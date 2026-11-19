@@ -672,9 +672,15 @@
       selected.fetched_at ||
       selected.result?.bar_date ||
       selected.result?.nav_date;
-    document.getElementById("chart-quote-time").textContent = quoteTime
-      ? `行情 ${quoteTime.replace("T", " ")}`
-      : "";
+    const lastQuote = selected.last_quote;
+    document.getElementById("chart-quote-time").textContent =
+      selected.status === "error"
+        ? lastQuote
+          ? `本次更新失败 · 行情交易日 ${lastQuote.bar_date}${lastQuote.fetched_at ? ` · 上次成功采集 ${lastQuote.fetched_at.replace("T", " ")}` : ""}`
+          : "本次更新失败 · 无可用行情"
+        : quoteTime
+          ? `行情 ${quoteTime.replace("T", " ")}`
+          : "";
     if (!content) {
       resetEventPanel();
       if (chart) {

@@ -206,6 +206,27 @@ def report(path, report_id=None):
         return {"id": row["id"], **json.loads(row["payload"])}
 
 
+def last_market_quote(path, asset_id):
+    with connect(path) as db:
+        row = db.execute(
+            """
+            SELECT coalesce(json_extract(item.value, '$.origin_report_id'), reports.id) AS report_id,
+                   json_extract(item.value, '$.snapshot.fetched_at') AS fetched_at,
+                   json_extract(item.value, '$.result.bar_date') AS bar_date,
+                   json_extract(item.value, '$.result.close') AS close
+            FROM reports, json_each(reports.payload, '$.items') AS item
+            WHERE json_extract(item.value, '$.asset.id') = ?
+              AND json_extract(item.value, '$.status') IN ('ok', 'warning')
+              AND json_extract(item.value, '$.snapshot.basis') = 'market_ohlc'
+              AND json_extract(item.value, '$.result.bar_date') IS NOT NULL
+            ORDER BY fetched_at DESC, reports.id DESC
+            LIMIT 1
+            """,
+            (asset_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def decisions(path, report_id):
     with connect(path) as db:
         return [

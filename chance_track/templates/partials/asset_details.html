@@ -83,7 +83,12 @@
                     <p class="warning">{{ warning }}</p>
                 {% endfor %}
             {% else %}
-                <p class="warning">{{ item.error }}</p>
+                <p class="warning">{% if item.status == 'error' %}本次更新失败 · {% endif %}{{ item.error }}</p>
+                {% if item.status == 'error' %}
+                    {% if item.last_quote %}
+                        <p>行情交易日 {{ item.last_quote.bar_date }} · 上次价格 {{ item.last_quote.close }} · <a href="/reports/{{ item.last_quote.report_id }}">查看来源报告</a></p>
+                    {% else %}<p>无可用行情</p>{% endif %}
+                {% endif %}
             {% endif %}
             <dl class="signal-facts update-times">
                 <div>
@@ -98,7 +103,9 @@
                     <dd>
                         {% if item.snapshot and item.snapshot.fetched_at %}
                             <time datetime="{{ item.snapshot.fetched_at }}">{{ item.snapshot.fetched_at[:10] }} {{ item.snapshot.fetched_at[11:19] }}</time>
-{% else %}{{ '本次未成功' if item.status == 'error' else '历史未记录' }}{% endif %}
+                        {% elif item.last_quote and item.last_quote.fetched_at %}
+                            <time datetime="{{ item.last_quote.fetched_at }}">{{ item.last_quote.fetched_at[:10] }} {{ item.last_quote.fetched_at[11:19] }}</time> · 上次成功
+                        {% else %}{{ '本次未成功' if item.status == 'error' else '历史未记录' }}{% endif %}
     </dd>
     </div>
     {% if item.carried_forward %}

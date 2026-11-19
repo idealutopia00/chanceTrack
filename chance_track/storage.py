@@ -58,7 +58,7 @@ def initialize(path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as db:
-        if db.execute("PRAGMA user_version").fetchone()[0] >= 2:
+        if db.execute("PRAGMA user_version").fetchone()[0] >= 3:
             return
         db.executescript("""
     CREATE TABLE IF NOT EXISTS reports (
@@ -76,9 +76,63 @@ def initialize(path):
       key TEXT PRIMARY KEY, report_id INTEGER NOT NULL REFERENCES reports(id));
     CREATE TABLE IF NOT EXISTS notifications (
       report_id INTEGER PRIMARY KEY REFERENCES reports(id), sent_at TEXT, error TEXT);
+    CREATE TABLE IF NOT EXISTS investment_notes (
+      id INTEGER PRIMARY KEY, title TEXT NOT NULL, markdown TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0);
+    CREATE UNIQUE INDEX IF NOT EXISTS investment_notes_pin
+      ON investment_notes(pinned) WHERE pinned = 1;
     """)
         migrate_notifications(db)
-        db.execute("PRAGMA user_version=2")
+        db.execute("PRAGMA user_version=3")
+
+
+def investment_notes(path):
+    with connect(path) as db:
+        return [
+            dict(row)
+            for row in db.execute(
+                "SELECT id,title,created_at,pinned FROM investment_notes ORDER BY created_at DESC, id DESC"
+            )
+        ]
+
+
+def investment_note(path, note_id=None):
+    with connect(path) as db:
+        row = (
+            db.execute(
+                "SELECT * FROM investment_notes WHERE id=?", (note_id,)
+            ).fetchone()
+            if note_id is not None
+            else db.execute("SELECT * FROM investment_notes WHERE pinned=1").fetchone()
+        )
+        return dict(row) if row else None
+
+
+def save_investment_note(path, note_id, title, markdown, now):
+    with connect(path) as db:
+        if note_id is None:
+            cursor = db.execute(
+                "INSERT INTO investment_notes(title,markdown,created_at,updated_at) VALUES(?,?,?,?)",
+                (title, markdown, now, now),
+            )
+            return cursor.lastrowid
+        cursor = db.execute(
+            "UPDATE investment_notes SET title=?,markdown=?,updated_at=? WHERE id=?",
+            (title, markdown, now, note_id),
+        )
+        return note_id if cursor.rowcount else None
+
+
+def pin_investment_note(path, note_id):
+    with connect(path) as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute(
+            "SELECT 1 FROM investment_notes WHERE id=?", (note_id,)
+        ).fetchone():
+            return False
+        db.execute("UPDATE investment_notes SET pinned=0 WHERE pinned=1")
+        db.execute("UPDATE investment_notes SET pinned=1 WHERE id=?", (note_id,))
+        return True
 
 
 def save_report(path, report):

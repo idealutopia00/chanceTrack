@@ -1,4 +1,5 @@
 import json
+import re
 import secrets
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,8 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markdown_it import MarkdownIt
+from markupsafe import Markup
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import storage
@@ -51,6 +54,10 @@ def create_app(db_path):
             )
         )
 
+    markdown = MarkdownIt("commonmark", {"html": False}).disable("image")
+    templates.env.filters["investment_markdown"] = lambda raw: Markup(
+        markdown.render(raw)
+    )
     token = secrets.token_urlsafe(32)
     register_routes(app, db_path, token)
 
@@ -158,6 +165,7 @@ def create_app(db_path):
                 "asset_version": static_version(),
                 "report": selected,
                 "reports": storage.reports(db_path),
+                "pinned_note": storage.investment_note(db_path),
                 "chart_items": chart_items,
                 "summary": summary,
                 "decisions": storage.decisions(db_path, selected["id"])
@@ -171,6 +179,68 @@ def create_app(db_path):
             },
             headers={"Cache-Control": "no-store"},
         )
+
+    def notes_page(request, note, editing=False, raw=None, error=None):
+        return templates.TemplateResponse(
+            request=request,
+            name="investment_notes.html",
+            context={
+                "note": note,
+                "notes": storage.investment_notes(db_path),
+                "editing": editing,
+                "raw": raw if raw is not None else note["markdown"] if note else "",
+                "token": token,
+                "error": error,
+                "asset_version": static_version(),
+            },
+            status_code=400 if error else 200,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/investment-notes")
+    def notes_index(request: Request):
+        return notes_page(request, None, editing=True)
+
+    @app.get("/investment-notes/{note_id}")
+    def read_note(request: Request, note_id: int, edit: bool = False):
+        note = storage.investment_note(db_path, note_id)
+        if not note:
+            raise HTTPException(404, "备忘不存在")
+        return notes_page(request, note, editing=edit)
+
+    @app.post("/investment-notes")
+    def save_note(
+        request: Request,
+        csrf: str = Form(),
+        raw: str = Form(""),
+        note_id: int | None = Form(None),
+    ):
+        if not secrets.compare_digest(csrf, token):
+            raise HTTPException(403, "请刷新页面后重试")
+        note = (
+            storage.investment_note(db_path, note_id) if note_id is not None else None
+        )
+        if note_id is not None and not note:
+            raise HTTPException(404, "备忘不存在")
+        if not raw.strip() or len(raw) > 20000:
+            return notes_page(
+                request, note, True, raw, "请输入 1–20,000 字的 Markdown。"
+            )
+        first_line = raw.strip().splitlines()[0].strip()
+        heading = re.fullmatch(r"#\s+(.+?)(?:\s+#+)?", first_line)
+        title = heading[1] if heading else first_line[:60]
+        saved_id = storage.save_investment_note(
+            db_path, note_id, title, raw, datetime.now(TZ).isoformat()
+        )
+        return RedirectResponse(f"/investment-notes/{saved_id}", status_code=303)
+
+    @app.post("/investment-notes/{note_id}/pin")
+    def pin_note(note_id: int, csrf: str = Form()):
+        if not secrets.compare_digest(csrf, token):
+            raise HTTPException(403, "请刷新页面后重试")
+        if not storage.pin_investment_note(db_path, note_id):
+            raise HTTPException(404, "备忘不存在")
+        return RedirectResponse(f"/investment-notes/{note_id}", status_code=303)
 
     @app.get("/manage")
     def manage(request: Request):

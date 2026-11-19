@@ -10,7 +10,9 @@ const browser = await chromium.launch({
     process.env.CHROME_BIN ||
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 });
-const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+const page = await browser.newPage({
+  viewport: { width: 1440, height: 1000 },
+});
 const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 const base = process.env.CHANCE_TEST_URL || "http://127.0.0.1:8766";
@@ -64,10 +66,47 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 });
   const before = await state();
   await page.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
+  const catalog = page.locator(".indicator-catalog");
+  assert.equal(await catalog.locator("section > strong").count(), 4);
+  assert.match(
+    await catalog.innerText(),
+    /MACD · 副图 · 快线 12 \/ 慢线 26 \/ 信号线 9/,
+  );
+  assert.match(await catalog.innerText(), /布林回归 · 从轨外回到轨内/);
+  const bollinger = catalog.locator("section").filter({ hasText: "突破轨道" });
+  await bollinger.getByText("已存配置", { exact: true }).click();
+  assert.match(
+    await bollinger.innerText(),
+    /周期 20 \/ 标准差倍数 2 · 与默认参数相同/,
+  );
+  const saved = bollinger.getByRole("button", { name: /布林突破 20\/2 ·/ });
+  await saved.click();
+  const savedSettings = page.getByRole("button", {
+    name: "布林突破 20/2 ⚙",
+    exact: true,
+  });
+  await savedSettings.click();
+  await page.getByLabel("布林周期", { exact: true }).fill("30");
+  await page.locator("#indicator-settings [data-close]").click();
+  await page.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
+  await saved.click();
+  await savedSettings.click();
+  assert.equal(
+    await page.getByLabel("布林周期", { exact: true }).inputValue(),
+    "20",
+  );
+  await page.locator("#indicator-settings [data-close]").click();
   await page
-    .getByRole("button", { name: "布林突破 ＋", exact: true })
-    .first()
+    .locator(".indicator-pill")
+    .filter({ has: savedSettings })
+    .getByRole("button", { name: "×" })
     .click();
+  await page.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
+  assert.equal(
+    await catalog.getByRole("button", { name: "创建组合策略…" }).count(),
+    1,
+  );
+  await page.getByRole("button", { name: "布林突破 ＋", exact: true }).click();
   await page.waitForSelector("#exploration-panel:not([hidden])");
   assert.equal(
     (await state()).configuration.version,

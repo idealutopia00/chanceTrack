@@ -209,7 +209,6 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                     )
                 item["status"] = "warning" if item["result"]["warnings"] else "ok"
             except Exception as exc:
-                item.pop("snapshot", None)
                 item.pop("result", None)
                 item.update(
                     status="error",

@@ -872,6 +872,11 @@
   markerToggle.addEventListener("change", setMarkers);
   window.ChanceChart = {
     select,
+    focusEvent: (date) => {
+      if (!chart || !selected?.result?.chart) return;
+      showEvent(date);
+      container.scrollIntoView({ block: "center" });
+    },
     current: () => selected,
     view: () => chart?.timeScale().getVisibleLogicalRange(),
     restoreView: (view) => {

@@ -408,7 +408,8 @@ import {
     renderIndicators();
     renderWatchlist();
     updateBasis();
-    if (saved || activeTemplate || !original) await previewNow();
+    if ((!options.reportOnly && (saved || activeTemplate)) || !original)
+      await previewNow();
     else restoreLayers();
   }
   window.addEventListener("chart:selected", (event) => {
@@ -853,7 +854,12 @@ import {
             try {
               const existing = config.assets.find((x) => x.id === a.id);
               let result;
-              if (!existing || existing.archived || !existing.enabled)
+              if (
+                !existing ||
+                existing.archived ||
+                !existing.enabled ||
+                existing.watchlisted === false
+              )
                 result = await mutate(
                   { action: "add_asset", asset: a },
                   $("symbols-dialog"),
@@ -909,10 +915,11 @@ import {
       /* validation displayed */
     }
   });
-  async function choose(id) {
-    const selection = selectAsset(id);
+  async function choose(id, date) {
+    const selection = selectAsset(id, { reportOnly: Boolean(date) });
     if (compactWatchlist.matches) setWatchlistHidden(true);
     await selection;
+    if (date && selected === id) chart.focusEvent(date);
   }
   function renderWatchlist() {
     $("workspace-configuration").textContent =
@@ -923,12 +930,30 @@ import {
       config.assets,
       selected,
       originals,
-      { text, button, choose, assetSettings, reorder },
+      $("watchlist-view").value,
+      {
+        text,
+        button,
+        choose,
+        assetSettings,
+        reorder,
+        update: updateWatchlistAsset,
+      },
     );
   }
   $("watchlist-filter").addEventListener("input", () => {
     if (config) renderWatchlist();
   });
+  $("watchlist-view").addEventListener("change", () => {
+    if (config) renderWatchlist();
+  });
+  async function updateWatchlistAsset(id, fields) {
+    try {
+      await mutate({ action: "asset", asset_id: id, ...fields });
+    } catch {
+      /* shown */
+    }
+  }
   async function reorder(id, delta) {
     const ids = reorderAssets(config.assets, id, delta);
     if (!ids) return;

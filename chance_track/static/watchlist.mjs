@@ -13,7 +13,10 @@ export function reorderAssets(assets, id, delta) {
   const asset = assets.find((item) => item.id === id);
   if (!asset) return;
   const peers = assets.filter(
-    (item) => !item.archived && groupName(item) === groupName(asset),
+    (item) =>
+      !item.archived &&
+      item.watchlisted !== false &&
+      groupName(item) === groupName(asset),
   );
   const target = peers[peers.indexOf(asset) + delta];
   if (!target) return;
@@ -30,24 +33,43 @@ export function renderWatchlist(
   assets,
   selected,
   originals,
+  view,
   actions,
 ) {
-  const { text, button, choose, assetSettings, reorder } = actions;
+  const { text, button, choose, assetSettings, reorder, update } = actions;
   const groups = new Map();
   for (const asset of assets) {
     if (
       asset.archived ||
+      asset.watchlisted === false ||
       !`${asset.label} ${asset.code}`.toLowerCase().includes(filter)
+    )
+      continue;
+    const item = originals.get(asset.id);
+    const chart = item?.result?.chart;
+    const days = new Set(
+      (chart?.candles ?? []).slice(-5).map((bar) => bar.time),
+    );
+    const event = (chart?.strategy_events ?? chart?.crosses ?? [])
+      .filter(
+        (entry) =>
+          days.has(entry.time) &&
+          (view !== "pending" || entry.provisional === true),
+      )
+      .sort((a, b) => b.time.localeCompare(a.time))[0];
+    if (
+      (view === "priority" && !asset.priority) ||
+      (["recent", "pending"].includes(view) && !event)
     )
       continue;
     const group = groupName(asset);
     if (!groups.has(group)) groups.set(group, []);
-    groups.get(group).push(asset);
+    groups.get(group).push({ asset, event, item });
   }
   node.replaceChildren();
   for (const [group, members] of groups) {
     node.append(text("h4", group, "watchlist-group"));
-    for (const asset of members) {
+    for (const { asset, event, item } of members) {
       const row = text(
         "div",
         "",
@@ -55,34 +77,60 @@ export function renderWatchlist(
       );
       const main = button("", () => choose(asset.id), "watchlist-symbol");
       main.setAttribute("aria-pressed", String(selected === asset.id));
-      const item = originals.get(asset.id);
-      const price = item?.result?.close ?? item?.last_quote?.close;
+      const bars = item?.result?.chart?.candles ?? [];
+      const close = bars.at(-1)?.close,
+        previous = bars.at(-2)?.close;
+      const change = previous && close != null ? close / previous - 1 : null;
       main.append(
         text("strong", asset.label),
         text(
-          "small",
-          `${asset.ticker || asset.code} · ${asset.enabled ? `${asset.strategies.length} 个监测` : "已停用"}`,
-        ),
-        text(
           "span",
-          price == null
+          change == null
             ? item?.status === "error"
-              ? "无可用行情"
-              : "加载行情"
-            : price.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) +
-                (item.status === "error" ? " · 本次更新失败" : ""),
+              ? item.last_quote
+                ? `${item.last_quote.close.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} · 本次更新失败`
+                : "无可用行情"
+              : "—"
+            : new Intl.NumberFormat("zh-CN", {
+                style: "percent",
+                maximumFractionDigits: 2,
+                signDisplay: "exceptZero",
+              }).format(change),
         ),
       );
+      row.append(main);
+      if (event) {
+        const eventName =
+          event.event ?? (event.kind === "golden" ? "金叉" : "死叉");
+        row.append(
+          button(
+            `${eventName} · ${event.time}${event.provisional ? " · 待确认" : ""}`,
+            () => choose(asset.id, event.time),
+            "watchlist-event",
+          ),
+        );
+      }
+      const menu = document.createElement("details");
+      menu.className = "watchlist-more";
+      menu.append(text("summary", "更多"));
       const controls = text("div", "", "watchlist-actions");
       controls.append(
-        button("⚙", () => assetSettings(asset.id)),
-        button("↑", () => reorder(asset.id, -1)),
-        button("↓", () => reorder(asset.id, 1)),
+        button("设置", () => assetSettings(asset.id)),
+        button("上移", () => reorder(asset.id, -1)),
+        button("下移", () => reorder(asset.id, 1)),
+        button(asset.priority ? "取消重点关注" : "设为重点关注", () =>
+          update(asset.id, { priority: !asset.priority }),
+        ),
+        button("移出自选", () => update(asset.id, { watchlisted: false })),
       );
-      row.append(main, controls);
+      if (asset.enabled)
+        controls.append(
+          button("停用监测", () => update(asset.id, { enabled: false })),
+        );
+      menu.append(controls);
+      row.append(menu);
       node.append(row);
     }
   }
-  if (!groups.size)
-    node.append(text("p", "列表为空，可搜索添加或从目录恢复归档标的。"));
+  if (!groups.size) node.append(text("p", "没有符合条件的标的。"));
 }

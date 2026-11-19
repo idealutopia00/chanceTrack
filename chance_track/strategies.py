@@ -223,7 +223,13 @@ def evaluate(snapshot, configs, asset, as_of):
                 "state": "ready" if available else "unavailable",
                 "detail": c["reasons"][ci]
                 if available
-                else ("行情过期" if stale else c["reasons"][ci] or "历史样本不足"),
+                else (
+                    "行情过期"
+                    if stale
+                    else c["reasons"][ci]
+                    if s["kind"] == "donchian"
+                    else "历史样本不足"
+                ),
                 "preview_detail": c["reasons"][-1] if provisional else "",
                 "historical_reference": historical,
             }

@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import timedelta
 import re
 
 import pytest
@@ -70,8 +71,12 @@ def test_donchian_replays_one_entry_and_exit_without_using_current_extremes():
     rows[-3].update(high=106, close=105)
     rows[-2].update(high=108, close=107)
     rows[-1].update(low=95, close=98)
-    config = {"id": "channel", "name": "唐奇安", "kind": "donchian",
-              "params": {"entry": 20, "exit": 10}}
+    config = {
+        "id": "channel",
+        "name": "唐奇安",
+        "kind": "donchian",
+        "params": {"entry": 20, "exit": 10},
+    }
     validate_configuration({"assets": [], "strategies": [config]})
     asset = {**ASSET, "strategies": ["channel"]}
     snapshot["provisional_date"] = rows[-1]["date"]
@@ -84,7 +89,9 @@ def test_donchian_replays_one_entry_and_exit_without_using_current_extremes():
     outputs, _, replayed = evaluate(snapshot, [config], asset, "2026-11-17")
     assert outputs[0]["event"] == "通道退出"
     assert replayed["channel"]["events"] == calculated["channel"]["events"]
-    repeated_outputs, _, repeated = evaluate(deepcopy(snapshot), [config], asset, "2026-11-17")
+    repeated_outputs, _, repeated = evaluate(
+        deepcopy(snapshot), [config], asset, "2026-11-17"
+    )
     assert repeated_outputs == outputs
     assert repeated["channel"]["reasons"] == replayed["channel"]["reasons"]
     assert "98.0000" in outputs[0]["detail"] and "99.0000" in outputs[0]["detail"]
@@ -303,3 +310,196 @@ def test_enabling_new_asset_validates_source_timezone_without_saving(tmp_path):
     with pytest.raises(ValueError, match="时区"):
         save_configuration(path, config, config["version"], fetcher=wrong_market)
     assert calls == ["new"] and load_configuration(path)["version"] == 1
+
+
+def test_stateful_preset_replay_warmup_and_provisional_events():
+    cases = [
+        (
+            {
+                "id": "rsi",
+                "name": "回调",
+                "kind": "pullback",
+                "params": {"trend": 20, "recovery": 3, "rsi": 2, "threshold": 10},
+            },
+            [1] * 20 + [25, 24, 23, 22, 21, 20, 19, 18, 17, 22],
+            ["短线回调", "回调修复"],
+        ),
+        (
+            {
+                "id": "atr",
+                "name": "跟踪退出",
+                "kind": "trailing_exit",
+                "params": {"entry": 3, "period": 3, "multiple": 1},
+            },
+            [10, 10, 10, 12, 14, 14, 10],
+            ["向上突破", "跟踪退出"],
+        ),
+        (
+            {
+                "id": "squeeze",
+                "name": "收缩释放",
+                "kind": "squeeze",
+                "params": {
+                    "period": 3,
+                    "stddev": 2,
+                    "multiple": 1.5,
+                    "range": "high_low",
+                },
+            },
+            [10, 10, 10, 10, 10, 10, 10, 14],
+            ["释放 · 向上"],
+        ),
+    ]
+    for config, closes, expected in cases:
+        snapshot = sample()
+        snapshot["rows"] = snapshot["rows"][-len(closes) :]
+        rows = snapshot["rows"]
+        for row, close in zip(rows, closes):
+            row.update(open=close, high=close + 0.5, low=close - 0.5, close=close)
+        validate_configuration({"assets": [], "strategies": [config]})
+        asset = {"strategies": [config["id"]]}
+        day = rows[-1]["date"]
+        snapshot["provisional_date"] = day
+        preview, _, computed = evaluate(snapshot, [config], asset, day)
+        signals = computed[config["id"]]
+        assert [event for event in signals["events"] if event] == expected
+        assert "预热还需" in signals["reasons"][0]
+        assert preview[0]["event"] is None
+        assert preview[0]["preview_event"] == expected[-1]
+        snapshot.pop("provisional_date")
+        confirmed, _, replayed = evaluate(snapshot, [config], asset, day)
+        assert confirmed[0]["event"] == expected[-1]
+        assert replayed[config["id"]]["events"] == signals["events"]
+        assert replayed[config["id"]]["reasons"] == signals["reasons"]
+
+
+def test_relative_strength_requires_completed_same_currency_benchmark():
+    from chance_track.strategies import relative_strength
+    import pandas as pd
+
+    dates = [f"2026-11-{day:02}" for day in (2, 3, 4, 5, 6)]
+    asset_rows = [
+        dict(date=date, close=price)
+        for date, price in zip(dates, [100, 100, 90, 110, 112])
+    ]
+    benchmark = {
+        "provider": "yahoo",
+        "basis": "market_ohlc",
+        "exchange_timezone": "America/New_York",
+        "quote_currency": "USD",
+        "code": "^GSPC",
+        "rows": [dict(date=date, close=100) for date in dates[:-1]],
+        "provisional_date": dates[-2],
+    }
+    snapshot = {
+        **benchmark,
+        "code": "^NDX",
+        "rows": asset_rows,
+        "provisional_date": None,
+        "benchmarks": {"ref": benchmark},
+    }
+    params = {"benchmark": "ref", "trend": 3, "relative_period": 2}
+    closes = pd.Series([row["close"] for row in asset_rows], dtype=float)
+    events, reasons, ready, _ = relative_strength(snapshot, closes, params)
+    assert not any(events) and not ready.iloc[-2]
+    assert "等待双方同一交易日收盘" in reasons[-2]
+    benchmark["provisional_date"] = None
+    events, reasons, ready, _ = relative_strength(snapshot, closes, params)
+    assert events == [None, None, None, "相对转强", None]
+    assert ready.iloc[-2] and "^GSPC" in reasons[-2] and "比值 SMA2" in reasons[-2]
+    benchmark["quote_currency"] = "EUR"
+    assert not any(relative_strength(snapshot, closes, params)[0])
+
+
+def test_report_pins_benchmark_and_reuses_fetch_for_other_asset(tmp_path):
+    from chance_track import storage, workspace
+    from chance_track.notifications import build_message
+
+    path = tmp_path / "paired.sqlite"
+    config = load_configuration(path)
+    primary = next(a for a in config["assets"] if a["id"] == "nasdaq100")
+    benchmark = next(a for a in config["assets"] if a["id"] == "sp500")
+    preset = {
+        "id": "relative",
+        "name": "相对转强",
+        "kind": "relative_strength",
+        "params": {"trend": 3, "relative_period": 2, "benchmark": "sp500"},
+    }
+    primary["strategies"] = ["relative"]
+    config["strategies"].append(preset)
+    save_configuration(path, config, 1)
+    calls = []
+
+    def fetch_pair(asset, _day):
+        calls.append(asset["id"])
+        snapshot = sample()
+        rows = snapshot["rows"]
+        baseline = [100] * len(rows)
+        if asset["id"] == "nasdaq100":
+            baseline[-2:] = [90, 110]
+        for row, close in zip(rows, baseline):
+            row.update(open=close, close=close, high=close + 1, low=close - 1)
+        return {
+            **snapshot,
+            "code": asset["code"],
+            "provider": "yahoo",
+            "exchange_timezone": "America/New_York",
+            "quote_currency": "USD",
+        }
+
+    report_id = run(
+        path, watchlist=[primary, benchmark], send=False, now=NOW, fetcher=fetch_pair
+    )
+    item = storage.report(path, report_id)["items"][0]
+    assert calls == ["nasdaq100", "sp500"]
+    assert item["snapshot"]["benchmarks"]["sp500"]["code"] == "^GSPC"
+    observed = item["result"]["strategies"][0]
+    assert observed["event"] == "相对转强" and "^GSPC" in observed["detail"]
+    result = workspace.preview(path, {"report_id": report_id}, "nasdaq100", [preset])
+    assert result["result"]["strategies"][0]["event"] == observed["event"]
+    assert result["result"]["strategies"][0]["detail"] == observed["detail"]
+
+    path = tmp_path / "scheduled-pair.sqlite"
+    save_configuration(path, config, 1)
+    primary = {**primary, "activated": {}}
+    failures = []
+
+    def fail_once(asset, day):
+        if asset["id"] == "sp500" and not failures:
+            failures.append(asset["id"])
+            raise ValueError("synthetic benchmark failure")
+        return fetch_pair(asset, day)
+
+    calls.clear()
+    first = run(
+        path,
+        watchlist=[primary],
+        scheduled=True,
+        send=False,
+        now=NOW,
+        fetcher=fail_once,
+    )
+    initial = storage.report(path, first)["items"][0]
+    assert (
+        initial["status"] == "ok"
+        and initial["result"]["strategies"][0]["event"] is None
+    )
+    second = run(
+        path,
+        watchlist=[primary],
+        scheduled=True,
+        send=False,
+        now=NOW + timedelta(minutes=5),
+        fetcher=fail_once,
+    )
+    retry = storage.report(path, second)["items"][0]
+    assert second != first and calls == ["nasdaq100", "sp500"]
+    assert failures == ["sp500"]
+    assert retry["checked_at"] == initial["checked_at"]
+    assert retry["snapshot"]["rows"] == initial["snapshot"]["rows"]
+    assert retry["result"]["strategies"][0]["event"] == observed["event"]
+    assert retry["result"]["strategies"][0]["new_event"]
+    assert not build_message(storage.report(path, first), set())[1]
+    assert len(build_message(storage.report(path, second), set())[1]) == 1
+    assert retry["carried_forward"] and retry["origin_report_id"] == first
+    assert storage.report(path, first)["items"][0] == initial

@@ -97,17 +97,27 @@
         ["boll_break", "布林突破"],
         ["boll_return", "布林回归"],
         ["donchian", "唐奇安突破与退出"],
+        ["pullback", "长期上行中的短线回调"],
+        ["trailing_exit", "突破后的 ATR 跟踪退出"],
+        ["squeeze", "波动收缩后的方向释放"],
+        ["relative_strength", "相对基准转强"],
         ["combination", "触发 + 过滤"],
       ]);
       kind.addEventListener("change", () => {
-        s.params =
-          s.kind === "macd"
-            ? { fast: 12, slow: 26, signal: 9 }
-            : s.kind === "ma"
-              ? { fast: 20, slow: 60 }
-              : s.kind === "donchian"
-                ? { entry: 20, exit: 10 }
-                : { period: 20, stddev: 2 };
+        const defaults = {
+          macd: { fast: 12, slow: 26, signal: 9 },
+          ma: { fast: 20, slow: 60 },
+          donchian: { entry: 20, exit: 10 },
+          pullback: { trend: 200, recovery: 5, rsi: 2, threshold: 10 },
+          trailing_exit: { entry: 20, period: 22, multiple: 3 },
+          squeeze: {
+            period: 20,
+            stddev: 2,
+            multiple: 1.5,
+            range: "true_range",
+          },
+        };
+        s.params = defaults[s.kind] || { period: 20, stddev: 2 };
         render();
       });
       if (s.kind === "combination") {
@@ -128,9 +138,27 @@
         ]);
       } else
         for (const key of Object.keys(s.params)) {
+          if (key === "benchmark") {
+            field(card, "美元指数基准", s.params, key, [
+              ["", "请选择"],
+              ...config.assets
+                .filter((a) => a.provider === "yahoo")
+                .map((a) => [a.id, a.label]),
+            ]);
+            continue;
+          }
+          if (key === "range") {
+            field(card, "振幅口径", s.params, key, [
+              ["true_range", "真实振幅"],
+              ["high_low", "最高价减最低价"],
+            ]);
+            continue;
+          }
           const input = field(card, key, s.params, key);
           input.type = "number";
-          input.step = key === "stddev" ? "0.1" : "1";
+          input.step = ["stddev", "multiple", "threshold"].includes(key)
+            ? "0.1"
+            : "1";
           input.addEventListener("change", () => {
             s.params[key] = Number(input.value);
           });

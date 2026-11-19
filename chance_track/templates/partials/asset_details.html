@@ -13,7 +13,7 @@
                         <small>{{ s.group }} · {{ s.version }}</small>
                         <button type="button" data-focus-asset="{{ item.asset.id }}" data-focus-date="{{ s.bar_date if s.preview_event else s.event_date }}">{{ s.name }} ↗</button>
                         {% if s.is_provisional %}<p>{{ s.bar_date }} · {{ s.preview_event or '无盘中事件' }} · 未收盘待确认</p>{% endif %}
-                        {% if s.is_provisional and s.kind == 'donchian' and s.preview_detail %}<small>{{ s.preview_detail }}</small>{% endif %}
+                        {% if s.is_provisional and (s.stateful or s.requires_completed_pair or s.kind == 'donchian') and s.preview_detail %}<small>{{ s.preview_detail }}</small>{% endif %}
                         <p>{{ s.event_date }} · {{ s.event or ('无事件' if s.state == 'ready' else '无法判断') }} · 收盘参考</p>
                         <small>{{ s.detail }}{% if s.historical_reference %} · 启用前历史参考{% endif %}</small>
                         <details><summary>参数与规则版本</summary><pre>{{ s.config|tojson(indent=2) }}</pre></details>

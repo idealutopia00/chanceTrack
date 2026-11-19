@@ -67,7 +67,7 @@ try {
   const before = await state();
   await page.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
   const catalog = page.locator(".indicator-catalog");
-  assert.equal(await catalog.locator("section > strong").count(), 4);
+  assert.equal(await catalog.locator("section > strong").count(), 9);
   assert.match(
     await catalog.innerText(),
     /MACD · 副图 · 快线 12 \/ 慢线 26 \/ 信号线 9/,

@@ -61,6 +61,41 @@ def load_defaults():
     return deepcopy(DEFAULT_STRATEGIES)
 
 
+def test_donchian_replays_one_entry_and_exit_without_using_current_extremes():
+    snapshot = sample()
+    for row in snapshot["rows"]:
+        row.update(high=101, low=99, close=100)
+    rows = snapshot["rows"]
+    rows[-4].update(high=104, close=101)
+    rows[-3].update(high=106, close=105)
+    rows[-2].update(high=108, close=107)
+    rows[-1].update(low=95, close=98)
+    config = {"id": "channel", "name": "唐奇安", "kind": "donchian",
+              "params": {"entry": 20, "exit": 10}}
+    validate_configuration({"assets": [], "strategies": [config]})
+    asset = {**ASSET, "strategies": ["channel"]}
+    snapshot["provisional_date"] = rows[-1]["date"]
+    outputs, _, calculated = evaluate(snapshot, [config], asset, "2026-11-17")
+    assert calculated["channel"]["events"][-4:] == [None, "向上突破", None, "通道退出"]
+    assert "预热还需 1 根" in calculated["channel"]["reasons"][19]
+    assert outputs[0]["event"] is None
+    assert outputs[0]["preview_event"] == "通道退出"
+    del snapshot["provisional_date"]
+    outputs, _, replayed = evaluate(snapshot, [config], asset, "2026-11-17")
+    assert outputs[0]["event"] == "通道退出"
+    assert replayed["channel"]["events"] == calculated["channel"]["events"]
+    repeated_outputs, _, repeated = evaluate(deepcopy(snapshot), [config], asset, "2026-11-17")
+    assert repeated_outputs == outputs
+    assert repeated["channel"]["reasons"] == replayed["channel"]["reasons"]
+    assert "98.0000" in outputs[0]["detail"] and "99.0000" in outputs[0]["detail"]
+    rows[-1]["close"] = 100
+    recovered, _, _ = evaluate(snapshot, [config], asset, "2026-11-17")
+    assert recovered[0]["event"] is None
+    config["params"]["exit"] = len(rows)
+    _, _, longer_exit = evaluate(snapshot, [config], asset, "2026-11-17")
+    assert longer_exit["channel"]["events"][-3] == "向上突破"
+
+
 def test_configuration_versions_archive_conflict_and_dependencies(tmp_path):
     path = tmp_path / "config.sqlite"
     original = load_configuration(path)

@@ -95,6 +95,7 @@
         ["ma", "双均线交叉"],
         ["boll_break", "布林突破"],
         ["boll_return", "布林回归"],
+        ["donchian", "唐奇安突破与退出"],
         ["combination", "触发 + 过滤"],
       ]);
       kind.addEventListener("change", () => {
@@ -103,7 +104,9 @@
             ? { fast: 12, slow: 26, signal: 9 }
             : s.kind === "ma"
               ? { fast: 20, slow: 60 }
-              : { period: 20, stddev: 2 };
+              : s.kind === "donchian"
+                ? { entry: 20, exit: 10 }
+                : { period: 20, stddev: 2 };
         render();
       });
       if (s.kind === "combination") {

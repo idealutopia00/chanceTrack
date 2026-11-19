@@ -7,6 +7,30 @@ import pandas as pd
 from .market_sessions import session_bounds
 
 
+def donchian(rows, closes, entry_period, exit_period):
+    upper = pd.Series([row["high"] for row in rows]).shift().rolling(entry_period).max()
+    lower = pd.Series([row["low"] for row in rows]).shift().rolling(exit_period).min()
+    ready = pd.Series(False, index=closes.index)
+    events, reasons = [None] * len(rows), [""] * len(rows)
+    watching = False
+    for index, close in enumerate(closes):
+        period = exit_period if watching else entry_period
+        ready.iloc[index] = index >= period
+        if not ready.iloc[index]:
+            reasons[index] = f"预热还需 {period - index} 根日线"
+            continue
+        high, low = upper.iloc[index], lower.iloc[index]
+        threshold = f"前期最低 {low:.4f}" if watching else f"前期最高 {high:.4f}"
+        reasons[index] = f"价格 {close:.4f}；{threshold}"
+        if watching and close < low:
+            events[index] = "通道退出"
+            watching = False
+        elif not watching and close > high:
+            events[index] = "向上突破"
+            watching = True
+    return events, reasons, ready, {"突破轨": upper, "退出轨": lower}
+
+
 def evaluate(snapshot, configs, asset, as_of):
     rows = snapshot["rows"]
     values = pd.Series([r["close"] for r in rows], dtype=float)
@@ -60,7 +84,11 @@ def evaluate(snapshot, configs, asset, as_of):
             upper, lower = mid + p["stddev"] * std, mid - p["stddev"] * std
             ready = mid.notna() & mid.shift().notna()
             overlays = {"上轨": upper, "中轨": mid, "下轨": lower}
-        else:
+        elif kind == "donchian":
+            events, reasons, ready, overlays = donchian(
+                rows, values, p["entry"], p["exit"]
+            )
+        elif kind == "combination":
             trigger = compute(s["trigger"])
             ready = trigger["ready"].copy()
             band = compute(s["band"]) if s.get("filter") else None
@@ -83,7 +111,9 @@ def evaluate(snapshot, configs, asset, as_of):
                     reasons[i] = "触发事件存在，但布林中轨过滤条件未满足"
                 else:
                     reasons[i] = "无触发事件"
-        if kind != "combination":
+        else:
+            raise ValueError(f"未知策略类型：{kind}")
+        if kind in ("macd", "ma", "boll_break", "boll_return"):
             for i in range(1, n):
                 if not ready.iloc[i]:
                     continue
@@ -193,7 +223,13 @@ def evaluate(snapshot, configs, asset, as_of):
                 "state": "ready" if available else "unavailable",
                 "detail": c["reasons"][ci]
                 if available
-                else ("行情过期" if stale else "历史样本不足"),
+                else (
+                    "行情过期"
+                    if stale
+                    else c["reasons"][ci]
+                    if s["kind"] == "donchian"
+                    else "历史样本不足"
+                ),
                 "preview_detail": c["reasons"][-1] if provisional else "",
                 "historical_reference": historical,
             }

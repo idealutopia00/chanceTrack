@@ -7,18 +7,21 @@ import pandas as pd
 from .market_sessions import session_bounds
 
 
-def donchian(rows, values, entry, exit_period):
-    upper = pd.Series([row["high"] for row in rows]).shift().rolling(entry).max()
+def donchian(rows, closes, entry_period, exit_period):
+    upper = pd.Series([row["high"] for row in rows]).shift().rolling(entry_period).max()
     lower = pd.Series([row["low"] for row in rows]).shift().rolling(exit_period).min()
-    ready = upper.notna() & lower.notna()
+    ready = pd.Series(False, index=closes.index)
     events, reasons = [None] * len(rows), [""] * len(rows)
     watching = False
-    for index, close in enumerate(values):
+    for index, close in enumerate(closes):
+        period = exit_period if watching else entry_period
+        ready.iloc[index] = index >= period
         if not ready.iloc[index]:
-            reasons[index] = f"预热还需 {max(entry, exit_period) - index} 根日线"
+            reasons[index] = f"预热还需 {period - index} 根日线"
             continue
         high, low = upper.iloc[index], lower.iloc[index]
-        reasons[index] = f"收盘 {close:.4f}；前期最高 {high:.4f}；前期最低 {low:.4f}"
+        threshold = f"前期最低 {low:.4f}" if watching else f"前期最高 {high:.4f}"
+        reasons[index] = f"价格 {close:.4f}；{threshold}"
         if watching and close < low:
             events[index] = "通道退出"
             watching = False

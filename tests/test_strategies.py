@@ -84,6 +84,13 @@ def test_donchian_replays_one_entry_and_exit_without_using_current_extremes():
     outputs, _, replayed = evaluate(snapshot, [config], asset, "2026-11-17")
     assert outputs[0]["event"] == "通道退出"
     assert replayed["channel"]["events"] == calculated["channel"]["events"]
+    repeated_outputs, _, repeated = evaluate(deepcopy(snapshot), [config], asset, "2026-11-17")
+    assert repeated_outputs == outputs
+    assert repeated["channel"]["reasons"] == replayed["channel"]["reasons"]
+    assert "98.0000" in outputs[0]["detail"] and "99.0000" in outputs[0]["detail"]
+    config["params"]["exit"] = len(rows)
+    _, _, longer_exit = evaluate(snapshot, [config], asset, "2026-11-17")
+    assert longer_exit["channel"]["events"][-3] == "向上突破"
 
 
 def test_configuration_versions_archive_conflict_and_dependencies(tmp_path):

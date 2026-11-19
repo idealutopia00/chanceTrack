@@ -479,8 +479,10 @@ def evaluate(snapshot, configs, asset, as_of):
                     "kind": s["kind"],
                     "points": [
                         {"time": rows[i]["date"], "value": float(v)}
-                        for i, v in enumerate(series)
                         if pd.notna(v)
+                        else {"time": rows[i]["date"]}
+                        for i, v in enumerate(series)
+                        if pd.notna(v) or label == "跟踪线"
                     ],
                 }
             )

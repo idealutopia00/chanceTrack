@@ -291,7 +291,8 @@
       : [];
     for (const layer of content.overlays ?? []) {
       const point = layer.points.find((entry) => entry.time === date);
-      if (point) readings.push(`${layer.name} ${number(point.value)}`);
+      if (point?.value != null)
+        readings.push(`${layer.name} ${number(point.value)}`);
     }
     const configList = selected.result.strategies ?? [];
     for (const strategy of configList) {
@@ -418,7 +419,7 @@
       .filter((layer) => overlayIds.some((id) => layer.id.startsWith(`${id}:`)))
       .flatMap((layer) => {
         const point = layer.points.find((reading) => reading.time === date);
-        return point
+        return point?.value != null
           ? [
               {
                 label: layer.id.split(":").at(-1),

@@ -154,6 +154,9 @@
   const eventPanel = document.getElementById("chart-events");
   const eventList = document.getElementById("chart-event-list");
   const eventDetail = document.getElementById("chart-event-detail");
+  const allEventsButton = document.getElementById("chart-all-events");
+  let eventSelection,
+    showAllEvents = false;
   const library = window.LightweightCharts;
   let chart,
     candles,
@@ -243,95 +246,152 @@
   function eventName(event) {
     return event.event ?? (event.kind === "golden" ? "金叉" : "死叉");
   }
-  function showEvent(date, locate = true) {
-    const rows = chartEvents().filter((event) => event.time === date);
-    if (!rows.length) return;
+  function eventState(event) {
+    return event.provisional === true
+      ? "待确认"
+      : event.provisional === false
+        ? "收盘确认"
+        : "确认状态未记录";
+  }
+  function eventReadings(event) {
+    const { chart: content } = selected.result;
+    const date = event.time;
+    const matches = (selected.result.strategies ?? []).filter(
+      (strategy) => strategy.name === event.name,
+    );
+    const saved = matches.length === 1 ? matches[0] : null;
+    const rule = event.config ?? saved?.config;
+    const macdPoints = event.kind
+      ? content.macd
+      : content.macd_configs?.find(
+          (series) => series.id === (rule?.trigger ?? rule?.id),
+        )?.points;
+    const macd = macdPoints?.find((point) => point.time === date);
+    const overlayIds = [
+      rule?.id,
+      rule?.trigger,
+      rule?.filter && rule?.band,
+    ].filter(Boolean);
+    const overlays = (content.overlays ?? [])
+      .filter((layer) => overlayIds.some((id) => layer.id.startsWith(`${id}:`)))
+      .flatMap((layer) => {
+        const point = layer.points.find((reading) => reading.time === date);
+        return point
+          ? [
+              {
+                label: layer.id.split(":").at(-1),
+                name: layer.name,
+                value: point.value,
+              },
+            ]
+          : [];
+      });
+    const config =
+      rule ??
+      (event.kind && macd
+        ? { params: { fast: 12, slow: 26, signal: 9 } }
+        : null);
+    const price =
+      event.price ?? content.candles.find((bar) => bar.time === date)?.close;
+    return { macd, overlays, config, price, saved };
+  }
+  function eventTitle(event, macd) {
+    const name = eventName(event);
+    return macd && (name === "金叉" || name === "死叉") ? `MACD ${name}` : name;
+  }
+  function eventSummary(event, { macd, overlays, price }) {
+    const name = eventName(event);
+    const readings = [];
+    if (macd && (name === "金叉" || name === "死叉"))
+      readings.push(
+        `DIF ${number(macd.dif)} ${name === "金叉" ? "上穿" : "下穿"} DEA ${number(macd.dea)}`,
+      );
+    else
+      readings.push(
+        ...overlays.map(({ label, value }) => `${label} ${number(value)}`),
+      );
+    if (price != null)
+      readings.push(
+        `${event.provisional === true ? "盘中价" : event.provisional === false ? "收盘价" : "价格"} ${number(price)}`,
+      );
+    return readings.join("｜");
+  }
+  function showEvent(date, locate = true, offset = undefined) {
+    const rows = eventsByDate().get(date);
+    if (!rows?.length) return;
     const bars = selected.result.chart.candles;
     const index = bars.findIndex((bar) => bar.time === date);
     if (index < 0) return;
-    eventPanel.open = true;
-    eventDetail.replaceChildren();
-    for (const event of rows) {
-      const row = document.createElement("p");
-      const matches = (selected.result.strategies ?? []).filter(
-        (strategy) => strategy.name === event.name,
+    offset ??= eventSelection?.date === date ? eventSelection.offset : 0;
+    const event = rows[offset] ?? rows[0];
+    const activeOffset = rows.indexOf(event);
+    if (eventSelection?.date !== date) {
+      const previous = bars.find((bar) => bar.time === eventSelection?.date);
+      if (previous) candles.update({ ...previous }, true);
+      candles.update(
+        { ...bars[index], borderColor: "#dfc080", wickColor: "#dfc080" },
+        true,
       );
-      const saved = matches.length === 1 ? matches[0] : null;
-      const rule = event.config ?? saved?.config;
-      const macdPoints = event.kind
-        ? selected.result.chart.macd
-        : selected.result.chart.macd_configs?.find(
-            (series) => series.id === (rule?.trigger ?? rule?.id),
-          )?.points;
-      const macd = macdPoints?.find((point) => point.time === date);
-      const legacyMacd = event.kind ? macd : null;
-      const overlayIds = [
-        rule?.id,
-        rule?.trigger,
-        rule?.filter && rule?.band,
-      ].filter(Boolean);
-      const overlays = (selected.result.chart.overlays ?? [])
-        .filter((layer) =>
-          overlayIds.some((id) => layer.id.startsWith(`${id}:`)),
-        )
-        .flatMap((layer) => {
-          const point = layer.points.find((reading) => reading.time === date);
-          return point ? [`${layer.name} ${number(point.value)}`] : [];
-        });
-      const config =
-        event.config ??
-        saved?.config ??
-        (legacyMacd ? { params: { fast: 12, slow: 26, signal: 9 } } : null);
-      const params = [
-        ...Object.entries(config?.params ?? {}).map(
-          ([key, value]) => `${key} ${value}`,
-        ),
-        ...Object.values(config?.dependencies ?? {}).map(
-          (rule) =>
-            `${rule.name} ${Object.entries(rule.params ?? {})
-              .map(([key, value]) => `${key} ${value}`)
-              .join(" / ")}`,
-        ),
-        config?.filter,
-      ]
-        .filter(Boolean)
-        .join(" / ");
-      row.textContent = [
-        date,
-        event.name ?? "MACD",
-        event.version ?? saved?.version,
-        params,
-        eventName(event),
-        event.provisional === true
-          ? "待确认"
-          : event.provisional === false
-            ? "收盘确认"
-            : "确认状态未记录",
-        `价格 ${event.price ?? bars[index].close}`,
-        macd && `DIF ${macd.dif} · DEA ${macd.dea} · 柱 ${macd.histogram}`,
-        ...overlays,
-        event.detail ??
-          (saved?.event_date === date && saved.event === event.event
-            ? saved.detail
-            : null),
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      eventDetail.append(row);
     }
-    eventList
-      .querySelectorAll("button")
-      .forEach((button) =>
-        button.setAttribute(
-          "aria-current",
-          String(button.dataset.eventDate === date),
-        ),
+    eventSelection = { date, offset: activeOffset };
+    let active = [...eventList.querySelectorAll("button")].find(
+      (button) =>
+        button.dataset.eventDate === date &&
+        Number(button.dataset.eventOffset) === activeOffset,
+    );
+    if (!active) {
+      showAllEvents = true;
+      renderEventList();
+      active = [...eventList.querySelectorAll("button")].find(
+        (button) =>
+          button.dataset.eventDate === date &&
+          Number(button.dataset.eventOffset) === activeOffset,
       );
+    }
+    eventPanel.open = true;
+    if (active?.closest("details") !== eventPanel)
+      active?.closest("details")?.setAttribute("open", "");
+    for (const button of eventList.querySelectorAll("button"))
+      button.setAttribute("aria-current", String(button === active));
+    const { macd, overlays, config, price, saved } = eventReadings(event);
+    const full = [
+      date,
+      event.name ?? "MACD",
+      event.version ?? saved?.version,
+      eventTitle(event, macd),
+      eventState(event),
+      price != null && `价格 ${price}`,
+      macd && `DIF ${macd.dif} · DEA ${macd.dea} · 柱 ${macd.histogram}`,
+      ...overlays.map(({ name, value }) => `${name} ${value}`),
+      event.detail ??
+        (saved?.event_date === date && saved.event === event.event
+          ? saved.detail
+          : null),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const details = document.createElement("details");
+    const label = document.createElement("summary");
+    label.textContent = "触发详情与参数";
+    const description = document.createElement("p");
+    description.textContent = full;
+    details.append(label, description);
+    if (config) {
+      const parameters = document.createElement("pre");
+      parameters.textContent = JSON.stringify(config, null, 2);
+      details.append(parameters);
+    }
+    eventDetail.replaceChildren(details);
     setMarkers();
     if (!locate) return;
-    eventList.querySelector('[aria-current="true"]')?.scrollIntoView({
-      block: "nearest",
-    });
+    if (active) {
+      const rowBounds = active.getBoundingClientRect();
+      const listBounds = eventList.getBoundingClientRect();
+      if (rowBounds.top < listBounds.top)
+        eventList.scrollTop += rowBounds.top - listBounds.top;
+      if (rowBounds.bottom > listBounds.bottom)
+        eventList.scrollTop += rowBounds.bottom - listBounds.bottom;
+    }
     chart.timeScale().setVisibleLogicalRange({
       from: Math.max(0, index - 25),
       to: index + 8,
@@ -344,6 +404,8 @@
     eventDetail.replaceChildren();
     eventPanel.hidden = true;
     eventPanel.open = false;
+    eventSelection = undefined;
+    showAllEvents = false;
   }
   function eventsByDate() {
     const dates = new Map();
@@ -354,18 +416,47 @@
     return dates;
   }
   function renderEventList() {
-    resetEventPanel();
-    const dates = eventsByDate();
-    eventPanel.hidden = dates.size === 0;
-    for (const date of [...dates.keys()].sort().reverse()) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.dataset.eventDate = date;
-      button.textContent = `${date} · ${dates.get(date).length} 条`;
-      button.addEventListener("click", () => showEvent(date));
-      eventList.append(button);
+    const entries = [...eventsByDate()].sort(([a], [b]) => b.localeCompare(a));
+    eventPanel.hidden = entries.length === 0;
+    allEventsButton.hidden = entries.length <= 5 || showAllEvents;
+    eventList.replaceChildren();
+    for (const [date, events] of showAllEvents
+      ? entries
+      : entries.slice(0, 5)) {
+      const group = document.createElement("div");
+      for (const [offset, event] of events.entries()) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.dataset.eventDate = date;
+        button.dataset.eventOffset = offset;
+        const readings = eventReadings(event);
+        const title = document.createElement("strong");
+        title.textContent = `${eventTitle(event, readings.macd)} · ${date} · ${eventState(event)}`;
+        const summary = document.createElement("small");
+        summary.textContent = eventSummary(event, readings);
+        button.append(title, summary);
+        button.addEventListener("click", () => showEvent(date, true, offset));
+        if (offset === 0) {
+          group.append(button);
+          if (events.length === 1) continue;
+          const more = document.createElement("details");
+          const label = document.createElement("summary");
+          label.textContent = `另 ${events.length - 1} 条`;
+          more.append(label);
+          group.append(more);
+        } else {
+          group.lastElementChild.append(button);
+        }
+      }
+      eventList.append(group);
     }
   }
+  allEventsButton.addEventListener("click", () => {
+    showAllEvents = true;
+    renderEventList();
+    if (eventSelection)
+      showEvent(eventSelection.date, false, eventSelection.offset);
+  });
   function setMarkers() {
     if (!markers || !selected?.result?.chart) return;
     const meanings = {
@@ -396,9 +487,7 @@
               const pendingCount = events.filter(
                 (entry) => entry.provisional === true,
               ).length;
-              const active =
-                eventList.querySelector('[aria-current="true"]')?.dataset
-                  .eventDate === date;
+              const active = eventSelection?.date === date;
               const glyph = !direction ? "○" : up ? "⇧" : "⇩";
               return {
                 time: date,
@@ -528,10 +617,9 @@
   }
   function select(id, options = {}) {
     const previousId = selected?.asset.id;
-    const eventDate =
-      previousId === id
-        ? eventList.querySelector('[aria-current="true"]')?.dataset.eventDate
-        : null;
+    const previousEvent = previousId === id ? eventSelection : null;
+    const previousAll = previousId === id && showAllEvents;
+    resetEventPanel();
     const previousRange = chart?.timeScale().getVisibleLogicalRange();
     selected = items.find((item) => item.asset.id === id);
     if (!selected) return;
@@ -730,9 +818,12 @@
         chart.panes()[0].setHeight(380);
         chart.panes()[1].setHeight(180);
       }
+      showAllEvents = previousAll;
       renderEventList();
+      eventPanel.open = !eventPanel.hidden;
       setMarkers();
-      if (eventDate) showEvent(eventDate, false);
+      if (previousEvent)
+        showEvent(previousEvent.date, false, previousEvent.offset);
       if (options.view) chart.timeScale().setVisibleLogicalRange(options.view);
       else if (previousId === id && previousRange && options.keepRange)
         chart.timeScale().setVisibleLogicalRange(previousRange);

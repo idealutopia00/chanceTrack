@@ -11,6 +11,7 @@ from .analysis import analyze
 from .configuration import (
     load_configuration,
     save_configuration,
+    strategy_signature,
     validate_configuration,
 )
 from .data import TZ, fetch
@@ -215,7 +216,22 @@ def edit(path, payload, fetcher=fetch):
         strategy = deepcopy(payload["strategy"])
         old = next((s for s in config["strategies"] if s["id"] == strategy["id"]), None)
         shared = payload.get("shared", False)
-        if shared:
+        reuse_id = payload.get("reuse_id")
+        if reuse_id:
+            existing = next(
+                (s for s in config["strategies"] if s["id"] == reuse_id), None
+            )
+            if not existing or strategy_signature(strategy) != strategy_signature(
+                existing
+            ):
+                raise ValueError("待复用配置已变化，请重新选择")
+            strategy = existing
+            a["strategies"] = [
+                sid
+                for sid in a.get("strategies", [])
+                if sid != payload.get("replace_id") or sid == reuse_id
+            ]
+        elif shared:
             if not old:
                 raise ValueError("共享配置不存在")
             strategy["id"] = old["id"]

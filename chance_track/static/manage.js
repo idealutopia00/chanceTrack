@@ -83,6 +83,7 @@
     }
     for (const s of config.strategies) {
       const card = document.createElement("fieldset");
+      card.id = `strategy-${s.id}`;
       const title = document.createElement("legend");
       title.textContent = s.name;
       card.append(title);
@@ -177,5 +178,24 @@
     document.getElementById("save-status").textContent =
       "正在校验配置及行情，请稍候…";
   };
+  const reuse = document.getElementById("reuse-strategy");
+  reuse?.addEventListener("click", () => {
+    const { duplicate, match } = reuse.dataset;
+    const replace = (id) => (id === duplicate ? match : id);
+    for (const asset of config.assets) {
+      asset.strategies = [...new Set((asset.strategies || []).map(replace))];
+    }
+    config.strategies = config.strategies.filter((s) => s.id !== duplicate);
+    for (const strategy of config.strategies) {
+      if (strategy.kind !== "combination") continue;
+      strategy.trigger = replace(strategy.trigger);
+      strategy.band = replace(strategy.band);
+    }
+    reuse.hidden = true;
+    render();
+    document.getElementById(`strategy-${match}`).scrollIntoView();
+    document.getElementById("save-status").textContent =
+      "已在草稿中复用配置，请保存新版本。";
+  });
   render();
 })();

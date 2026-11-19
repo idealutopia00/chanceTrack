@@ -1971,6 +1971,21 @@ td {
 .indicator-catalog button {
   text-align: left;
 }
+.indicator-catalog section {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.indicator-catalog strong {
+  display: block;
+  margin-bottom: 6px;
+}
+.indicator-catalog details {
+  margin-top: 6px;
+}
+.indicator-catalog details button {
+  display: block;
+  margin-top: 4px;
+}
 .muted {
   color: var(--muted);
 }

@@ -4,7 +4,7 @@
 {% if error %}<p class="warning" role="alert">{{ error }}</p>{% endif %}
 {% if duplicate %}
 {% if duplicate.is_new %}
-<button type="button" id="reuse-strategy" data-duplicate="{{ duplicate.duplicate_id }}" data-match="{{ duplicate.match_id }}">复用已有配置</button>
+<button type="button" id="reuse-strategy" data-duplicate="{{ duplicate.duplicate_id }}" data-match="{{ duplicate.match_id }}" data-equivalents="{{ duplicate.match_ids|join(' ') }}">复用已有配置</button>
 {% endif %}
 <a href="#strategy-{{ duplicate.match_id }}">查看匹配配置</a>
 {% endif %}

@@ -225,16 +225,31 @@ def edit(path, payload, fetcher=fetch):
                 existing
             ):
                 raise ValueError("待复用配置已变化，请重新选择")
-            bound = next(
-                (
-                    entry
-                    for entry in config["strategies"]
-                    if entry["id"] in a.get("strategies", [])
-                    and strategy_signature(entry) == strategy_signature(existing)
-                ),
-                None,
-            )
-            strategy = bound or existing
+            if strategy["kind"] == "combination":
+                for dependency_id in [strategy["trigger"]] + (
+                    [strategy["band"]] if strategy.get("filter") else []
+                ):
+                    proposed = payload.get("dependencies", {}).get(dependency_id)
+                    current = next(
+                        s for s in config["strategies"] if s["id"] == dependency_id
+                    )
+                    if proposed and any(
+                        proposed.get(key) != current.get(key)
+                        for key in ("kind", "params")
+                    ):
+                        raise ValueError("待复用配置的组合参数已变化，请重新选择")
+            bindings = a.get("strategies", [])
+            strategy = existing
+            if reuse_id not in bindings:
+                strategy = next(
+                    (
+                        entry
+                        for entry in config["strategies"]
+                        if entry["id"] in bindings
+                        and strategy_signature(entry) == strategy_signature(existing)
+                    ),
+                    existing,
+                )
             a["strategies"] = [
                 sid
                 for sid in a.get("strategies", [])

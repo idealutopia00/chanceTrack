@@ -157,10 +157,12 @@ def validate_configuration(config):
 
 
 class DuplicateStrategy(ValueError):
-    def __init__(self, duplicate, match, is_new):
+    def __init__(self, duplicate, matches, is_new):
+        match = matches[0]
         super().__init__(f"已有匹配配置：{match['name']}（{match['id']}），请复用")
         self.duplicate_id = duplicate["id"]
         self.match_id = match["id"]
+        self.match_ids = [entry["id"] for entry in matches]
         self.is_new = is_new
 
 
@@ -192,16 +194,13 @@ def save_configuration(path, config, expected_version, fetcher=fetch):
         old = old_strategies.get(s["id"])
         signature = strategy_signature(s)
         if not old or strategy_signature(old) != signature:
-            match = next(
-                (
-                    other
-                    for other in config["strategies"]
-                    if other["id"] != s["id"] and strategy_signature(other) == signature
-                ),
-                None,
-            )
-            if match:
-                raise DuplicateStrategy(s, match, not old)
+            matches = [
+                other
+                for other in config["strategies"]
+                if other["id"] != s["id"] and strategy_signature(other) == signature
+            ]
+            if matches:
+                raise DuplicateStrategy(s, matches, not old)
         unchanged = old and all(
             old.get(k) == s.get(k)
             for k in ("kind", "params", "trigger", "filter", "band")

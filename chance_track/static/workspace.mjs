@@ -545,12 +545,13 @@ import {
   }
   function matchesConfiguration(a, b) {
     if (a.name !== b.name || a.kind !== b.kind) return false;
-    const aParams = a.params || {};
-    const bParams = b.params || {};
-    return (
-      Object.keys(aParams).length === Object.keys(bParams).length &&
-      Object.keys(aParams).every((key) => aParams[key] === bParams[key])
-    );
+    if (a.kind === "combination")
+      return (
+        a.trigger === b.trigger &&
+        (a.filter || "") === (b.filter || "") &&
+        (!a.filter || a.band === b.band)
+      );
+    return sameBaseRule(a, b);
   }
   function renderCatalog() {
     const dialog = $("indicator-dialog");
@@ -613,9 +614,17 @@ import {
       catalog.append(row);
     }
     const combinations = document.createElement("section");
-    const savedCombinations = config.strategies.filter(
-      (strategy) => strategy.kind === "combination",
-    );
+    const savedCombinations = [];
+    for (const strategy of config.strategies) {
+      if (
+        strategy.kind === "combination" &&
+        !savedCombinations.some((entry) =>
+          matchesConfiguration(entry, strategy),
+        )
+      ) {
+        savedCombinations.push(strategy);
+      }
+    }
     if (savedCombinations.length) {
       const details = document.createElement("details");
       details.append(text("summary", "已存组合策略"));
@@ -742,10 +751,18 @@ import {
         ),
       ),
     );
-    const candidates =
-      s.kind === "combination"
-        ? []
-        : config.strategies.filter((entry) => matchesConfiguration(s, entry));
+    const dependencies = expandDependencies([s]).filter(
+      (entry) => entry.id !== s.id,
+    );
+    const canReuse = dependencies.every((dependency) => {
+      const current = config.strategies.find(
+        (entry) => entry.id === dependency.id,
+      );
+      return current && sameBaseRule(dependency, current);
+    });
+    const candidates = canReuse
+      ? config.strategies.filter((entry) => matchesConfiguration(s, entry))
+      : [];
     const matching =
       candidates.find((entry) => asset.strategies.includes(entry.id)) ||
       candidates.find((entry) => entry.id === originalId) ||
@@ -797,9 +814,7 @@ import {
               asset_id: selected,
               strategy,
               dependencies: Object.fromEntries(
-                expandDependencies([s])
-                  .filter((d) => d.id !== s.id)
-                  .map((d) => [d.id, d]),
+                dependencies.map((d) => [d.id, d]),
               ),
               shared: scope.value === "shared",
               reuse_id: matching?.id,

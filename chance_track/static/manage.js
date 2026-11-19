@@ -180,10 +180,17 @@
   };
   const reuse = document.getElementById("reuse-strategy");
   reuse?.addEventListener("click", () => {
-    const { duplicate, match } = reuse.dataset;
+    const { duplicate, match, equivalents } = reuse.dataset;
+    const equivalentIds = new Set(equivalents.split(" "));
     const replace = (id) => (id === duplicate ? match : id);
     for (const asset of config.assets) {
-      asset.strategies = [...new Set((asset.strategies || []).map(replace))];
+      const bindings = asset.strategies || [];
+      const bound = bindings.find((id) => equivalentIds.has(id));
+      asset.strategies = [
+        ...new Set(
+          bindings.map((id) => (id === duplicate ? bound || match : id)),
+        ),
+      ];
     }
     config.strategies = config.strategies.filter((s) => s.id !== duplicate);
     for (const strategy of config.strategies) {

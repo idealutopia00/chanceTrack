@@ -265,8 +265,9 @@
           )?.points;
       const macd = macdPoints?.find((point) => point.time === date);
       const legacyMacd = event.kind ? macd : null;
+      const overlayIds = [rule?.id, rule?.trigger, rule?.filter && rule?.band].filter(Boolean);
       const overlays = (selected.result.chart.overlays ?? [])
-        .filter((layer) => rule?.id && layer.id.startsWith(`${rule.id}:`))
+        .filter((layer) => overlayIds.some((id) => layer.id.startsWith(`${id}:`)))
         .flatMap((layer) => {
           const point = layer.points.find((reading) => reading.time === date);
           return point ? [`${layer.name} ${number(point.value)}`] : [];

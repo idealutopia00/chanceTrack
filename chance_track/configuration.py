@@ -156,6 +156,30 @@ def validate_configuration(config):
     return config
 
 
+class DuplicateStrategy(ValueError):
+    def __init__(self, duplicate, matches, is_new):
+        match = matches[0]
+        super().__init__(f"已有匹配配置：{match['name']}（{match['id']}），请复用")
+        self.duplicate_id = duplicate["id"]
+        self.match_id = match["id"]
+        self.match_ids = [entry["id"] for entry in matches]
+        self.is_new = is_new
+
+
+def strategy_signature(strategy):
+    kind = strategy["kind"]
+    if kind == "combination":
+        condition = strategy.get("filter") or None
+        parameters = (
+            strategy.get("trigger"),
+            condition,
+            strategy.get("band") if condition else None,
+        )
+    else:
+        parameters = strategy.get("params", {})
+    return strategy["name"], kind, parameters
+
+
 def save_configuration(path, config, expected_version, fetcher=fetch):
     previous = load_configuration(path)
     if previous["version"] != expected_version:
@@ -168,6 +192,15 @@ def save_configuration(path, config, expected_version, fetcher=fetch):
     now = datetime.now(TZ)
     for s in config["strategies"]:
         old = old_strategies.get(s["id"])
+        signature = strategy_signature(s)
+        if not old or strategy_signature(old) != signature:
+            matches = [
+                other
+                for other in config["strategies"]
+                if other["id"] != s["id"] and strategy_signature(other) == signature
+            ]
+            if matches:
+                raise DuplicateStrategy(s, matches, not old)
         unchanged = old and all(
             old.get(k) == s.get(k)
             for k in ("kind", "params", "trigger", "filter", "band")

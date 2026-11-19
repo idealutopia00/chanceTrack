@@ -12,6 +12,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import storage
 from .configuration import (
+    DuplicateStrategy,
     configuration_history,
     configuration_version,
     load_configuration,
@@ -176,6 +177,7 @@ def create_app(db_path):
                 "versions": configuration_history(db_path),
                 "token": token,
                 "error": error,
+                "duplicate": error if isinstance(error, DuplicateStrategy) else None,
                 "asset_version": static_version(),
             },
             status_code=status,
@@ -204,7 +206,7 @@ def create_app(db_path):
         except (ValueError, KeyError, TypeError, httpx.HTTPError) as exc:
             return management_page(
                 request,
-                str(exc),
+                exc,
                 400,
                 draft
                 if isinstance(draft, dict)

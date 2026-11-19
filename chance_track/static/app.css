@@ -502,10 +502,23 @@ h3 {
   font-size: 13px;
 }
 #chart-event-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  max-height: 9rem;
+  display: grid;
+  gap: 0.4rem;
+  max-height: 19rem;
+  overflow: auto;
+}
+#chart-event-list button {
+  display: grid;
+  width: 100%;
+  text-align: left;
+}
+#chart-event-list details {
+  padding-inline-start: 0.75rem;
+}
+#chart-event-list small {
+  color: var(--muted);
+}
+#chart-event-detail pre {
   overflow: auto;
 }
 #chart-event-list [aria-current="true"] {

@@ -243,7 +243,7 @@
   function eventName(event) {
     return event.event ?? (event.kind === "golden" ? "金叉" : "死叉");
   }
-  function showEvent(date) {
+  function showEvent(date, locate = true) {
     const rows = chartEvents().filter((event) => event.time === date);
     if (!rows.length) return;
     const bars = selected.result.chart.candles;
@@ -321,6 +321,8 @@
           String(button.dataset.eventDate === date),
         ),
       );
+    setMarkers();
+    if (!locate) return;
     eventList.querySelector('[aria-current="true"]')?.scrollIntoView({
       block: "nearest",
     });
@@ -329,7 +331,6 @@
       to: index + 8,
     });
     chart.setCrosshairPosition(bars[index].close, date, candles);
-    setMarkers();
     showOHLC(bars[index]);
   }
   function resetEventPanel() {
@@ -520,6 +521,9 @@
   }
   function select(id, options = {}) {
     const previousId = selected?.asset.id;
+    const eventDate = previousId === id
+      ? eventList.querySelector('[aria-current="true"]')?.dataset.eventDate
+      : null;
     const previousRange = chart?.timeScale().getVisibleLogicalRange();
     selected = items.find((item) => item.asset.id === id);
     if (!selected) return;
@@ -712,8 +716,9 @@
         chart.panes()[0].setHeight(380);
         chart.panes()[1].setHeight(180);
       }
-      setMarkers();
       renderEventList();
+      setMarkers();
+      if (eventDate) showEvent(eventDate, false);
       if (options.view) chart.timeScale().setVisibleLogicalRange(options.view);
       else if (previousId === id && previousRange && options.keepRange)
         chart.timeScale().setVisibleLogicalRange(previousRange);

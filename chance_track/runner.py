@@ -48,9 +48,19 @@ def is_running(db_path):
         return True
 
 
+def failed_benchmark(item):
+    return any(
+        ref.get("error")
+        for ref in (item.get("snapshot") or {}).get("benchmarks", {}).values()
+    )
+
+
 def retry_due(previous, now):
     return (
-        any(item["status"] == "error" for item in previous["items"])
+        any(
+            item["status"] == "error" or failed_benchmark(item)
+            for item in previous["items"]
+        )
         and previous.get("attempt", 1) < MAX_ATTEMPTS
         and now.time() < RETRY_CUTOFF
         and now >= datetime.fromisoformat(previous["created_at"]) + RETRY_INTERVAL
@@ -185,20 +195,29 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
 
     for asset in assets:
         old = previous_items.get(asset["id"])
-        if old and old["status"] != "error":
+        if old and old["status"] != "error" and not failed_benchmark(old):
             item = deepcopy(old)
             item["carried_forward"] = True
             item.setdefault("origin_report_id", previous["id"])
             report["items"].append(item)
             continue
         item = {"asset": asset, "checked_at": now.isoformat(), "carried_forward": False}
+        if old and old["status"] in ("ok", "warning"):
+            item.update(
+                checked_at=old["checked_at"],
+                carried_forward=True,
+                origin_report_id=old.get("origin_report_id", previous["id"]),
+            )
         if not asset["enabled"]:
             item.update(status="disabled", error=asset.get("reason", "未启用"))
         else:
             try:
                 snapshot = market_snapshot(asset)
-                references = {}
+                references = dict(snapshot.get("benchmarks", {}))
                 for benchmark_id in relative_benchmarks(config["strategies"], asset):
+                    frozen = references.get(benchmark_id)
+                    if frozen and not frozen.get("error"):
+                        continue
                     try:
                         references[benchmark_id] = benchmark_context(
                             market_snapshot(assets_by_id[benchmark_id])

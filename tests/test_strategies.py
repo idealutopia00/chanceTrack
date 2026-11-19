@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import timedelta
 import re
 
 import pytest
@@ -412,6 +413,7 @@ def test_relative_strength_requires_completed_same_currency_benchmark():
 
 def test_report_pins_benchmark_and_reuses_fetch_for_other_asset(tmp_path):
     from chance_track import storage, workspace
+    from chance_track.notifications import build_message
 
     path = tmp_path / "paired.sqlite"
     config = load_configuration(path)
@@ -456,3 +458,48 @@ def test_report_pins_benchmark_and_reuses_fetch_for_other_asset(tmp_path):
     result = workspace.preview(path, {"report_id": report_id}, "nasdaq100", [preset])
     assert result["result"]["strategies"][0]["event"] == observed["event"]
     assert result["result"]["strategies"][0]["detail"] == observed["detail"]
+
+    path = tmp_path / "scheduled-pair.sqlite"
+    save_configuration(path, config, 1)
+    primary = {**primary, "activated": {}}
+    failures = []
+
+    def fail_once(asset, day):
+        if asset["id"] == "sp500" and not failures:
+            failures.append(asset["id"])
+            raise ValueError("synthetic benchmark failure")
+        return fetch_pair(asset, day)
+
+    calls.clear()
+    first = run(
+        path,
+        watchlist=[primary],
+        scheduled=True,
+        send=False,
+        now=NOW,
+        fetcher=fail_once,
+    )
+    initial = storage.report(path, first)["items"][0]
+    assert (
+        initial["status"] == "ok"
+        and initial["result"]["strategies"][0]["event"] is None
+    )
+    second = run(
+        path,
+        watchlist=[primary],
+        scheduled=True,
+        send=False,
+        now=NOW + timedelta(minutes=5),
+        fetcher=fail_once,
+    )
+    retry = storage.report(path, second)["items"][0]
+    assert second != first and calls == ["nasdaq100", "sp500"]
+    assert failures == ["sp500"]
+    assert retry["checked_at"] == initial["checked_at"]
+    assert retry["snapshot"]["rows"] == initial["snapshot"]["rows"]
+    assert retry["result"]["strategies"][0]["event"] == observed["event"]
+    assert retry["result"]["strategies"][0]["new_event"]
+    assert not build_message(storage.report(path, first), set())[1]
+    assert len(build_message(storage.report(path, second), set())[1]) == 1
+    assert retry["carried_forward"] and retry["origin_report_id"] == first
+    assert storage.report(path, first)["items"][0] == initial

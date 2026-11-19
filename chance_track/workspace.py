@@ -11,6 +11,7 @@ from .analysis import analyze
 from .configuration import (
     load_configuration,
     save_configuration,
+    strategy_signature,
     validate_configuration,
 )
 from .data import TZ, fetch
@@ -215,7 +216,46 @@ def edit(path, payload, fetcher=fetch):
         strategy = deepcopy(payload["strategy"])
         old = next((s for s in config["strategies"] if s["id"] == strategy["id"]), None)
         shared = payload.get("shared", False)
-        if shared:
+        reuse_id = payload.get("reuse_id")
+        if reuse_id:
+            existing = next(
+                (s for s in config["strategies"] if s["id"] == reuse_id), None
+            )
+            if not existing or strategy_signature(strategy) != strategy_signature(
+                existing
+            ):
+                raise ValueError("待复用配置已变化，请重新选择")
+            if strategy["kind"] == "combination":
+                for dependency_id in [strategy["trigger"]] + (
+                    [strategy["band"]] if strategy.get("filter") else []
+                ):
+                    proposed = payload.get("dependencies", {}).get(dependency_id)
+                    current = next(
+                        s for s in config["strategies"] if s["id"] == dependency_id
+                    )
+                    if proposed and any(
+                        proposed.get(key) != current.get(key)
+                        for key in ("kind", "params")
+                    ):
+                        raise ValueError("待复用配置的组合参数已变化，请重新选择")
+            bindings = a.get("strategies", [])
+            strategy = existing
+            if reuse_id not in bindings:
+                strategy = next(
+                    (
+                        entry
+                        for entry in config["strategies"]
+                        if entry["id"] in bindings
+                        and strategy_signature(entry) == strategy_signature(existing)
+                    ),
+                    existing,
+                )
+            a["strategies"] = [
+                sid
+                for sid in a.get("strategies", [])
+                if sid != payload.get("replace_id") or sid == strategy["id"]
+            ]
+        elif shared:
             if not old:
                 raise ValueError("共享配置不存在")
             strategy["id"] = old["id"]

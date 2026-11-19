@@ -543,6 +543,16 @@ import {
       .map(([key, label]) => `${label} ${params[key]}`)
       .join(" / ");
   }
+  function matchesConfiguration(a, b) {
+    if (a.name !== b.name || a.kind !== b.kind) return false;
+    if (a.kind === "combination")
+      return (
+        a.trigger === b.trigger &&
+        (a.filter || "") === (b.filter || "") &&
+        (!a.filter || a.band === b.band)
+      );
+    return sameBaseRule(a, b);
+  }
   function renderCatalog() {
     const dialog = $("indicator-dialog");
     const catalog = dialog.querySelector(".indicator-catalog");
@@ -574,9 +584,14 @@ import {
           }),
         ),
       );
-      const saved = config.strategies.filter(
-        (strategy) => strategy.kind === kind,
-      );
+      const saved = [];
+      for (const strategy of config.strategies) {
+        if (
+          strategy.kind === kind &&
+          !saved.some((entry) => matchesConfiguration(entry, strategy))
+        )
+          saved.push(strategy);
+      }
       if (saved.length) {
         const details = document.createElement("details");
         details.append(text("summary", "已存配置"));
@@ -599,9 +614,17 @@ import {
       catalog.append(row);
     }
     const combinations = document.createElement("section");
-    const savedCombinations = config.strategies.filter(
-      (strategy) => strategy.kind === "combination",
-    );
+    const savedCombinations = [];
+    for (const strategy of config.strategies) {
+      if (
+        strategy.kind === "combination" &&
+        !savedCombinations.some((entry) =>
+          matchesConfiguration(entry, strategy),
+        )
+      ) {
+        savedCombinations.push(strategy);
+      }
+    }
     if (savedCombinations.length) {
       const details = document.createElement("details");
       details.append(text("summary", "已存组合策略"));
@@ -728,18 +751,49 @@ import {
         ),
       ),
     );
+    const dependencies = expandDependencies([s]).filter(
+      (entry) => entry.id !== s.id,
+    );
+    const canReuse = dependencies.every((dependency) => {
+      const current = config.strategies.find(
+        (entry) => entry.id === dependency.id,
+      );
+      return current && sameBaseRule(dependency, current);
+    });
+    const candidates = canReuse
+      ? config.strategies.filter((entry) => matchesConfiguration(s, entry))
+      : [];
+    const matching =
+      candidates.find((entry) => asset.strategies.includes(entry.id)) ||
+      candidates.find((entry) => entry.id === originalId) ||
+      candidates[0];
     const scope = document.createElement("select");
     scope.setAttribute("aria-label", "监测更新范围");
     const own = text("option", "仅当前标的（复制为独立配置）");
     own.value = "private";
-    scope.append(own);
-    if (shared) {
+    if (matching) {
+      const reuse = text(
+        "option",
+        `复用已有匹配项 · ${matching.name}（${matching.id}）`,
+      );
+      reuse.value = "reuse";
+      scope.append(reuse);
+    } else {
+      scope.append(own);
+    }
+    if (shared && !matching) {
       const global = text("option", "更新共享配置");
       global.value = "shared";
       scope.append(global);
     }
     content.append(scope);
-    const impact = text("p", "默认仅修改当前标的，其他标的配置保留。", "muted");
+    const impact = text(
+      "p",
+      matching
+        ? "将为当前标的复用匹配配置。"
+        : "默认仅修改当前标的，其他标的配置保留。",
+      "muted",
+    );
     content.append(impact);
     scope.addEventListener("change", () => {
       impact.textContent =
@@ -748,7 +802,7 @@ import {
           : "默认仅修改当前标的，其他标的配置保留。";
     });
     content.append(
-      button("保存监测规则", async () => {
+      button(matching ? "复用已有配置" : "保存监测规则", async () => {
         const strategy = clone(s);
         strategy.id = shared?.id || strategy.id;
         delete strategy.origin_id;
@@ -760,11 +814,10 @@ import {
               asset_id: selected,
               strategy,
               dependencies: Object.fromEntries(
-                expandDependencies([s])
-                  .filter((d) => d.id !== s.id)
-                  .map((d) => [d.id, d]),
+                dependencies.map((d) => [d.id, d]),
               ),
               shared: scope.value === "shared",
+              reuse_id: matching?.id,
               replace_id: shared?.id,
             },
             dialog,

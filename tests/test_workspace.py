@@ -86,7 +86,8 @@ def test_monitor_private_copy_and_explicit_shared_update(tmp_path):
         next(s for s in changed["strategies"] if s["id"] == "macd")["params"]["fast"]
         == 12
     )
-    # Explicitly shared updates affect the shared rule, without rebinding unrelated instruments.
+    # A distinct shared update still affects the original rule.
+    strategy["params"]["fast"] = 11
     response = client.post(
         "/api/workspace/edit",
         json={
@@ -249,3 +250,44 @@ def test_private_historical_combination_preserves_dependency_parameters(tmp_path
     assert strategies[saved["trigger"]]["params"]["fast"] == 12
     assert strategies["macd"]["params"]["fast"] == 10
     assert saved["trigger"] != "macd"
+
+
+def test_reuse_duplicate_monitor_preserves_existing_ids(tmp_path):
+    path, config, _, client, csrf = setup_workspace(tmp_path)
+    legacy = deepcopy(config)
+    legacy["strategies"].append({**config["strategies"][0], "id": "legacy"})
+    legacy["assets"][0]["strategies"] = ["legacy"]
+    with storage.connect(path) as db:
+        db.execute(
+            "INSERT INTO configuration_versions(created_at,payload) VALUES(?,?)",
+            (
+                NOW.isoformat(),
+                json.dumps({k: legacy[k] for k in ("assets", "strategies")}),
+            ),
+        )
+    data = {
+        "csrf": csrf,
+        "version": 2,
+        "action": "monitor",
+        "asset_id": "sox",
+        "strategy": config["strategies"][0],
+    }
+    response = client.post("/api/workspace/edit", json=data)
+    assert response.status_code == 400
+    assert "已有匹配配置" in response.json()["detail"]
+    assert load_configuration(path)["version"] == 2
+    response = client.post("/api/workspace/edit", json={**data, "reuse_id": "macd"})
+    assert response.status_code == 200, response.text
+    assert response.json()["strategy_id"] == "macd"
+    saved = load_configuration(path)
+    assert saved["strategies"][-1]["id"] == "legacy"
+    assert saved["assets"][0]["strategies"] == ["legacy"]
+
+    data.update(version=saved["version"], asset_id=saved["assets"][0]["id"])
+    response = client.post(
+        "/api/workspace/edit",
+        json={**data, "reuse_id": "macd", "replace_id": "macd"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["strategy_id"] == "legacy"
+    assert load_configuration(path)["assets"][0]["strategies"] == ["legacy"]

@@ -254,6 +254,9 @@ import {
             "p",
             `${s.bar_date} · ${s.preview_event || "无盘中事件"} · 未收盘待确认`,
           ),
+          ...(s.kind === "donchian" && s.preview_detail
+            ? [text("small", s.preview_detail)]
+            : []),
         );
       card.append(
         text(

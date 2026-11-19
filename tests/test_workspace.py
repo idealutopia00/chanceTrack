@@ -291,3 +291,34 @@ def test_reuse_duplicate_monitor_preserves_existing_ids(tmp_path):
     assert response.status_code == 200, response.text
     assert response.json()["strategy_id"] == "legacy"
     assert load_configuration(path)["assets"][0]["strategies"] == ["legacy"]
+
+
+def test_watchlist_membership_is_independent_of_monitoring(tmp_path):
+    path, config, _, client, csrf = setup_workspace(tmp_path)
+    data = {"csrf": csrf, "version": 1, "action": "asset", "asset_id": "sp500"}
+    response = client.post(
+        "/api/workspace/edit", json={**data, "watchlisted": False, "priority": True}
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()["configuration"]
+    item = next(a for a in result["assets"] if a["id"] == "sp500")
+    old = next(a for a in config["assets"] if a["id"] == "sp500")
+    assert item["enabled"] == old["enabled"] and item["strategies"] == old["strategies"]
+    assert not item["watchlisted"] and item["priority"]
+    assert item["activated"] == old["activated"]
+
+    response = client.post(
+        "/api/workspace/edit", json={**data, "version": 2, "enabled": False}
+    )
+    assert response.status_code == 200, response.text
+    response = client.post(
+        "/api/workspace/edit",
+        json={**data, "version": 3, "action": "add_asset", "asset": {"id": "sp500"}},
+    )
+    assert response.status_code == 200, response.text
+    item = next(a for a in load_configuration(path)["assets"] if a["id"] == "sp500")
+    assert (
+        item["watchlisted"]
+        and not item["enabled"]
+        and item["strategies"] == old["strategies"]
+    )

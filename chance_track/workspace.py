@@ -170,7 +170,10 @@ def edit(path, payload, fetcher=fetch):
             (a for a in config["assets"] if a["id"] == candidate.get("id")), None
         )
         if old:
-            old.update(enabled=True, archived=False)
+            if old.get("watchlisted", True) is False and not old.get("archived"):
+                old["watchlisted"] = True
+            else:
+                old.update(enabled=True, archived=False, watchlisted=True)
             selected = old["id"]
         else:
             candidate = {
@@ -199,6 +202,11 @@ def edit(path, payload, fetcher=fetch):
             selected = candidate["id"]
     elif action == "asset":
         a = next(a for a in config["assets"] if a["id"] == payload["asset_id"])
+        for key in ("priority", "watchlisted"):
+            if key in payload:
+                if type(payload[key]) is not bool:
+                    raise ValueError("观察列表状态须为布尔值")
+                a[key] = payload[key]
         for key in ("label", "group", "enabled", "archived"):
             if key in payload:
                 a[key] = payload[key]

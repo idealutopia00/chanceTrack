@@ -32,6 +32,8 @@ import {
   const viewKey = "chanceTrack.workspace.v1";
   const state = read(viewKey, { views: {}, layers: {}, layout: {} });
   state.views ||= {};
+  const assetViewKey = (id, period = chart.period()) =>
+    period === "week" ? `${id}:week` : id;
   state.layers ||= {};
   state.layout ||= {};
   let config,
@@ -286,7 +288,7 @@ import {
       });
       if (sequence !== previewSequence || selected !== id) return;
       currentPreview = result;
-      chart.show(result, { view: state.views[id] });
+      chart.show(result, { view: state.views[assetViewKey(id)] });
       restoreLayers();
       $("exploration-panel").hidden = false;
       $("exploration-time").textContent =
@@ -375,7 +377,7 @@ import {
     }
     exploring = Boolean(saved || activeTemplate || !original);
     if (original) {
-      chart.show(clone(original), { view: state.views[id] });
+      chart.show(clone(original), { view: state.views[assetViewKey(id)] });
       setMode(false);
       $("exploration-panel").hidden = true;
     } else {
@@ -408,7 +410,8 @@ import {
     renderIndicators();
     renderWatchlist();
     updateBasis();
-    if (saved || activeTemplate || !original) await previewNow();
+    if ((!options.reportOnly && (saved || activeTemplate)) || !original)
+      await previewNow();
     else restoreLayers();
   }
   window.addEventListener("chart:selected", (event) => {
@@ -416,7 +419,8 @@ import {
   });
   window.addEventListener("chart:range", (event) => {
     if (event.detail.asset_id) {
-      state.views[event.detail.asset_id] = event.detail.view;
+      state.views[assetViewKey(event.detail.asset_id, event.detail.period)] =
+        event.detail.view;
       persist();
     }
   });
@@ -853,7 +857,11 @@ import {
             try {
               const existing = config.assets.find((x) => x.id === a.id);
               let result;
-              if (!existing || existing.archived || !existing.enabled)
+              if (
+                !existing ||
+                existing.archived ||
+                existing.watchlisted === false
+              )
                 result = await mutate(
                   { action: "add_asset", asset: a },
                   $("symbols-dialog"),
@@ -909,10 +917,11 @@ import {
       /* validation displayed */
     }
   });
-  async function choose(id) {
-    const selection = selectAsset(id);
+  async function choose(id, date) {
+    const selection = selectAsset(id, { reportOnly: Boolean(date) });
     if (compactWatchlist.matches) setWatchlistHidden(true);
     await selection;
+    if (date && selected === id) chart.focusEvent(date);
   }
   function renderWatchlist() {
     $("workspace-configuration").textContent =
@@ -923,12 +932,30 @@ import {
       config.assets,
       selected,
       originals,
-      { text, button, choose, assetSettings, reorder },
+      $("watchlist-view").value,
+      {
+        text,
+        button,
+        choose,
+        assetSettings,
+        reorder,
+        update: updateWatchlistAsset,
+      },
     );
   }
   $("watchlist-filter").addEventListener("input", () => {
     if (config) renderWatchlist();
   });
+  $("watchlist-view").addEventListener("change", () => {
+    if (config) renderWatchlist();
+  });
+  async function updateWatchlistAsset(id, fields) {
+    try {
+      await mutate({ action: "asset", asset_id: id, ...fields });
+    } catch {
+      /* shown */
+    }
+  }
   async function reorder(id, delta) {
     const ids = reorderAssets(config.assets, id, delta);
     if (!ids) return;
@@ -1090,7 +1117,7 @@ import {
     } catch {}
     if (originals.has(selected))
       chart.show(clone(originals.get(selected)), {
-        view: state.views[selected],
+        view: state.views[assetViewKey(selected)],
       });
     $("exploration-panel").hidden = true;
     setMode(false);

@@ -236,10 +236,7 @@
   function chartEvents() {
     return (
       selected?.result?.chart?.strategy_events ??
-      selected?.result?.chart?.crosses?.map((event) => ({
-        provisional: false,
-        ...event,
-      })) ??
+      selected?.result?.chart?.crosses ??
       []
     );
   }
@@ -268,6 +265,12 @@
           )?.points;
       const macd = macdPoints?.find((point) => point.time === date);
       const legacyMacd = event.kind ? macd : null;
+      const overlays = (selected.result.chart.overlays ?? [])
+        .filter((layer) => rule?.id && layer.id.startsWith(`${rule.id}:`))
+        .flatMap((layer) => {
+          const point = layer.points.find((reading) => reading.time === date);
+          return point ? [`${layer.name} ${number(point.value)}`] : [];
+        });
       const config =
         event.config ??
         saved?.config ??
@@ -299,6 +302,7 @@
             : "确认状态未记录",
         `价格 ${event.price ?? bars[index].close}`,
         macd && `DIF ${macd.dif} · DEA ${macd.dea} · 柱 ${macd.histogram}`,
+        ...overlays,
         event.detail ??
           (saved?.event_date === date && saved.event === event.event
             ? saved.detail
@@ -324,6 +328,7 @@
       to: index + 8,
     });
     chart.setCrosshairPosition(bars[index].close, date, candles);
+    setMarkers();
     showOHLC(bars[index]);
   }
   function resetEventPanel() {
@@ -383,12 +388,14 @@
               const pendingCount = events.filter(
                 (entry) => entry.provisional === true,
               ).length;
+              const active = eventList.querySelector('[aria-current="true"]')
+                ?.dataset.eventDate === date;
               const glyph = !direction ? "○" : up ? "⇧" : "⇩";
               return {
                 time: date,
                 id: `event:${date}`,
                 position: up ? "belowBar" : "aboveBar",
-                color: up ? "#dfc080" : "#a896dd",
+                color: active ? "#ffffff" : up ? "#dfc080" : "#a896dd",
                 shape: !direction ? "circle" : up ? "arrowUp" : "arrowDown",
                 size: provisional ? 0 : 1,
                 text: `${provisional ? `${glyph} 待确认 ` : ""}${grouped ? `${events.length} 条事件` : label}${pendingCount && !provisional ? `（${pendingCount} 条待确认）` : ""}`,

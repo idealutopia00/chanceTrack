@@ -157,7 +157,10 @@ async def get_market_response(client, provider, url, params):
 
 
 def fetch(asset, as_of):
-    return asyncio.run(fetch_market_snapshot(asset, as_of))
+    try:
+        return asyncio.run(fetch_market_snapshot(asset, as_of))
+    except TimeoutError as exc:
+        raise httpx.TimeoutException(f"行情采集超过 {REQUEST_DEADLINE} 秒") from exc
 
 
 async def fetch_market_snapshot(asset, as_of):

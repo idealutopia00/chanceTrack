@@ -587,7 +587,7 @@ def test_fetch_deadline_and_failed_analysis_raw_snapshot(tmp_path, monkeypatch):
         "AsyncClient",
         lambda **kw: make_client(transport=httpx.MockTransport(hang), **kw),
     )
-    with pytest.raises(TimeoutError):
+    with pytest.raises(httpx.TimeoutException, match="行情采集超过"):
         data.fetch({"provider": "yahoo", "code": "^GSPC"}, "2026-11-17")
 
     path = tmp_path / "short-history.sqlite3"

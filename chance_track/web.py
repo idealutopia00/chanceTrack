@@ -211,7 +211,7 @@ def create_app(db_path):
         try:
             draft = json.loads(payload)
             save_configuration(db_path, draft, version)
-        except (ValueError, KeyError, TypeError, httpx.HTTPError, TimeoutError) as exc:
+        except (ValueError, KeyError, TypeError, httpx.HTTPError) as exc:
             return management_page(
                 request,
                 exc,

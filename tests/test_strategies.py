@@ -88,6 +88,9 @@ def test_donchian_replays_one_entry_and_exit_without_using_current_extremes():
     assert repeated_outputs == outputs
     assert repeated["channel"]["reasons"] == replayed["channel"]["reasons"]
     assert "98.0000" in outputs[0]["detail"] and "99.0000" in outputs[0]["detail"]
+    rows[-1]["close"] = 100
+    recovered, _, _ = evaluate(snapshot, [config], asset, "2026-11-17")
+    assert recovered[0]["event"] is None
     config["params"]["exit"] = len(rows)
     _, _, longer_exit = evaluate(snapshot, [config], asset, "2026-11-17")
     assert longer_exit["channel"]["events"][-3] == "向上突破"

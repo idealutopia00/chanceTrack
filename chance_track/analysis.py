@@ -5,7 +5,7 @@ from datetime import date
 import pandas as pd
 
 RULE = {
-    "version": "daily-market-sessions-v5",
+    "version": "macd-market-sessions-v4",
     "fast": 12,
     "slow": 26,
     "signal": 9,

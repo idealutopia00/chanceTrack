@@ -8,7 +8,14 @@ from statistics import median
 import pandas as pd
 
 from chance_track.data import validate_rows
-from chance_track.strategies import donchian, pullback, squeeze, true_range, wilder
+from chance_track.strategies import (
+    donchian,
+    pullback,
+    relative_strength,
+    squeeze,
+    true_range,
+    wilder,
+)
 
 SPLIT = "2026-04-01"
 COST = 0.001  # each side; index levels proxy trading prices in this experiment
@@ -98,7 +105,7 @@ def compare(rows, market, source):
                 adverse.append(min(0, min(bar["low"] for bar in bars) / entry - 1))
                 repaired += any(closes[j] > repair[j] for j in range(i + 1, i + 6))
             print(
-                f"- {label} {len(windows)} 个有效样本，5 日净收益中位数 {summarize(returns)}，最大不利波动中位数 {summarize(adverse)}，5 日修复 {percent(repaired, len(windows))}。"
+                f"- {label} {len(windows)} 个有效样本，窗口截断排除 {len(set(signals) & allowed) - len(windows)} 个，5 日净收益中位数 {summarize(returns)}，最大不利波动中位数 {summarize(adverse)}，5 日修复 {percent(repaired, len(windows))}。"
             )
         sample_starts = set(starts) & allowed
         boll_starts = set(boll["向上"]) & allowed
@@ -159,15 +166,61 @@ def compare(rows, market, source):
                     forward.append(max(0, *moves))
                     reverse.append(min(0, *moves))
                 print(
-                    f"- {direction}{label} {len(windows)} 个有效样本，5 日顺向波动中位数 {summarize(forward)}，逆向波动中位数 {summarize(reverse)}。"
+                    f"- {direction}{label} {len(windows)} 个有效样本，窗口截断排除 {len(set(signals) & allowed) - len(windows)} 个，5 日顺向波动中位数 {summarize(forward)}，逆向波动中位数 {summarize(reverse)}。"
                 )
+    print()
+
+
+def compare_relative(snapshots, benchmark):
+    reference = snapshots[benchmark]
+    by_day = {row["date"]: row for row in reference["rows"]}
+    params = {"benchmark": benchmark, "trend": 200, "relative_period": 60}
+    print(f"### 共同交易日相对强弱 · 基准 {benchmark}\n")
+    for code, snapshot in snapshots.items():
+        if code == benchmark or snapshot.get("quote_currency") != "USD":
+            continue
+        rows = snapshot["rows"]
+        closes = pd.Series([row["close"] for row in rows], dtype=float)
+        signals, _, _, _ = relative_strength(
+            {**snapshot, "benchmarks": {benchmark: reference}}, closes, params
+        )
+        common = [
+            (row, by_day[row["date"]], event)
+            for row, event in zip(rows, signals)
+            if row["date"] in by_day
+        ]
+        for phase, selected in (
+            ("开发", lambda date: date < SPLIT),
+            ("样本外", lambda date: date >= SPLIT),
+        ):
+            excess = []
+            excluded = 0
+            for i, (row, _, event) in enumerate(common):
+                if not event or not selected(row["date"]):
+                    continue
+                if i + 20 >= len(common) or not selected(common[i + 20][0]["date"]):
+                    excluded += 1
+                    continue
+                entry, benchmark_entry, _ = common[i + 1]
+                exit_row, benchmark_exit, _ = common[i + 20]
+                asset_growth = exit_row["close"] / entry["open"]
+                reference_growth = benchmark_exit["close"] / benchmark_entry["open"]
+                excess.append(
+                    (asset_growth - reference_growth) * (1 - COST) / (1 + COST)
+                )
+            print(
+                f"- {code} · {phase} · {len(excess)} 个有效样本，窗口截断排除 {excluded} 个，20 个共同交易日净超额表现中位数 {summarize(excess)}。"
+            )
     print()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("snapshots", type=Path, nargs="+")
-    for path in parser.parse_args().snapshots:
+    parser.add_argument("--benchmark", help="例如 ^GSPC，须出现在输入快照中")
+    args = parser.parse_args()
+    snapshots = {}
+    for path in args.snapshots:
         snapshot = json.loads(path.read_text())
         if snapshot.get("basis") != "market_ohlc":
             parser.error(f"{path}: 仅支持市场 OHLC")
@@ -178,9 +231,13 @@ def main():
                 if row["date"] != snapshot.get("provisional_date")
             ]
         )
-        compare(
-            rows, snapshot.get("code", path.stem), snapshot.get("provider", "未知来源")
-        )
+        code = snapshot.get("code", path.stem)
+        snapshots[code] = {**snapshot, "rows": rows, "provisional_date": None}
+        compare(rows, code, snapshot.get("provider", "未知来源"))
+    if args.benchmark:
+        if args.benchmark not in snapshots:
+            parser.error("输入快照不含指定基准")
+        compare_relative(snapshots, args.benchmark)
 
 
 if __name__ == "__main__":

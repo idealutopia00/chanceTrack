@@ -100,6 +100,7 @@
         ["pullback", "长期上行中的短线回调"],
         ["trailing_exit", "突破后的 ATR 跟踪退出"],
         ["squeeze", "波动收缩后的方向释放"],
+        ["relative_strength", "相对基准转强"],
         ["combination", "触发 + 过滤"],
       ]);
       kind.addEventListener("change", () => {
@@ -137,6 +138,15 @@
         ]);
       } else
         for (const key of Object.keys(s.params)) {
+          if (key === "benchmark") {
+            field(card, "美元指数基准", s.params, key, [
+              ["", "请选择"],
+              ...config.assets
+                .filter((a) => a.provider === "yahoo")
+                .map((a) => [a.id, a.label]),
+            ]);
+            continue;
+          }
           if (key === "range") {
             field(card, "振幅口径", s.params, key, [
               ["true_range", "真实振幅"],

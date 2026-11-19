@@ -10,12 +10,13 @@ from . import storage
 from .analysis import analyze
 from .configuration import (
     load_configuration,
+    relative_benchmarks,
     save_configuration,
     strategy_signature,
     validate_configuration,
 )
 from .data import TZ, fetch
-from .strategies import chart_events, evaluate
+from .strategies import benchmark_context, chart_events, evaluate
 
 
 def tables(db):
@@ -86,6 +87,16 @@ def preview(path, source, asset_id, strategies):
         "activated": {},
     }
     snapshot = item["snapshot"]
+    if source.get("report_id"):
+        references = dict(snapshot.get("benchmarks", {}))
+        for benchmark_id in relative_benchmarks(strategies, asset) - references.keys():
+            try:
+                peer, _, _ = source_item(path, source, benchmark_id)
+            except ValueError:
+                continue
+            references[benchmark_id] = benchmark_context(peer["snapshot"])
+        if references:
+            snapshot = {**snapshot, "benchmarks": references}
     result = analyze(snapshot, day)
     results, layers, computed = evaluate(snapshot, strategies, asset, day)
     result["strategies"] = results

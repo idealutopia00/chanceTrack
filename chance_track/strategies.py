@@ -171,6 +171,82 @@ def squeeze(highs, lows, closes, p):
     )
 
 
+def relative_strength(snapshot, closes, p):
+    dates = [row["date"] for row in snapshot["rows"]]
+    ready = pd.Series(False, index=closes.index)
+    events, reasons = [None] * len(dates), [""] * len(dates)
+    reference = snapshot.get("benchmarks", {}).get(p["benchmark"], {})
+    if not (
+        reference.get("provider") == snapshot.get("provider") == "yahoo"
+        and reference.get("quote_currency") == snapshot.get("quote_currency") == "USD"
+        and reference.get("exchange_timezone")
+        == snapshot.get("exchange_timezone")
+        == "America/New_York"
+        and reference.get("basis") == snapshot.get("basis") == "market_ohlc"
+        and reference.get("code") != snapshot.get("code")
+    ):
+        return (
+            events,
+            [reference.get("error", "无同币种且口径一致的基准行情")] * len(dates),
+            ready,
+            {},
+        )
+    by_day = {
+        row["date"]: row["close"]
+        for row in reference["rows"]
+        if row["date"] != reference.get("provisional_date")
+    }
+    trend = closes.rolling(p["trend"]).mean()
+    ratios, means = (
+        pd.Series(float("nan"), index=closes.index),
+        pd.Series(float("nan"), index=closes.index),
+    )
+    paired = []
+    for i, day in enumerate(dates):
+        if day == snapshot.get("provisional_date") or day not in by_day:
+            reasons[i] = f"基准 {p['benchmark']} · 等待双方同一交易日收盘"
+        else:
+            ratios[i] = closes[i] / by_day[day]
+            paired.append(i)
+            missing = max(p["trend"] - i - 1, p["relative_period"] + 1 - len(paired))
+            if missing > 0:
+                reasons[i] = f"预热还需 {missing} 根日线或共同交易日"
+                if len(paired) >= p["relative_period"]:
+                    means[i] = ratios.loc[paired[-p["relative_period"] :]].mean()
+                continue
+            means[i] = ratios.loc[paired[-p["relative_period"] :]].mean()
+            ready[i] = True
+            prev = paired[-2]
+            reasons[i] = (
+                f"基准 {reference.get('code', p['benchmark'])} · 收盘 {by_day[day]:.4f}；"
+                f"比值 {ratios[i]:.8f}；比值 SMA{p['relative_period']} {means[i]:.8f}；"
+                f"价格 {closes[i]:.4f}；SMA{p['trend']} {trend[i]:.4f}"
+            )
+            if (
+                ratios[prev] <= means[prev]
+                and ratios[i] > means[i]
+                and closes[i] > trend[i]
+            ):
+                events[i] = "相对转强"
+    # The dimensionless ratio is retained in event details, away from price-axis overlays.
+    return events, reasons, ready, {"趋势均线": trend}
+
+
+def benchmark_context(snapshot):
+    keys = (
+        "provider",
+        "code",
+        "basis",
+        "source",
+        "rows",
+        "quote_currency",
+        "exchange_timezone",
+        "provisional_date",
+        "fetched_at",
+    )
+    return {key: snapshot[key] for key in keys if key in snapshot}
+
+
 STATEFUL = {"donchian", "pullback", "trailing_exit", "squeeze"}
 
 
@@ -239,6 +315,8 @@ def evaluate(snapshot, configs, asset, as_of):
                 lows = pd.Series([row["low"] for row in rows], dtype=float)
                 calculate = trailing_exit if kind == "trailing_exit" else squeeze
                 events, reasons, ready, overlays = calculate(highs, lows, values, p)
+        elif kind == "relative_strength":
+            events, reasons, ready, overlays = relative_strength(snapshot, values, p)
         elif kind == "combination":
             trigger = compute(s["trigger"])
             ready = trigger["ready"].copy()
@@ -382,11 +460,12 @@ def evaluate(snapshot, configs, asset, as_of):
                     "行情过期"
                     if stale
                     else c["reasons"][ci]
-                    if s["kind"] in STATEFUL
+                    if s["kind"] in STATEFUL or s["kind"] == "relative_strength"
                     else "历史样本不足"
                 ),
                 "preview_detail": c["reasons"][-1] if provisional else "",
                 "stateful": s["kind"] in STATEFUL,
+                "requires_completed_pair": s["kind"] == "relative_strength",
                 "historical_reference": historical,
             }
         )

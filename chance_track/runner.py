@@ -10,10 +10,10 @@ from chinese_calendar import is_workday
 
 from . import storage
 from .analysis import RULE, analyze
-from .configuration import load_configuration
+from .configuration import load_configuration, relative_benchmarks
 from .data import TZ, fetch
 from .notifications import NOTIFICATION_TITLE, build_message, notify
-from .strategies import chart_events, evaluate
+from .strategies import benchmark_context, chart_events, evaluate
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_ATTEMPTS = 3
@@ -162,6 +162,27 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
     if previous:
         # A retry completes the original watchlist, even if configuration changed meanwhile.
         assets = [item["asset"] for item in previous["items"]]
+    assets_by_id = {asset["id"]: asset for asset in config["assets"]}
+    market_cache = {}
+
+    def market_snapshot(asset):
+        asset_id = asset["id"]
+        if asset_id not in market_cache:
+            carried = previous_items.get(asset_id)
+            try:
+                if carried and carried["status"] in ("ok", "warning"):
+                    market_cache[asset_id] = carried["snapshot"]
+                else:
+                    snapshot = fetcher(asset, day)
+                    snapshot.setdefault("fetched_at", now.isoformat())
+                    market_cache[asset_id] = snapshot
+            except Exception as exc:
+                market_cache[asset_id] = exc
+        result = market_cache[asset_id]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
     for asset in assets:
         old = previous_items.get(asset["id"])
         if old and old["status"] != "error":
@@ -175,8 +196,19 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
             item.update(status="disabled", error=asset.get("reason", "未启用"))
         else:
             try:
-                snapshot = fetcher(asset, day)
-                snapshot.setdefault("fetched_at", now.isoformat())
+                snapshot = market_snapshot(asset)
+                references = {}
+                for benchmark_id in relative_benchmarks(config["strategies"], asset):
+                    try:
+                        references[benchmark_id] = benchmark_context(
+                            market_snapshot(assets_by_id[benchmark_id])
+                        )
+                    except Exception as exc:
+                        references[benchmark_id] = {
+                            "error": f"基准 {benchmark_id} 采集失败：{exc}"
+                        }
+                if references:
+                    snapshot = {**snapshot, "benchmarks": references}
                 item["snapshot"] = snapshot
                 item["result"] = analyze(snapshot, day)
                 if "strategies" in asset:

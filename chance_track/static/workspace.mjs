@@ -256,7 +256,10 @@ import {
             "p",
             `${s.bar_date} · ${s.preview_event || "无盘中事件"} · 未收盘待确认`,
           ),
-          ...((s.stateful || s.kind === "donchian") && s.preview_detail
+          ...((s.stateful ||
+            s.requires_completed_pair ||
+            s.kind === "donchian") &&
+          s.preview_detail
             ? [text("small", s.preview_detail)]
             : []),
         );
@@ -349,8 +352,11 @@ import {
   async function selectAsset(id, options = {}) {
     if (!config) return;
     clearTimeout(previewTimer);
-    if (selected && selected !== id) saveDraft();
-    selected = id;
+    if (selected !== id) {
+      if (selected) saveDraft();
+      selected = id;
+      renderCatalog();
+    }
     ++previewSequence;
     currentPreview = null;
     const original = originals.get(id),
@@ -515,7 +521,21 @@ import {
           entry: "突破周期",
           exit: "退出周期",
           multiple: "通道倍数",
+          relative_period: "比值均线周期",
         };
+        if (key === "benchmark") {
+          field(
+            node,
+            "美元指数基准",
+            s.params[key],
+            (value) => {
+              s.params[key] = value;
+              schedulePreview();
+            },
+            benchmarkChoices().map((a) => [a.id, a.label]),
+          );
+          continue;
+        }
         if (key === "range") {
           field(
             node,
@@ -561,6 +581,7 @@ import {
     pullback: "短线回调",
     trailing_exit: "ATR 跟踪退出",
     squeeze: "波动收缩释放",
+    relative_strength: "相对基准转强",
   };
   function describeRule(rule) {
     return `${rule.name} · ${kindNames[rule.kind]} · ${describeParams(rule.params)}`;
@@ -580,6 +601,8 @@ import {
       ["exit", "退出周期"],
       ["multiple", "通道倍数"],
       ["range", "振幅口径"],
+      ["relative_period", "比值均线周期"],
+      ["benchmark", "基准"],
     ]
       .filter(([key]) => keys.includes(key))
       .map(
@@ -598,6 +621,13 @@ import {
       );
     return sameBaseRule(a, b);
   }
+  function benchmarkChoices() {
+    const current = config.assets.find((a) => a.id === selected);
+    if (current?.provider !== "yahoo") return [];
+    return config.assets.filter(
+      (a) => a.provider === "yahoo" && a.code !== current.code,
+    );
+  }
   function renderCatalog() {
     const dialog = $("indicator-dialog");
     const catalog = dialog.querySelector(".indicator-catalog");
@@ -610,6 +640,7 @@ import {
       schedulePreview();
       dialog.close();
     };
+    const benchmark = benchmarkChoices()[0];
     for (const [kind, name, meaning, params] of [
       ["macd", "MACD", "副图", { fast: 12, slow: 26, signal: 9 }],
       ["ma", "双均线", "主图", { fast: 20, slow: 60 }],
@@ -634,6 +665,16 @@ import {
         "突破后跟踪",
         { entry: 20, period: 22, multiple: 3 },
       ],
+      ...(benchmark
+        ? [
+            [
+              "relative_strength",
+              "相对基准转强",
+              "同一交易日收盘",
+              { trend: 200, relative_period: 60, benchmark: benchmark.id },
+            ],
+          ]
+        : []),
     ]) {
       const row = document.createElement("section");
       row.append(

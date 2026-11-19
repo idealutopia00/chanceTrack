@@ -117,6 +117,7 @@ def parse_yahoo(payload, asset, as_of, now=None):
         "basis": "market_ohlc",
         "provider": "yahoo",
         "exchange_timezone": meta["exchangeTimezoneName"],
+        "quote_currency": meta.get("currency"),
     }
 
 

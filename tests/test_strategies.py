@@ -370,3 +370,89 @@ def test_stateful_preset_replay_warmup_and_provisional_events():
         assert confirmed[0]["event"] == expected[-1]
         assert replayed[config["id"]]["events"] == signals["events"]
         assert replayed[config["id"]]["reasons"] == signals["reasons"]
+
+
+def test_relative_strength_requires_completed_same_currency_benchmark():
+    from chance_track.strategies import relative_strength
+    import pandas as pd
+
+    dates = [f"2026-11-{day:02}" for day in (2, 3, 4, 5, 6)]
+    asset_rows = [
+        dict(date=date, close=price)
+        for date, price in zip(dates, [100, 100, 90, 110, 112])
+    ]
+    benchmark = {
+        "provider": "yahoo",
+        "basis": "market_ohlc",
+        "exchange_timezone": "America/New_York",
+        "quote_currency": "USD",
+        "code": "^GSPC",
+        "rows": [dict(date=date, close=100) for date in dates[:-1]],
+        "provisional_date": dates[-2],
+    }
+    snapshot = {
+        **benchmark,
+        "code": "^NDX",
+        "rows": asset_rows,
+        "provisional_date": None,
+        "benchmarks": {"ref": benchmark},
+    }
+    params = {"benchmark": "ref", "trend": 3, "relative_period": 2}
+    closes = pd.Series([row["close"] for row in asset_rows], dtype=float)
+    events, reasons, ready, _ = relative_strength(snapshot, closes, params)
+    assert not any(events) and not ready.iloc[-2]
+    assert "等待双方同一交易日收盘" in reasons[-2]
+    benchmark["provisional_date"] = None
+    events, reasons, ready, _ = relative_strength(snapshot, closes, params)
+    assert events == [None, None, None, "相对转强", None]
+    assert ready.iloc[-2] and "^GSPC" in reasons[-2] and "比值 SMA2" in reasons[-2]
+    benchmark["quote_currency"] = "EUR"
+    assert not any(relative_strength(snapshot, closes, params)[0])
+
+
+def test_report_pins_benchmark_and_reuses_fetch_for_other_asset(tmp_path):
+    from chance_track import storage, workspace
+
+    path = tmp_path / "paired.sqlite"
+    config = load_configuration(path)
+    primary = next(a for a in config["assets"] if a["id"] == "nasdaq100")
+    benchmark = next(a for a in config["assets"] if a["id"] == "sp500")
+    preset = {
+        "id": "relative",
+        "name": "相对转强",
+        "kind": "relative_strength",
+        "params": {"trend": 3, "relative_period": 2, "benchmark": "sp500"},
+    }
+    primary["strategies"] = ["relative"]
+    config["strategies"].append(preset)
+    save_configuration(path, config, 1)
+    calls = []
+
+    def fetch_pair(asset, _day):
+        calls.append(asset["id"])
+        snapshot = sample()
+        rows = snapshot["rows"]
+        baseline = [100] * len(rows)
+        if asset["id"] == "nasdaq100":
+            baseline[-2:] = [90, 110]
+        for row, close in zip(rows, baseline):
+            row.update(open=close, close=close, high=close + 1, low=close - 1)
+        return {
+            **snapshot,
+            "code": asset["code"],
+            "provider": "yahoo",
+            "exchange_timezone": "America/New_York",
+            "quote_currency": "USD",
+        }
+
+    report_id = run(
+        path, watchlist=[primary, benchmark], send=False, now=NOW, fetcher=fetch_pair
+    )
+    item = storage.report(path, report_id)["items"][0]
+    assert calls == ["nasdaq100", "sp500"]
+    assert item["snapshot"]["benchmarks"]["sp500"]["code"] == "^GSPC"
+    observed = item["result"]["strategies"][0]
+    assert observed["event"] == "相对转强" and "^GSPC" in observed["detail"]
+    result = workspace.preview(path, {"report_id": report_id}, "nasdaq100", [preset])
+    assert result["result"]["strategies"][0]["event"] == observed["event"]
+    assert result["result"]["strategies"][0]["detail"] == observed["detail"]

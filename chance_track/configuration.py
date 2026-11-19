@@ -142,6 +142,16 @@ def validate_configuration(config):
                     raise ValueError("通道倍数须为0.1至10")
             if kind == "squeeze" and p.get("range") not in ("true_range", "high_low"):
                 raise ValueError("未知肯特纳振幅口径")
+        elif kind == "relative_strength":
+            if any(
+                type(p.get(key)) is not int or not 2 <= p[key] <= 250
+                for key in ("trend", "relative_period")
+            ):
+                raise ValueError("相对强弱周期须为2至250整数")
+            if not isinstance(p.get("benchmark"), str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]{1,64}", p["benchmark"]
+            ):
+                raise ValueError("请选择指数基准")
         elif kind == "combination":
             trigger = strategies.get(s.get("trigger"))
             if not trigger or trigger["kind"] == "combination":
@@ -154,6 +164,7 @@ def validate_configuration(config):
                     raise ValueError("过滤器须引用布林配置")
         else:
             raise ValueError("未知策略类型")
+    assets_by_id = {asset["id"]: asset for asset in config["assets"]}
     for a in config["assets"]:
         if (
             a.get("provider") not in ("yahoo", "eastmoney")
@@ -168,6 +179,22 @@ def validate_configuration(config):
             raise ValueError("东方财富需要secid和精确名称")
         if any(sid not in strategies for sid in a.get("strategies", [])):
             raise ValueError("绑定了不存在的策略")
+        for sid in a.get("strategies", []):
+            rule = strategies[sid]
+            if rule["kind"] == "combination":
+                rule = strategies[rule["trigger"]]
+            if rule["kind"] == "relative_strength":
+                benchmark = assets_by_id.get(rule["params"]["benchmark"])
+                if (
+                    not benchmark
+                    or benchmark["code"] == a["code"]
+                    or any(
+                        entry.get("session_profile") != "us_equity"
+                        or entry.get("provider") != "yahoo"
+                        for entry in (a, benchmark)
+                    )
+                ):
+                    raise ValueError("相对强弱须绑定同市场的另一只美元指数基准")
         if (
             not a.get("label")
             or not a.get("code")
@@ -203,6 +230,20 @@ def strategy_signature(strategy):
     else:
         parameters = strategy.get("params", {})
     return strategy["name"], kind, parameters
+
+
+def relative_benchmarks(configs, asset):
+    by_id = {rule["id"]: rule for rule in configs}
+    selected = [by_id[sid] for sid in asset.get("strategies", []) if sid in by_id]
+    triggers = [
+        by_id[rule["trigger"]] if rule["kind"] == "combination" else rule
+        for rule in selected
+    ]
+    return {
+        rule["params"]["benchmark"]
+        for rule in triggers
+        if rule["kind"] == "relative_strength"
+    }
 
 
 def save_configuration(path, config, expected_version, fetcher=fetch):

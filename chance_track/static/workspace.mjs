@@ -324,7 +324,8 @@
   function renderIndicators() {
     const strip = $("indicator-strip");
     strip.replaceChildren();
-    strip.append(text("span", "图表指标", "muted"));
+    document.querySelector('[data-open="indicator-dialog"]').textContent =
+      `指标（${draft.length}）`;
     for (const s of draft) {
       const pill = text("div", "", "indicator-pill");
       pill.append(button(`${s.name} ⚙`, () => editIndicator(s.id)));
@@ -342,7 +343,7 @@
         button(bound && same ? "监测中" : bound ? "保存监测" : "加入监测", () =>
           monitor(s.id),
         ),
-        button("×", () => {
+        button("从图表移除", () => {
           draft = draft.filter((x) => x.id !== s.id);
           renderIndicators();
           schedulePreview();
@@ -350,7 +351,6 @@
       );
       strip.append(pill);
     }
-    strip.append(button("＋ 指标", () => openDialog("indicator-dialog")));
   }
   async function selectAsset(id, options = {}) {
     if (!config) return;
@@ -641,7 +641,6 @@
       if (index < 0) draft.push(strategy);
       else draft[index] = strategy;
       schedulePreview();
-      dialog.close();
     };
     const benchmark = benchmarkChoices()[0];
     for (const [kind, name, meaning, params] of [

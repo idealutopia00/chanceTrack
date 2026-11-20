@@ -11,20 +11,22 @@
         <div class="ohlc" id="ohlc">
             <span>移动十字线查看开高低收</span>
         </div>
-        <div class="range-buttons" aria-label="可视范围">
-            <button type="button" data-open="indicator-dialog">＋ 指标</button>
+        <div class="chart-controls">
+            <div class="chart-period">
+                <label>K 线周期
+                    <select id="chart-period"><option value="day">日线</option><option value="week">周线</option></select>
+                </label>
+                <small id="chart-period-label">K 线 日线 · 信号 日线</small>
+            </div>
+            <button type="button" data-open="indicator-dialog">指标（0）</button>
             <button type="button" data-open="templates-dialog">▦ 模板</button>
-            <button data-range="63">3个月</button>
-            <button class="active" data-range="126">6个月</button>
-            <button data-range="252">1年</button>
-            <button data-range="all">全部</button>
+            <div class="range-buttons" role="group" aria-label="可视范围">
+                <button data-range="63">3个月</button>
+                <button class="active" data-range="126">6个月</button>
+                <button data-range="252">1年</button>
+                <button data-range="all">全部</button>
+            </div>
         </div>
-    </div>
-    <div class="chart-period">
-        <label>K 线周期
-            <select id="chart-period"><option value="day">日线</option><option value="week">周线</option></select>
-        </label>
-        <small id="chart-period-label">K 线 日线 · 信号 日线</small>
     </div>
     <div class="chart-layers" id="chart-layers"></div>
     <div class="chart-shell">

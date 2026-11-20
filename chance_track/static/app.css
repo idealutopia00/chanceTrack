@@ -2127,3 +2127,15 @@ td {
 .chart-crosshair ul {
   padding-inline-start: 1.25rem;
 }
+
+.chart-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+#pinned-note-dialog .investment-markdown {
+  max-width: 65ch;
+  margin-block: 1rem;
+}

@@ -1,12 +1,15 @@
 /* Workspace commands and drafts. Chart rendering stays in app.js; calculations stay in Python. */
-import {
-  renderWatchlist as renderAssets,
-  reorderAssets,
-} from "./watchlist.mjs";
 (() => {
   const root = document.getElementById("workspace-bootstrap");
   if (!root) return;
   const boot = JSON.parse(root.textContent);
+  const watchlistUrl = new URL("./watchlist.mjs", import.meta.url);
+  watchlistUrl.search = new URL(import.meta.url).search;
+  const watchlistModule = import(watchlistUrl).catch((error) => {
+    console.error("观察列表模块加载失败", error);
+    return null;
+  });
+  let watchlist;
   const originals = new Map(
     JSON.parse(document.getElementById("chart-data").textContent).map(
       (item) => [item.asset.id, item],
@@ -282,7 +285,12 @@ import {
       strategies = expandDependencies(draft),
       snapshotSource = clone(source);
     saveDraft();
-    status("正在计算快照预览…");
+    const previewStatus = (message, error = false) => {
+      status(message, error);
+      for (const id of ["indicator-dialog", "indicator-settings"])
+        dialogStatus($(id), message, error);
+    };
+    previewStatus("正在计算快照预览…");
     try {
       const result = await request("/api/workspace/preview", {
         source: snapshotSource,
@@ -299,12 +307,12 @@ import {
       renderResults(result.result);
       setMode(true);
       updateBasis();
-      status("探索草稿已保留 · 未改变自动监测");
+      previewStatus("探索草稿已保留 · 未改变自动监测");
     } catch (error) {
       if (sequence === previewSequence) {
         currentPreview = null;
         updateBasis();
-        status(error.message, true);
+        previewStatus(error.message, true);
       }
     }
   }
@@ -321,7 +329,8 @@ import {
   function renderIndicators() {
     const strip = $("indicator-strip");
     strip.replaceChildren();
-    strip.append(text("span", "图表指标", "muted"));
+    document.querySelector('[data-open="indicator-dialog"]').textContent =
+      `指标（${draft.length}）`;
     for (const s of draft) {
       const pill = text("div", "", "indicator-pill");
       pill.append(button(`${s.name} ⚙`, () => editIndicator(s.id)));
@@ -339,7 +348,7 @@ import {
         button(bound && same ? "监测中" : bound ? "保存监测" : "加入监测", () =>
           monitor(s.id),
         ),
-        button("×", () => {
+        button("从图表移除", () => {
           draft = draft.filter((x) => x.id !== s.id);
           renderIndicators();
           schedulePreview();
@@ -347,7 +356,6 @@ import {
       );
       strip.append(pill);
     }
-    strip.append(button("＋ 指标", () => openDialog("indicator-dialog")));
   }
   async function selectAsset(id, options = {}) {
     if (!config) return;
@@ -633,12 +641,11 @@ import {
     const catalog = dialog.querySelector(".indicator-catalog");
     catalog.replaceChildren();
     const add = (strategy) => {
-      if (!selected) return status("请先选择标的", true);
+      if (!selected) return dialogStatus(dialog, "请先选择标的", true);
       const index = draft.findIndex((entry) => entry.id === strategy.id);
       if (index < 0) draft.push(strategy);
       else draft[index] = strategy;
       schedulePreview();
-      dialog.close();
     };
     const benchmark = benchmarkChoices()[0];
     for (const [kind, name, meaning, params] of [
@@ -766,7 +773,7 @@ import {
     }
     combinations.append(
       button("创建组合策略…", () => {
-        if (!selected) return status("请先选择标的", true);
+        if (!selected) return dialogStatus(dialog, "请先选择标的", true);
         const available = [...config.strategies, ...draft];
         const trigger = available.find((s) => s.kind !== "combination"),
           band = available.find((s) => s.kind.startsWith("boll"));
@@ -782,7 +789,6 @@ import {
         });
         renderIndicators();
         schedulePreview();
-        $("indicator-dialog").close();
         editIndicator(draft.at(-1).id);
       }),
     );
@@ -1027,22 +1033,34 @@ import {
   function renderWatchlist() {
     $("workspace-configuration").textContent =
       `当前监测 v${config.version} · 本报告配置 ${boot.configuration_version ? "v" + boot.configuration_version : "历史未记录"}${boot.configuration_version && boot.configuration_version !== config.version ? " · 新规则下次检查生效" : ""}`;
-    renderAssets(
-      $("watchlist-items"),
-      $("watchlist-filter").value.toLowerCase(),
-      config.assets,
-      selected,
-      originals,
-      $("watchlist-view").value,
-      {
-        text,
-        button,
-        choose,
-        assetSettings,
-        reorder,
-        update: updateWatchlistAsset,
-      },
-    );
+    if (watchlist === undefined) return;
+    const items = $("watchlist-items");
+    try {
+      if (watchlist) {
+        watchlist.renderWatchlist(
+          items,
+          $("watchlist-filter").value.toLowerCase(),
+          config.assets,
+          selected,
+          originals,
+          $("watchlist-view").value,
+          {
+            text,
+            button,
+            choose,
+            assetSettings,
+            reorder,
+            update: updateWatchlistAsset,
+          },
+        );
+        return;
+      }
+    } catch (error) {
+      console.error("观察列表渲染失败", error);
+    }
+    const feedback = text("p", "观察列表暂不可用，请刷新页面重试");
+    feedback.setAttribute("role", "status");
+    items.replaceChildren(feedback);
   }
   $("watchlist-filter").addEventListener("input", () => {
     if (config) renderWatchlist();
@@ -1058,7 +1076,7 @@ import {
     }
   }
   async function reorder(id, delta) {
-    const ids = reorderAssets(config.assets, id, delta);
+    const ids = watchlist.reorderAssets(config.assets, id, delta);
     if (!ids) return;
     try {
       await mutate({ action: "order", ids });
@@ -1374,6 +1392,10 @@ import {
     } catch {
       /* next explicit action surfaces the error */
     }
+  });
+  watchlistModule.then((module) => {
+    watchlist = module;
+    if (config) renderWatchlist();
   });
   initialize();
 })();

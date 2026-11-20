@@ -1,12 +1,15 @@
 /* Workspace commands and drafts. Chart rendering stays in app.js; calculations stay in Python. */
-import {
-  renderWatchlist as renderAssets,
-  reorderAssets,
-} from "./watchlist.mjs";
 (() => {
   const root = document.getElementById("workspace-bootstrap");
   if (!root) return;
   const boot = JSON.parse(root.textContent);
+  const watchlistUrl = new URL("./watchlist.mjs", import.meta.url);
+  watchlistUrl.search = new URL(import.meta.url).search;
+  const watchlistModule = import(watchlistUrl).catch((error) => {
+    console.error("观察列表模块加载失败", error);
+    return null;
+  });
+  let watchlist;
   const originals = new Map(
     JSON.parse(document.getElementById("chart-data").textContent).map(
       (item) => [item.asset.id, item],
@@ -1027,22 +1030,34 @@ import {
   function renderWatchlist() {
     $("workspace-configuration").textContent =
       `当前监测 v${config.version} · 本报告配置 ${boot.configuration_version ? "v" + boot.configuration_version : "历史未记录"}${boot.configuration_version && boot.configuration_version !== config.version ? " · 新规则下次检查生效" : ""}`;
-    renderAssets(
-      $("watchlist-items"),
-      $("watchlist-filter").value.toLowerCase(),
-      config.assets,
-      selected,
-      originals,
-      $("watchlist-view").value,
-      {
-        text,
-        button,
-        choose,
-        assetSettings,
-        reorder,
-        update: updateWatchlistAsset,
-      },
-    );
+    if (watchlist === undefined) return;
+    const items = $("watchlist-items");
+    try {
+      if (watchlist) {
+        watchlist.renderWatchlist(
+          items,
+          $("watchlist-filter").value.toLowerCase(),
+          config.assets,
+          selected,
+          originals,
+          $("watchlist-view").value,
+          {
+            text,
+            button,
+            choose,
+            assetSettings,
+            reorder,
+            update: updateWatchlistAsset,
+          },
+        );
+        return;
+      }
+    } catch (error) {
+      console.error("观察列表渲染失败", error);
+    }
+    const feedback = text("p", "观察列表暂不可用，请刷新页面重试");
+    feedback.setAttribute("role", "status");
+    items.replaceChildren(feedback);
   }
   $("watchlist-filter").addEventListener("input", () => {
     if (config) renderWatchlist();
@@ -1058,7 +1073,7 @@ import {
     }
   }
   async function reorder(id, delta) {
-    const ids = reorderAssets(config.assets, id, delta);
+    const ids = watchlist.reorderAssets(config.assets, id, delta);
     if (!ids) return;
     try {
       await mutate({ action: "order", ids });
@@ -1374,6 +1389,10 @@ import {
     } catch {
       /* next explicit action surfaces the error */
     }
+  });
+  watchlistModule.then((module) => {
+    watchlist = module;
+    if (config) renderWatchlist();
   });
   initialize();
 })();

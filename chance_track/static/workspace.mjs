@@ -641,7 +641,7 @@
     const catalog = dialog.querySelector(".indicator-catalog");
     catalog.replaceChildren();
     const add = (strategy) => {
-      if (!selected) return status("请先选择标的", true);
+      if (!selected) return dialogStatus(dialog, "请先选择标的", true);
       const index = draft.findIndex((entry) => entry.id === strategy.id);
       if (index < 0) draft.push(strategy);
       else draft[index] = strategy;
@@ -773,7 +773,7 @@
     }
     combinations.append(
       button("创建组合策略…", () => {
-        if (!selected) return status("请先选择标的", true);
+        if (!selected) return dialogStatus(dialog, "请先选择标的", true);
         const available = [...config.strategies, ...draft];
         const trigger = available.find((s) => s.kind !== "combination"),
           band = available.find((s) => s.kind.startsWith("boll"));

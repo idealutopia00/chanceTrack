@@ -285,7 +285,12 @@
       strategies = expandDependencies(draft),
       snapshotSource = clone(source);
     saveDraft();
-    status("正在计算快照预览…");
+    const previewStatus = (message, error = false) => {
+      status(message, error);
+      for (const id of ["indicator-dialog", "indicator-settings"])
+        dialogStatus($(id), message, error);
+    };
+    previewStatus("正在计算快照预览…");
     try {
       const result = await request("/api/workspace/preview", {
         source: snapshotSource,
@@ -302,12 +307,12 @@
       renderResults(result.result);
       setMode(true);
       updateBasis();
-      status("探索草稿已保留 · 未改变自动监测");
+      previewStatus("探索草稿已保留 · 未改变自动监测");
     } catch (error) {
       if (sequence === previewSequence) {
         currentPreview = null;
         updateBasis();
-        status(error.message, true);
+        previewStatus(error.message, true);
       }
     }
   }
@@ -784,7 +789,6 @@
         });
         renderIndicators();
         schedulePreview();
-        $("indicator-dialog").close();
         editIndicator(draft.at(-1).id);
       }),
     );

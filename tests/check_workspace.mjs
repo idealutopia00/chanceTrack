@@ -196,7 +196,7 @@ try {
   await page.locator("#monitor-dialog [data-close]").click();
   await page.locator("#indicator-settings [data-close]").click();
   await page.locator("#indicator-dialog [data-close]").click();
-  await page.locator('.workspace-header [data-open="symbols-dialog"]').click();
+  await page.locator('.chart-toolbar [data-open="symbols-dialog"]').click();
   await page.getByLabel("名称 / 代码").fill("SOX");
   await page.waitForFunction(() =>
     document

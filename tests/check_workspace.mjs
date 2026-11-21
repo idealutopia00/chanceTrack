@@ -57,6 +57,7 @@ try {
           bar_date: item.result.bar_date,
           close: item.result.close,
           fetched_at: item.fetched_at,
+          is_provisional: 0,
         };
         item.status = "error";
         item.result = item.fetched_at = null;
@@ -66,11 +67,12 @@ try {
     await route.fulfill({ response, body: html });
   });
   for (const width of [1440, 390]) {
+    await failedQuotePage.emulateMedia({ colorScheme: width === 1440 ? "light" : "dark" });
     await failedQuotePage.setViewportSize({ width, height: 1000 });
     await failedQuotePage.goto(base);
     const warning = failedQuotePage.locator("#chart-quote-warning");
     await warning.waitFor();
-    assert.match(await warning.innerText(), /本次未能更新，当前显示 \d{4}-\d{2}-\d{2} 行情/);
+    assert.match(await warning.innerText(), /本次未能更新，当前显示 \d{4}-\d{2}-\d{2} 收盘数据/);
     assert.notEqual(await failedQuotePage.locator("#chart-price").innerText(), "—");
     assert.equal(await failedQuotePage.locator("#chart-sparkline").isVisible(), false);
     assert.equal(await failedQuotePage.locator(".workspace-data").getAttribute("open"), null);
@@ -96,6 +98,13 @@ try {
   await failedQuotePage.getByText("合成行情不可用").waitFor();
   await failedQuotePage.close();
   await page.goto(base);
+  const reminder = page.locator('[data-open="pinned-note-dialog"]');
+  assert.equal(await reminder.count(), 0);
+  await page.getByRole("link", { name: "备忘录", exact: true }).click();
+  await page.getByLabel("Markdown").fill("# 合成置顶提醒\n\n复盘前读一次。");
+  await page.getByRole("button", { name: "保存备忘" }).click();
+  await page.getByRole("button", { name: "置顶" }).click();
+  await page.getByRole("link", { name: "标的", exact: true }).click();
   await page.waitForSelector('#chart[data-ready="true"]');
   await page.waitForSelector(".watchlist-symbol");
   const sparkline = page.locator("#chart-sparkline");
@@ -141,11 +150,38 @@ try {
     await page.evaluate(() => new Promise((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(resolve)),
     ));
-    const note = page.getByRole("button", { name: "置顶提醒", exact: true });
+    const dark = width === 390;
+    await page.emulateMedia({ colorScheme: dark ? "dark" : "light" });
+    assert.equal(
+      await page.locator("body").evaluate((element) => getComputedStyle(element).backgroundColor),
+      dark ? "rgb(28, 27, 26)" : "rgb(247, 245, 240)",
+    );
+    const panelColors = await page.locator(".chart-panel").evaluate((element) => {
+      const style = getComputedStyle(element);
+      const luminance = (value) => {
+        const channels = value.match(/\d+/g).slice(0, 3).map((n) => Number(n) / 255);
+        return channels.map((n, i) =>
+          (n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4) *
+          [0.2126, 0.7152, 0.0722][i],
+        ).reduce((a, b) => a + b);
+      };
+      const colors = [style.color, style.backgroundColor].map(luminance).sort((a, b) => b - a);
+      return { background: style.backgroundColor, contrast: (colors[0] + .05) / (colors[1] + .05) };
+    });
+    assert.equal(panelColors.background, dark ? "rgb(37, 35, 33)" : "rgb(252, 251, 249)");
+    assert.ok(panelColors.contrast >= 4.5);
+    const note = page.getByRole("button", { name: /置顶提醒 · 合成置顶提醒/ });
+    await note.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    assert.equal(await note.evaluate((node) =>
+      node === document.activeElement && getComputedStyle(node).outlineStyle === "solid",
+    ), true);
     const chartBeforeNote = await page.locator("#chart-title").innerText();
     const viewBeforeNote = await page.evaluate(() => window.ChanceChart.view());
     await note.click();
     await page.locator("#pinned-note-dialog[open]").waitFor();
+    await page.getByText("复盘前读一次。").waitFor();
     await page.keyboard.press("Escape");
     await page.locator("#pinned-note-dialog").waitFor({ state: "hidden" });
     assert.equal(await note.evaluate((node) => document.activeElement === node), true);

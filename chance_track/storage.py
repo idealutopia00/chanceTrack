@@ -243,7 +243,8 @@ def last_market_quote(path, asset_id):
             SELECT coalesce(json_extract(item.value, '$.origin_report_id'), reports.id) AS report_id,
                    json_extract(item.value, '$.snapshot.fetched_at') AS fetched_at,
                    json_extract(item.value, '$.result.bar_date') AS bar_date,
-                   json_extract(item.value, '$.result.close') AS close
+                   json_extract(item.value, '$.result.close') AS close,
+                   json_extract(item.value, '$.result.is_provisional') AS is_provisional
             FROM reports, json_each(reports.payload, '$.items') AS item
             WHERE json_extract(item.value, '$.asset.id') = ?
               AND json_extract(item.value, '$.status') IN ('ok', 'warning')

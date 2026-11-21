@@ -558,6 +558,7 @@ def test_failed_refresh_displays_last_quote_without_new_signal(tmp_path):
         "fetched_at": NOW.isoformat(),
         "bar_date": original["items"][0]["result"]["bar_date"],
         "close": original["items"][0]["result"]["close"],
+        "is_provisional": int(original["items"][0]["result"]["is_provisional"]),
     }
     assert other["last_quote"] is None and "result" not in item
     assert not build_message(report, set())[1]

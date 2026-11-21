@@ -163,6 +163,7 @@
     dif,
     dea,
     histogram,
+    zeroLine,
     markers,
     selected,
     range = 126;
@@ -475,7 +476,7 @@
       );
       if (previous) candles.update({ ...previous }, true);
       candles.update(
-        { ...bars[index], borderColor: "#dfc080", wickColor: "#dfc080" },
+        { ...bars[index], borderColor: color("gold"), wickColor: color("gold") },
         true,
       );
     }
@@ -641,7 +642,7 @@
                 time: displayedDay.get(date),
                 id: `event:${date}`,
                 position: up ? "belowBar" : "aboveBar",
-                color: active ? "#ffffff" : up ? "#dfc080" : "#a896dd",
+                color: color(active ? "text" : up ? "gold" : "violet"),
                 shape: !direction ? "circle" : up ? "arrowUp" : "arrowDown",
                 size: provisional ? 0 : 1,
                 text: `${provisional ? `${glyph} 待确认 ` : ""}${grouped ? `${events.length} 条事件` : label}${pendingCount && !provisional ? `（${pendingCount} 条待确认）` : ""}`,
@@ -650,48 +651,54 @@
         : [],
     );
   }
+  const theme = getComputedStyle(document.documentElement);
+  const color = (name) => theme.getPropertyValue(`--${name}`).trim();
+  const candleColors = () => ({
+    upColor: color("up"),
+    downColor: color("down"),
+    wickUpColor: color("up"),
+    wickDownColor: color("down"),
+  });
+  function chartColors() {
+    return {
+      layout: {
+        background: { type: "solid", color: color("panel") },
+        textColor: color("muted"),
+        panes: { separatorColor: color("line"), separatorHoverColor: color("mint") },
+      },
+      grid: {
+        vertLines: { color: color("surface") },
+        horzLines: { color: color("surface") },
+      },
+      crosshair: {
+        vertLine: { color: color("mist"), labelBackgroundColor: color("button-primary") },
+        horzLine: { color: color("mist"), labelBackgroundColor: color("button-primary") },
+      },
+      rightPriceScale: { borderColor: color("line") },
+      timeScale: { borderColor: color("line") },
+    };
+  }
   function initialize() {
     if (!library) return false;
     chart = library.createChart(container, {
       autoSize: true,
       layout: {
-        background: { type: "solid", color: "#11191f" },
-        textColor: "#76909f",
         fontSize: 10,
         attributionLogo: true,
-        panes: {
-          separatorColor: "#29363f",
-          separatorHoverColor: "#59736b",
-          enableResize: false,
-        },
+        panes: { enableResize: false },
       },
-      grid: {
-        vertLines: { color: "#19252d" },
-        horzLines: { color: "#1d2b33" },
-      },
-      crosshair: {
-        mode: library.CrosshairMode.Normal,
-        vertLine: { color: "#668a7d", labelBackgroundColor: "#334f43" },
-        horzLine: { color: "#668a7d", labelBackgroundColor: "#334f43" },
-      },
+      crosshair: { mode: library.CrosshairMode.Normal },
       rightPriceScale: {
-        borderColor: "#283740",
         minimumWidth: 68,
         scaleMargins: { top: 0.12, bottom: 0.12 },
       },
-      timeScale: {
-        borderColor: "#283740",
-        timeVisible: false,
-        rightOffset: 4,
-      },
+      timeScale: { timeVisible: false, rightOffset: 4 },
       localization: { locale: "zh-CN" },
     });
+    chart.applyOptions(chartColors());
     candles = chart.addSeries(library.CandlestickSeries, {
-      upColor: "#ed7e84",
-      downColor: "#64c9af",
+      ...candleColors(),
       borderVisible: false,
-      wickUpColor: "#ed7e84",
-      wickDownColor: "#64c9af",
       priceFormat: { type: "price", precision: 2, minMove: 0.01 },
     });
     histogram = chart.addSeries(
@@ -706,7 +713,7 @@
     dif = chart.addSeries(
       library.LineSeries,
       {
-        color: "#dfc080",
+        color: color("gold"),
         lineWidth: 1,
         priceLineVisible: false,
         lastValueVisible: false,
@@ -717,7 +724,7 @@
     dea = chart.addSeries(
       library.LineSeries,
       {
-        color: "#a896dd",
+        color: color("violet"),
         lineWidth: 1,
         priceLineVisible: false,
         lastValueVisible: false,
@@ -725,9 +732,9 @@
       },
       1,
     );
-    histogram.createPriceLine({
+    zeroLine = histogram.createPriceLine({
       price: 0,
-      color: "#49606d",
+      color: color("line"),
       lineWidth: 1,
       lineStyle: 2,
       axisLabelVisible: false,
@@ -813,14 +820,16 @@
         break: "休市待续",
         settling: "收盘待确认",
       };
-      tag.textContent = selected.result?.is_provisional
+      const provisional =
+        selected.result?.is_provisional ?? selected.last_quote?.is_provisional === 1;
+      tag.textContent = provisional
         ? pendingLabels[phase] || "盘中未收盘"
-        : selected.result?.bar_date
+        : selected.result?.bar_date || selected.last_quote?.is_provisional === 0
           ? "已收盘"
           : "";
       tag.classList.toggle(
         "provisional",
-        Boolean(selected.result?.is_provisional),
+        Boolean(provisional),
       );
     }
     const macdTag = document.getElementById("macd-session");
@@ -863,7 +872,7 @@
       warning.textContent = selected.mode === "exploration"
         ? `正式检查失败 · 探索行情截至 ${tradeDate || "未知日期"}`
         : lastQuote
-          ? `本次未能更新，当前显示 ${tradeDate} 行情`
+          ? `本次未能更新，当前显示 ${tradeDate} ${lastQuote.is_provisional === 0 ? "收盘数据" : "行情"}`
           : "本次未能更新，暂无可用行情";
     else if (warnings.length)
       warning.textContent = `行情截至 ${tradeDate || "未知日期"} · ${warnings.join("；")}`;
@@ -903,7 +912,7 @@
       overlaySeries = [];
       const layerControls = document.getElementById("chart-layers");
       layerControls.replaceChildren();
-      const colors = ["#dfc080", "#a896dd", "#64c9af", "#ed7e84", "#79b7e8"];
+      const colors = ["gold", "violet", "down", "up", "mist"].map(color);
       for (const [i, layer] of (content.overlays || []).entries()) {
         const series = chart.addSeries(library.LineSeries, {
           color: colors[i % colors.length],
@@ -938,11 +947,12 @@
       function drawMacd(points) {
         activeMacd = points;
         const visiblePoints = displayedPoints(points);
+        const up = color("up"), down = color("down");
         histogram.setData(
           visiblePoints.map((p) => ({
             time: p.time,
             value: p.histogram,
-            color: p.histogram >= 0 ? "#ed7e8499" : "#64c9af99",
+            color: p.histogram >= 0 ? up : down,
           })),
         );
         dif.setData(visiblePoints.map((p) => ({ time: p.time, value: p.dif })));
@@ -1078,6 +1088,30 @@
       });
     },
   };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (!chart || !selected) return;
+    const visibility = Object.fromEntries(
+      Array.from(document.querySelectorAll("[data-layer-id]"), (input) => [
+        input.dataset.layerId, input.checked,
+      ]),
+    );
+    const macdSelect = document.querySelector('[aria-label="MACD 图表配置"]');
+    const macdConfiguration = macdSelect?.value;
+    chart.applyOptions(chartColors());
+    candles.applyOptions(candleColors());
+    dif.applyOptions({ color: color("gold") });
+    dea.applyOptions({ color: color("violet") });
+    zeroLine.applyOptions({ color: color("line") });
+    select(selected.asset.id, { silent: true, keepRange: true });
+    window.ChanceChart.layers(visibility);
+    if (macdConfiguration) {
+      const input = document.querySelector('[aria-label="MACD 图表配置"]');
+      if (input) {
+        input.value = macdConfiguration;
+        input.dispatchEvent(new Event("change"));
+      }
+    }
+  });
   let initialId = items[0]?.asset.id;
   try {
     const saved =

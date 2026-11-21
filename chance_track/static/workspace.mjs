@@ -379,6 +379,7 @@
     if (selected !== id) {
       if (selected) saveDraft();
       selected = id;
+      status("");
       renderCatalog();
     }
     ++previewSequence;
@@ -418,6 +419,7 @@
         },
         result: null,
       });
+      renderWatchlist();
       if (!source) {
         status("正在加载该标的行情…");
         try {
@@ -431,14 +433,13 @@
           if (selected !== id) return;
           status(error.message, true);
           renderIndicators();
-          renderWatchlist();
           return;
         }
       }
     }
     persist();
     renderIndicators();
-    renderWatchlist();
+    if (original) renderWatchlist();
     updateBasis();
     if ((!options.reportOnly && (saved || activeTemplate)) || !original)
       await previewNow();

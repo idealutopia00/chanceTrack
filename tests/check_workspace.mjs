@@ -51,7 +51,7 @@ try {
     const html = (await response.text()).replace(
       /(<script id="chart-data" type="application\/json">)(.*?)(<\/script>)/s,
       (_, opening, data, closing) => {
-        const items = JSON.parse(data);
+        const items = JSON.parse(data).filter((item) => item.asset.id !== "nasdaq100");
         const item = items[0];
         item.last_quote = {
           bar_date: item.result.bar_date,
@@ -77,6 +77,23 @@ try {
     await failedQuotePage.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
     await failedQuotePage.locator(".indicator-catalog section > strong").first().waitFor();
   }
+  await failedQuotePage.setViewportSize({ width: 1440, height: 1000 });
+  await failedQuotePage.locator("#indicator-dialog [data-close]").click();
+  let finishQuote;
+  const pendingQuote = new Promise((resolve) => { finishQuote = resolve; });
+  await failedQuotePage.route("**/api/workspace/quote", async (route) => {
+    await pendingQuote;
+    await route.fulfill({ status: 400, json: { detail: "合成行情不可用" } });
+  });
+  const freshSymbol = failedQuotePage.locator('[data-asset-id="nasdaq100"] .watchlist-symbol');
+  const quoteRequested = failedQuotePage.waitForRequest("**/api/workspace/quote");
+  await freshSymbol.click();
+  await quoteRequested;
+  assert.match(await failedQuotePage.locator("#chart-title").innerText(), /纳斯达克100/);
+  assert.equal(await freshSymbol.getAttribute("aria-pressed"), "true");
+  assert.equal(await failedQuotePage.locator("#chart-sparkline").isVisible(), false);
+  finishQuote();
+  await failedQuotePage.getByText("合成行情不可用").waitFor();
   await failedQuotePage.close();
   await page.goto(base);
   await page.waitForSelector('#chart[data-ready="true"]');

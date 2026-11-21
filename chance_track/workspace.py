@@ -113,6 +113,8 @@ def preview(path, source, asset_id, strategies):
         "asset": asset,
         "result": result,
         "mode": "exploration",
+        "status": item.get("status"),
+        "carried_forward": item.get("carried_forward", False),
         "source": source,
         "checked_at": checked_at,
         "fetched_at": snapshot.get("fetched_at"),

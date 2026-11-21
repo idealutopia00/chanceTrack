@@ -45,11 +45,46 @@ try {
     }
     await cachePage.close();
   }
+  const failedQuotePage = await browser.newPage();
+  await failedQuotePage.route(base + "/", async (route) => {
+    const response = await route.fetch();
+    const html = (await response.text()).replace(
+      /(<script id="chart-data" type="application\/json">)(.*?)(<\/script>)/s,
+      (_, opening, data, closing) => {
+        const items = JSON.parse(data);
+        const item = items[0];
+        item.last_quote = {
+          bar_date: item.result.bar_date,
+          close: item.result.close,
+          fetched_at: item.fetched_at,
+        };
+        item.status = "error";
+        item.result = item.fetched_at = null;
+        return opening + JSON.stringify(items).replaceAll("<", "\\u003c") + closing;
+      },
+    );
+    await route.fulfill({ response, body: html });
+  });
+  for (const width of [1440, 390]) {
+    await failedQuotePage.setViewportSize({ width, height: 1000 });
+    await failedQuotePage.goto(base);
+    const warning = failedQuotePage.locator("#chart-quote-warning");
+    await warning.waitFor();
+    assert.match(await warning.innerText(), /本次未能更新，当前显示 \d{4}-\d{2}-\d{2} 行情/);
+    assert.notEqual(await failedQuotePage.locator("#chart-price").innerText(), "—");
+    assert.equal(await failedQuotePage.locator(".workspace-data").getAttribute("open"), null);
+    await failedQuotePage.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
+    await failedQuotePage.locator(".indicator-catalog section > strong").first().waitFor();
+  }
+  await failedQuotePage.close();
   await page.goto(base);
   await page.waitForSelector('#chart[data-ready="true"]');
   await page.waitForSelector(".watchlist-symbol");
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
+    assert.notEqual(await page.locator("#chart-price").innerText(), "—");
+    assert.match(await page.locator("#chart-quote-date").innerText(), /交易日 \d{4}-\d{2}-\d{2}/);
+    assert.equal(await page.locator("#chart-quote-warning").isVisible(), false);
     await page.evaluate(() => new Promise((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(resolve)),
     ));

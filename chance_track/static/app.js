@@ -784,10 +784,10 @@
         settling: "收盘待确认",
       };
       tag.textContent = selected.result?.is_provisional
-        ? `日线 · ${pendingLabels[phase] || "盘中未收盘"}`
+        ? pendingLabels[phase] || "盘中未收盘"
         : selected.result?.bar_date
-          ? "日线 · 已收盘"
-          : "—";
+          ? "已收盘"
+          : "";
       tag.classList.toggle(
         "provisional",
         Boolean(selected.result?.is_provisional),
@@ -816,19 +816,32 @@
     document.getElementById("chart-period-label").textContent =
       `K 线 ${period === "week" ? "周线" : "日线"} · 信号 日线`;
     syncEventNavigation();
-    const quoteTime =
-      selected.fetched_at ||
-      selected.result?.bar_date ||
-      selected.result?.nav_date;
     const lastQuote = selected.last_quote;
+    const tradeDate = selected.result?.bar_date ?? selected.result?.nav_date ?? lastQuote?.bar_date;
+    const price = content?.candles?.at(-1)?.close ?? selected.result?.close ?? lastQuote?.close;
+    const fetchedAt = selected.fetched_at ?? lastQuote?.fetched_at;
+    document.getElementById("chart-price").textContent =
+      price == null ? "—" : price.toLocaleString("zh-CN", { maximumFractionDigits: 4 });
+    document.getElementById("chart-quote-date").textContent =
+      tradeDate ? `交易日 ${tradeDate}` : "";
     document.getElementById("chart-quote-time").textContent =
-      selected.status === "error"
-        ? lastQuote
-          ? `本次更新失败 · 行情交易日 ${lastQuote.bar_date}${lastQuote.fetched_at ? ` · 上次成功采集 ${lastQuote.fetched_at.replace("T", " ")}` : ""}`
-          : "本次更新失败 · 无可用行情"
-        : quoteTime
-          ? `行情 ${quoteTime.replace("T", " ")}`
-          : "";
+      fetchedAt ? `采集 ${fetchedAt.replace("T", " ")}` : "";
+    const warning = document.getElementById("chart-quote-warning");
+    const warnings = selected.result?.warnings ?? [];
+    if (selected.status === "error")
+      warning.textContent = selected.mode === "exploration"
+        ? `正式检查失败 · 探索行情截至 ${tradeDate || "未知日期"}`
+        : lastQuote
+          ? `本次未能更新，当前显示 ${tradeDate} 行情`
+          : "本次未能更新，暂无可用行情";
+    else if (warnings.length)
+      warning.textContent = `行情截至 ${tradeDate || "未知日期"} · ${warnings.join("；")}`;
+    else if (selected.carried_forward)
+      warning.textContent = `沿用上次采集 · 行情截至 ${tradeDate || "未知日期"}`;
+    else if (document.body.dataset.historical === "true" && tradeDate)
+      warning.textContent = `历史快照 · 行情截至 ${tradeDate}`;
+    else warning.textContent = "";
+    warning.hidden = !warning.textContent;
     if (!content) {
       resetEventPanel();
       if (chart) {

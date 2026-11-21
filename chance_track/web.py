@@ -75,6 +75,7 @@ def create_app(db_path):
                 "fetched_at": (item.get("snapshot") or {}).get("fetched_at"),
                 "status": item["status"],
                 "last_quote": item.get("last_quote"),
+                "carried_forward": item.get("carried_forward", False),
             }
             for item in items
         ]

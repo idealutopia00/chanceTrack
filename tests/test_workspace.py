@@ -46,6 +46,28 @@ def test_preview_does_not_write_report_event_configuration_or_notification(tmp_p
     assert client.post("/api/workspace/preview", json=payload).status_code == 403
 
 
+def test_preview_retains_report_quote_status(tmp_path):
+    path, _, rid, client, csrf = setup_workspace(tmp_path)
+    report = storage.report(path, rid)
+    item = report["items"][0]
+    item.update(carried_forward=True, status="error")
+    report.pop("id")
+    replay_id, _ = storage.save_report(path, report)
+
+    response = client.post(
+        "/api/workspace/preview",
+        json={
+            "csrf": csrf,
+            "source": {"report_id": replay_id},
+            "asset_id": item["asset"]["id"],
+            "strategies": [],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["carried_forward"] is True
+    assert response.json()["status"] == "error"
+
+
 def test_template_versions_and_configuration_are_separate(tmp_path):
     path, config, _, client, csrf = setup_workspace(tmp_path)
     data = {"csrf": csrf, "name": "趋势", "strategies": config["strategies"][:2]}

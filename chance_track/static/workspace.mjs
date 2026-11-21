@@ -148,7 +148,7 @@
     const base = boot.historical ? "历史报告" : "正式检查结果";
     $("workspace-mode").textContent = exploration
       ? `${boot.historical ? "历史行情探索" : "探索预览"} · 不属于正式检查信号 · 行情 ${currentPreview?.result.bar_date || "—"}`
-      : `${base} · ${boot.report_id ? `报告 #${boot.report_id}` : "暂无报告"}`;
+      : boot.report_id ? base : "暂无报告";
     $("workspace-mode").classList.toggle("exploring", exploration);
   }
   function expandDependencies(strategies) {
@@ -658,6 +658,14 @@
     const dialog = $("indicator-dialog");
     const catalog = dialog.querySelector(".indicator-catalog");
     catalog.replaceChildren();
+    try {
+      populateCatalog(dialog, catalog);
+    } catch (error) {
+      console.error("指标目录渲染失败", error);
+      catalog.replaceChildren(text("p", "指标目录暂不可用，请刷新页面重试"));
+    }
+  }
+  function populateCatalog(dialog, catalog) {
     const add = (strategy) => {
       if (!selected) return dialogStatus(dialog, "请先选择标的", true);
       const index = draft.findIndex((entry) => entry.id === strategy.id);

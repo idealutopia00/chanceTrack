@@ -4,7 +4,17 @@
 <body class="chart-workspace" data-report-id="{{ report.id if report else 0 }}" data-historical="{{ 'true' if historical else 'false' }}">
 <header class="workspace-header"><a class="brand" href="/"><span class="brand-mark">ct</span><span>chance track<small>图表工作台 · v0.8</small></span></a>{% set page = 'assets' %}{% include "partials/primary_nav.html" %}<div class="workspace-actions"><button type="button" data-open="pinned-note-dialog">置顶提醒</button><button type="button" id="toggle-watchlist" aria-controls="watchlist-panel" aria-expanded="false">观察列表</button><button type="button" id="show-notification" {% if not report %}disabled{% endif %}>通知</button></div><form method="post" action="/refresh" id="refresh-form"><input type="hidden" name="csrf" value="{{ token }}"><button type="submit" id="refresh-button"><span id="refresh-label">立即检查</span></button></form></header>
 <main class="workbench-main">
-<div class="workspace-status"><span id="workspace-mode">{{ '历史报告 · 还原当时结果' if historical else '正式检查结果' }}{% if report %} · 报告 #{{ report.id }} · {{ report.created_at[:16]|replace('T',' ') }}{% endif %}</span>{% if report %}<button type="button" id="new-signals" {% if not summary.events %}disabled{% endif %}>本次新增信号 {{ summary.events }}</button>{% endif %}<small id="workspace-configuration"></small><span id="workspace-status" role="status" aria-live="polite"></span></div>
+<div class="workspace-status">
+    <span id="workspace-mode">{{ '历史报告' if historical else '正式检查结果' }}</span>
+    {% if report %}<button type="button" id="new-signals" {% if not summary.events %}disabled{% endif %}>本次新增信号 {{ summary.events }}</button>{% endif %}
+    <details class="workspace-data">
+        <summary>数据详情</summary>
+        {% if report %}<span>报告 #{{ report.id }} · 检查 {{ report.created_at|replace('T',' ') }}</span>{% endif %}
+        <span id="workspace-configuration"></span>
+        <span id="chart-quote-time"></span>
+    </details>
+    <span id="workspace-status" role="status" aria-live="polite"></span>
+</div>
 <div class="update-bar"><span id="update-status" role="status" aria-live="polite">行情按快照显示；未收盘信号待确认</span><a id="new-report-link" hidden>查看新报告 ↗</a><small>工作日14:35自动检查 · 仅你决定交易</small></div>
 {% if report and report.rule.basis != "market_ohlc" %}<div class="notice">历史基金净值报告 · 保留原始口径，不绘制合成K线。</div>{% endif %}
 {% if report and report.get('attempt',1) > 1 %}<p class="small-note">第 {{ report.attempt }}/3 次尝试 · 原始检查与数据沿用时间见正式信号。</p>{% endif %}

@@ -1,16 +1,17 @@
 <section class="chart-panel panel">
     <div class="chart-heading">
         <div>
-            <div class="eyebrow" id="chart-market">MARKET OVERVIEW</div>
+            <div class="eyebrow" id="chart-market"></div>
             <h2 id="chart-title">选择观察标的</h2>
-            <small id="chart-quote-time"></small>
         </div>
-        <div class="chart-tag" id="chart-session">日线</div>
+        <div class="chart-quote">
+            <strong id="chart-price">—</strong>
+            <span id="chart-quote-date"></span>
+            <span class="chart-tag" id="chart-session"></span>
+        </div>
     </div>
+    <p class="chart-quote-warning" id="chart-quote-warning" role="status" hidden></p>
     <div class="chart-toolbar">
-        <div class="ohlc" id="ohlc">
-            <span>移动十字线查看开高低收</span>
-        </div>
         <div class="chart-controls">
             <button type="button" data-open="symbols-dialog">搜索 / 添加标的</button>
             <div class="chart-period">
@@ -28,6 +29,9 @@
                 <button data-range="all">全部</button>
             </div>
         </div>
+    </div>
+    <div class="ohlc" id="ohlc">
+        <span>移动十字线查看开高低收</span>
     </div>
     <div class="chart-layers" id="chart-layers"></div>
     <div class="chart-shell">

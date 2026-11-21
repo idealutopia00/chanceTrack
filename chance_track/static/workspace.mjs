@@ -287,8 +287,7 @@
     saveDraft();
     const previewStatus = (message, error = false) => {
       status(message, error);
-      for (const id of ["indicator-dialog", "indicator-settings"])
-        dialogStatus($(id), message, error);
+      dialogStatus($("indicator-dialog"), message, error);
     };
     previewStatus("正在计算快照预览…");
     try {
@@ -326,14 +325,31 @@
     saveDraft();
     previewTimer = setTimeout(previewNow, 280);
   }
+  let editingIndicator;
+  const indicatorEditor = $("indicator-settings");
+  function closeIndicatorEditor() {
+    indicatorEditor.hidden = true;
+    $("indicator-fields").replaceChildren();
+    editingIndicator = null;
+  }
+  $("indicator-dialog").addEventListener("close", closeIndicatorEditor);
+  $("close-indicator-settings").addEventListener("click", () => {
+    const trigger = Array.from($("indicator-strip").querySelectorAll("[data-indicator-edit]"))
+      .find((node) => node.dataset.indicatorEdit === editingIndicator?.id);
+    closeIndicatorEditor();
+    trigger?.focus();
+  });
   function renderIndicators() {
+    if (editingIndicator && !draft.includes(editingIndicator)) closeIndicatorEditor();
     const strip = $("indicator-strip");
     strip.replaceChildren();
     document.querySelector('[data-open="indicator-dialog"]').textContent =
       `指标（${draft.length}）`;
     for (const s of draft) {
       const pill = text("div", "", "indicator-pill");
-      pill.append(button(`${s.name} ⚙`, () => editIndicator(s.id)));
+      const edit = button(`${s.name} ⚙`, () => editIndicator(s.id));
+      edit.dataset.indicatorEdit = s.id;
+      pill.append(edit);
       const origin = s.origin_id || s.id,
         bound = config.assets
           .find((a) => a.id === selected)
@@ -462,6 +478,7 @@
   function editIndicator(id) {
     const s = draft.find((x) => x.id === id);
     if (!s) return;
+    editingIndicator = s;
     const node = $("indicator-fields");
     node.replaceChildren();
     field(node, "名称", s.name, (value) => {
@@ -578,7 +595,8 @@
         input.step = factor || key === "threshold" ? "0.1" : "1";
       }
     node.append(button("加入 / 更新监测", () => monitor(id)));
-    openDialog("indicator-settings");
+    indicatorEditor.hidden = false;
+    node.querySelector("input").focus();
   }
   const kindNames = {
     macd: "MACD",

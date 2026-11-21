@@ -124,15 +124,17 @@ try {
     exact: true,
   });
   await savedSettings.click();
+  assert.equal(await page.locator("dialog[open]").count(), 1);
+  assert.equal(await catalog.isVisible(), true);
   await page.getByLabel("布林周期", { exact: true }).fill("30");
-  await page.locator("#indicator-settings [data-close]").click();
+  await page.locator("#close-indicator-settings").click();
   await saved.click();
   await savedSettings.click();
   assert.equal(
     await page.getByLabel("布林周期", { exact: true }).inputValue(),
     "20",
   );
-  await page.locator("#indicator-settings [data-close]").click();
+  await page.locator("#close-indicator-settings").click();
   await page
     .locator(".indicator-pill")
     .filter({ has: savedSettings })
@@ -160,7 +162,7 @@ try {
       .getElementById("workspace-status")
       .textContent.includes("探索草稿已保留"),
   );
-  await page.locator("#indicator-settings [data-close]").click();
+  await page.locator("#close-indicator-settings").click();
   await page.reload();
   await page.waitForSelector("#exploration-panel:not([hidden])");
   await page.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
@@ -169,7 +171,7 @@ try {
     await page.getByLabel("布林周期", { exact: true }).inputValue(),
     "30",
   );
-  await page.locator("#indicator-settings [data-close]").click();
+  await page.locator("#close-indicator-settings").click();
   await page.locator("#indicator-dialog [data-close]").click();
   await page.locator('.chart-toolbar [data-open="templates-dialog"]').click();
   await page.getByLabel("模板名称").fill("工作台集成测试");
@@ -219,7 +221,7 @@ try {
       .length + 1,
   );
   await page.locator("#monitor-dialog [data-close]").click();
-  await page.locator("#indicator-settings [data-close]").click();
+  await page.locator("#close-indicator-settings").click();
   await page.locator("#indicator-dialog [data-close]").click();
   await page.locator('.chart-toolbar [data-open="symbols-dialog"]').click();
   await page.getByLabel("名称 / 代码").fill("SOX");

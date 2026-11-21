@@ -72,6 +72,7 @@ try {
     await warning.waitFor();
     assert.match(await warning.innerText(), /本次未能更新，当前显示 \d{4}-\d{2}-\d{2} 行情/);
     assert.notEqual(await failedQuotePage.locator("#chart-price").innerText(), "—");
+    assert.equal(await failedQuotePage.locator("#chart-sparkline").isVisible(), false);
     assert.equal(await failedQuotePage.locator(".workspace-data").getAttribute("open"), null);
     await failedQuotePage.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
     await failedQuotePage.locator(".indicator-catalog section > strong").first().waitFor();
@@ -80,6 +81,41 @@ try {
   await page.goto(base);
   await page.waitForSelector('#chart[data-ready="true"]');
   await page.waitForSelector(".watchlist-symbol");
+  const sparkline = page.locator("#chart-sparkline");
+  await sparkline.waitFor();
+  const initialPoints = await sparkline.locator("polyline").getAttribute("points");
+  assert.equal(initialPoints.trim().split(/\s+/).length, 20);
+  assert.equal(
+    await sparkline.locator("polyline").evaluate((line) => getComputedStyle(line).animationName),
+    "sparkline-draw",
+  );
+  assert.equal(await sparkline.locator("polyline").evaluate(async (line) => {
+    const [animation] = line.getAnimations();
+    await animation.finished;
+    window.ChanceChart.show(window.ChanceChart.current());
+    return line.getAnimations().length;
+  }), 0, "redrawing the same symbol must not replay the entrance");
+  const symbols = page.locator(".watchlist-symbol");
+  await symbols.nth(1).evaluate(() => {
+    for (const index of [1, 0, 1])
+      document.querySelectorAll(".watchlist-symbol")[index].click();
+  });
+  assert.equal(
+    await symbols.nth(1).getAttribute("aria-pressed"),
+    "true",
+    "the last choice wins without waiting for animation",
+  );
+  assert.ok((await page.locator("#chart-title").innerText()).includes(
+    await symbols.nth(1).locator("strong").first().innerText(),
+  ));
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  assert.equal(
+    await sparkline.locator("polyline").evaluate((line) => getComputedStyle(line).animationName),
+    "none",
+  );
+  await symbols.first().click();
+  assert.equal(await page.locator(".selection-moving").count(), 0);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     assert.notEqual(await page.locator("#chart-price").innerText(), "—");
@@ -94,7 +130,7 @@ try {
     await note.click();
     await page.locator("#pinned-note-dialog[open]").waitFor();
     await page.keyboard.press("Escape");
-    assert.equal(await page.locator("#pinned-note-dialog").isVisible(), false);
+    await page.locator("#pinned-note-dialog").waitFor({ state: "hidden" });
     assert.equal(await note.evaluate((node) => document.activeElement === node), true);
     assert.equal(await page.locator("#chart-title").innerText(), chartBeforeNote);
     assert.deepEqual(await page.evaluate(() => window.ChanceChart.view()), viewBeforeNote);

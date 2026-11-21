@@ -758,6 +758,36 @@
     });
     return true;
   }
+  let sparklineAsset;
+  function showSparkline(item) {
+    const svg = document.getElementById("chart-sparkline");
+    const result = item.result;
+    const rows = result?.chart?.candles ?? [];
+    const prices = (result?.is_provisional ? rows.slice(0, -1) : rows)
+      .slice(-20)
+      .map((bar) => bar.close);
+    if (svg.toggleAttribute("hidden", prices.length < 2 || !prices.every(Number.isFinite))) {
+      if (sparklineAsset !== item.asset.id) sparklineAsset = null;
+      return;
+    }
+    const low = Math.min(...prices), span = Math.max(...prices) - low;
+    const points = prices.map((price, index) => [
+      4 + (112 * index) / (prices.length - 1),
+      span ? 28 - (24 * (price - low)) / span : 16,
+    ]);
+    svg.querySelector("polyline").setAttribute("points", points.join(" "));
+    const [x, y] = points.at(-1);
+    const dot = svg.querySelector("circle");
+    dot.setAttribute("cx", x);
+    dot.setAttribute("cy", y);
+    svg.setAttribute("aria-label", `最近 ${prices.length} 个已收盘交易日走势`);
+    if (sparklineAsset !== item.asset.id) {
+      svg.classList.remove("draw");
+      svg.getBoundingClientRect();
+      svg.classList.add("draw");
+      sparklineAsset = item.asset.id;
+    }
+  }
   function select(id, options = {}) {
     const previousId = selected?.asset.id;
     const previousEvent = previousId === id ? eventSelection : null;
@@ -811,6 +841,7 @@
     document.getElementById("chart-market").textContent = selected.asset.market
       ? `${selected.asset.market} · ${selected.asset.currency}`
       : "历史报告 · 基金净值";
+    showSparkline(selected);
     const content = selected.result?.chart;
     displayedBars = displayCandles(content?.candles ?? []);
     document.getElementById("chart-period-label").textContent =

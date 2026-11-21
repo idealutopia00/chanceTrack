@@ -66,6 +66,9 @@ export function renderWatchlist(
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push({ asset, event, item });
   }
+  const oldSelection = node.querySelector(".watchlist-row.active");
+  const oldAsset = oldSelection?.dataset.assetId;
+  const oldTop = oldSelection?.getBoundingClientRect().top;
   node.replaceChildren();
   for (const [group, members] of groups) {
     node.append(text("h4", group, "watchlist-group"));
@@ -75,6 +78,7 @@ export function renderWatchlist(
         "",
         `watchlist-row ${selected === asset.id ? "active" : ""}`,
       );
+      row.dataset.assetId = asset.id;
       const main = button("", () => choose(asset.id), "watchlist-symbol");
       main.setAttribute("aria-pressed", String(selected === asset.id));
       const bars = item?.result?.chart?.candles ?? [];
@@ -132,6 +136,14 @@ export function renderWatchlist(
       menu.append(controls);
       row.append(menu);
       node.append(row);
+    }
+  }
+  const active = node.querySelector(".watchlist-row.active");
+  if (active && oldAsset && oldAsset !== selected && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const offset = oldTop - active.getBoundingClientRect().top;
+    if (offset) {
+      active.style.setProperty("--watchlist-selection-offset", `${offset}px`);
+      active.classList.add("selection-moving");
     }
   }
   if (!groups.size) node.append(text("p", "没有符合条件的标的。"));

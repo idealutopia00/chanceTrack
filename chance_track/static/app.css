@@ -2190,3 +2190,84 @@ td {
   max-width: 65ch;
   line-height: 1.75;
 }
+
+#chart-sparkline {
+  order: 1;
+  inline-size: 120px;
+  block-size: 32px;
+  flex: none;
+  color: var(--mint);
+}
+#chart-sparkline polyline {
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+#chart-sparkline circle {
+  fill: currentColor;
+}
+#watchlist-items {
+  isolation: isolate;
+}
+.watchlist-row.active.selection-moving {
+  background: transparent;
+  position: relative;
+}
+.watchlist-row.selection-moving::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: #1b302e;
+  content: "";
+  animation: watchlist-selection 160ms ease-out;
+}
+@keyframes watchlist-selection {
+  from { transform: translateY(var(--watchlist-selection-offset)); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  #chart-sparkline.draw polyline {
+    stroke-dasharray: 1;
+    animation: sparkline-draw 480ms ease-out;
+  }
+  #chart-sparkline.draw circle {
+    animation: sparkline-finish 140ms ease-out 400ms both;
+  }
+  @keyframes sparkline-draw {
+    from { stroke-dashoffset: 1; }
+    to { stroke-dashoffset: 0; }
+  }
+  @keyframes sparkline-finish {
+    0% { opacity: 0; }
+    50% { opacity: 1; }
+    100% { opacity: 0.75; }
+  }
+  #pinned-note-dialog {
+    opacity: 0;
+    transform: translateY(6px);
+    transition: opacity 320ms ease, transform 320ms ease,
+      display 320ms allow-discrete, overlay 320ms allow-discrete;
+  }
+  #pinned-note-dialog[open] {
+    opacity: 1;
+    transform: none;
+  }
+  #pinned-note-dialog::backdrop {
+    background: rgb(0 0 0 / 0%);
+    backdrop-filter: none;
+    transition: background-color 320ms ease, display 320ms allow-discrete,
+      overlay 320ms allow-discrete;
+  }
+  #pinned-note-dialog[open]::backdrop {
+    background: rgb(0 0 0 / 30%);
+  }
+  @starting-style {
+    #pinned-note-dialog[open] {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    #pinned-note-dialog[open]::backdrop {
+      background: rgb(0 0 0 / 0%);
+    }
+  }
+}

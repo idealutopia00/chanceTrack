@@ -19,11 +19,49 @@ const base = process.env.CHANCE_TEST_URL || "http://127.0.0.1:8766";
 const state = () =>
   page.evaluate(() => fetch("/api/workspace").then((r) => r.json()));
 try {
+  for (const failList of [false, true]) {
+    const cachePage = await browser.newPage();
+    await cachePage.route("**/static/watchlist.mjs*", (route) =>
+      failList || !new URL(route.request().url()).search
+        ? route.fulfill({
+            contentType: "text/javascript",
+            body: "export function renderWatchlist() { throw Error('old or broken list'); }",
+          })
+        : route.continue(),
+    );
+    for (const refresh of [false, true]) {
+      const dependency = cachePage.waitForResponse(/\/static\/watchlist\.mjs/);
+      await (refresh ? cachePage.reload() : cachePage.goto(base));
+      const entry = await cachePage.locator('script[src*="workspace.mjs"]').getAttribute("src");
+      const version = new URL((await dependency).url()).search;
+      assert.ok(version);
+      assert.equal(version, new URL(entry, base).search);
+      await cachePage.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
+      await cachePage.locator(".indicator-catalog section > strong").first().waitFor();
+      if (failList)
+        await cachePage.locator("#watchlist-items").getByText("观察列表暂不可用，请刷新页面重试").waitFor();
+      else await cachePage.locator(".watchlist-symbol").first().waitFor();
+    }
+    await cachePage.close();
+  }
   await page.goto(base);
   await page.waitForSelector('#chart[data-ready="true"]');
   await page.waitForSelector(".watchlist-symbol");
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
+    await page.evaluate(() => new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    ));
+    const note = page.getByRole("button", { name: "投资备忘录", exact: true });
+    const chartBeforeNote = await page.locator("#chart-title").innerText();
+    const viewBeforeNote = await page.evaluate(() => window.ChanceChart.view());
+    await note.click();
+    await page.locator("#pinned-note-dialog[open]").waitFor();
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("#pinned-note-dialog").isVisible(), false);
+    assert.equal(await note.evaluate((node) => document.activeElement === node), true);
+    assert.equal(await page.locator("#chart-title").innerText(), chartBeforeNote);
+    assert.deepEqual(await page.evaluate(() => window.ChanceChart.view()), viewBeforeNote);
     const assetId = width === 1440 ? "nasdaq100" : "sp500";
     if (width === 390) {
       await page.locator("#watchlist-panel").waitFor({ state: "hidden" });
@@ -86,22 +124,22 @@ try {
     exact: true,
   });
   await savedSettings.click();
+  assert.equal(await page.locator("dialog[open]").count(), 1);
+  assert.equal(await catalog.isVisible(), true);
   await page.getByLabel("布林周期", { exact: true }).fill("30");
-  await page.locator("#indicator-settings [data-close]").click();
-  await page.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
+  await page.locator("#close-indicator-settings").click();
   await saved.click();
   await savedSettings.click();
   assert.equal(
     await page.getByLabel("布林周期", { exact: true }).inputValue(),
     "20",
   );
-  await page.locator("#indicator-settings [data-close]").click();
+  await page.locator("#close-indicator-settings").click();
   await page
     .locator(".indicator-pill")
     .filter({ has: savedSettings })
-    .getByRole("button", { name: "×" })
+    .getByRole("button", { name: "从图表移除" })
     .click();
-  await page.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
   assert.equal(
     await catalog.getByRole("button", { name: "创建组合策略…" }).count(),
     1,
@@ -124,15 +162,17 @@ try {
       .getElementById("workspace-status")
       .textContent.includes("探索草稿已保留"),
   );
-  await page.locator("#indicator-settings [data-close]").click();
+  await page.locator("#close-indicator-settings").click();
   await page.reload();
   await page.waitForSelector("#exploration-panel:not([hidden])");
+  await page.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
   await page.getByRole("button", { name: "布林突破 ⚙", exact: true }).click();
   assert.equal(
     await page.getByLabel("布林周期", { exact: true }).inputValue(),
     "30",
   );
-  await page.locator("#indicator-settings [data-close]").click();
+  await page.locator("#close-indicator-settings").click();
+  await page.locator("#indicator-dialog [data-close]").click();
   await page.locator('.chart-toolbar [data-open="templates-dialog"]').click();
   await page.getByLabel("模板名称").fill("工作台集成测试");
   await page.getByRole("button", { name: "另存为新模板", exact: true }).click();
@@ -154,6 +194,7 @@ try {
     document.getElementById("chart-title").textContent.includes("纳斯达克100"),
   );
   await page.waitForSelector("#exploration-panel:not([hidden])");
+  await page.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
   assert.ok(
     (await page.locator("#indicator-strip").innerText()).includes("布林突破"),
   );
@@ -180,8 +221,9 @@ try {
       .length + 1,
   );
   await page.locator("#monitor-dialog [data-close]").click();
-  await page.locator("#indicator-settings [data-close]").click();
-  await page.locator('.workspace-header [data-open="symbols-dialog"]').click();
+  await page.locator("#close-indicator-settings").click();
+  await page.locator("#indicator-dialog [data-close]").click();
+  await page.locator('.chart-toolbar [data-open="symbols-dialog"]').click();
   await page.getByLabel("名称 / 代码").fill("SOX");
   await page.waitForFunction(() =>
     document

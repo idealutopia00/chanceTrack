@@ -358,9 +358,10 @@ h3 {
 }
 .chart-heading {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 24px 24px 18px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 22px;
+  padding: 20px 22px 12px;
 }
 .chart-heading h2 {
   font-size: 21px;
@@ -1765,14 +1766,11 @@ td {
   letter-spacing: 1px;
 }
 .watchlist-row {
-  border: 1px solid transparent;
-  border-radius: 7px;
-  padding: 5px;
-  margin: 4px 0;
+  border-radius: 5px;
+  padding: 2px 5px;
 }
 .watchlist-row.active {
   background: #1b302e;
-  border-color: #3e695c;
 }
 .workbench-main .watchlist-symbol {
   display: grid;
@@ -1784,20 +1782,20 @@ td {
   background: none;
   border: 0;
 }
+.watchlist-symbol strong,
+.watchlist-symbol small {
+  display: block;
+}
 .watchlist-symbol strong {
   font-size: 13px;
 }
 .watchlist-symbol small {
-  grid-column: 1;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
-.watchlist-symbol > span {
-  grid-column: 2;
-  grid-row: 1/3;
-  align-self: center;
+.watchlist-quote {
+  text-align: right;
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
 }
 .watchlist-actions {
   display: flex;
@@ -2154,4 +2152,41 @@ td {
 .primary-nav a[aria-current="page"] {
   background: var(--surface, rgba(128, 128, 128, 0.16));
   font-weight: 700;
+}
+
+
+.chart-quote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+#chart-price {
+  font-size: clamp(1.4rem, 3vw, 2rem);
+}
+
+#chart-quote-date {
+  color: var(--text);
+}
+
+.chart-quote-warning {
+  margin: 0 22px 14px;
+  padding: 7px 10px;
+  border-inline-start: 3px solid var(--gold);
+  color: var(--gold);
+}
+
+.chart-panel > .ohlc {
+  padding: 8px 22px;
+}
+
+.workspace-data[open] > span {
+  display: block;
+}
+
+.investment-notes .investment-markdown {
+  max-width: 65ch;
+  line-height: 1.75;
 }

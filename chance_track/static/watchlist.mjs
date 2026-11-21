@@ -78,26 +78,28 @@ export function renderWatchlist(
       const main = button("", () => choose(asset.id), "watchlist-symbol");
       main.setAttribute("aria-pressed", String(selected === asset.id));
       const bars = item?.result?.chart?.candles ?? [];
-      const close = bars.at(-1)?.close,
-        previous = bars.at(-2)?.close;
+      const close = bars.at(-1)?.close ?? item?.last_quote?.close;
+      const previous = bars.at(-2)?.close;
       const change = previous && close != null ? close / previous - 1 : null;
-      main.append(
-        text("strong", asset.label),
+      const identity = text("span", "", "watchlist-identity");
+      identity.append(text("strong", asset.label), text("small", asset.code));
+      const quote = text("span", "", "watchlist-quote");
+      quote.append(
+        text("strong", close == null ? "—" : close.toLocaleString("zh-CN", { maximumFractionDigits: 4 })),
         text(
-          "span",
-          change == null
-            ? item?.status === "error"
-              ? item.last_quote
-                ? `${item.last_quote.close.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} · 本次更新失败`
-                : "无可用行情"
-              : "—"
-            : new Intl.NumberFormat("zh-CN", {
-                style: "percent",
-                maximumFractionDigits: 2,
-                signDisplay: "exceptZero",
-              }).format(change),
+          "small",
+          item?.status === "error"
+            ? "更新失败"
+            : change == null
+              ? "—"
+              : new Intl.NumberFormat("zh-CN", {
+                  style: "percent",
+                  maximumFractionDigits: 2,
+                  signDisplay: "exceptZero",
+                }).format(change),
         ),
       );
+      main.append(identity, quote);
       row.append(main);
       if (event) {
         const eventName =

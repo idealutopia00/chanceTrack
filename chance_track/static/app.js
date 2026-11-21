@@ -829,9 +829,11 @@
     const warning = document.getElementById("chart-quote-warning");
     const warnings = selected.result?.warnings ?? [];
     if (selected.status === "error")
-      warning.textContent = lastQuote
-        ? `本次未能更新，当前显示 ${tradeDate} 行情`
-        : "本次未能更新，暂无可用行情";
+      warning.textContent = selected.mode === "exploration"
+        ? `正式检查失败 · 探索行情截至 ${tradeDate || "未知日期"}`
+        : lastQuote
+          ? `本次未能更新，当前显示 ${tradeDate} 行情`
+          : "本次未能更新，暂无可用行情";
     else if (warnings.length)
       warning.textContent = `行情截至 ${tradeDate || "未知日期"} · ${warnings.join("；")}`;
     else if (selected.carried_forward)

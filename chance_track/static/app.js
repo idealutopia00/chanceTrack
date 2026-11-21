@@ -771,7 +771,8 @@
         new CustomEvent("chart:selected", { detail: { asset_id: id } }),
       );
     try {
-      sessionStorage.setItem("selectedAsset", id);
+      if (document.body.dataset.historical !== "true")
+        localStorage.setItem("selectedAsset", id);
     } catch {}
     const tag = document.getElementById("chart-session");
     if (tag) {
@@ -1035,7 +1036,9 @@
   };
   let initialId = items[0]?.asset.id;
   try {
-    const saved = sessionStorage.getItem("selectedAsset");
+    const saved =
+      localStorage.getItem("selectedAsset") ??
+      sessionStorage.getItem("selectedAsset");
     if (items.some((item) => item.asset.id === saved)) initialId = saved;
   } catch {}
   select(initialId);

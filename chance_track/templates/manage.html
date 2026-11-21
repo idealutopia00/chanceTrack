@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>管理 · Chance Track</title><link rel="stylesheet" href="/static/app.css?v={{ asset_version }}"></head>
-<body><main class="management"><a href="/">← 返回观察台</a><h1>标的与策略管理</h1><p>配置版本 {{ config.version }} · 保存追加新版本，历史报告不变。保存后，下一次检查生效。</p>
+<body><main class="management">{% set page = 'indicators' %}{% include "partials/primary_nav.html" %}<h1>指标库</h1><p>配置版本 {{ config.version }} · 保存追加新版本，历史报告不变。保存后，下一次检查生效。</p>
 {% if error %}<p class="warning" role="alert">{{ error }}</p>{% endif %}
 {% if duplicate %}
 {% if duplicate.is_new %}
@@ -10,7 +10,7 @@
 {% endif %}
 <details><summary>配置修改历史</summary>{% for v in versions %}<p><a href="/configuration/{{ v.id }}">版本 {{ v.id }} · {{ v.created_at }}</a></p>{% endfor %}</details>
 <form method="post" action="/manage" id="management-form"><input type="hidden" name="csrf" value="{{ token }}"><input type="hidden" name="version" value="{{ config.version }}"><input type="hidden" name="payload" id="config-payload">
-<section class="panel"><h2>观察标的</h2><p>停用保留配置；归档从新报告中移除。已有标的的市场身份不可修改。新增或重新启用时会联网验证行情，请稍候。</p><div id="asset-editor"></div><button type="button" id="add-asset">＋ 添加标的</button></section>
 <section class="panel"><h2>命名策略配置</h2><p>分组仅组织展示。新增策略不会自动绑定；复制配置可设置不同参数。周期默认值仅用于功能演示。</p><div id="strategy-editor"></div><button type="button" id="add-strategy">＋ 添加策略</button></section>
+<details class="panel"><summary>标的与监测绑定</summary><p>停用保留配置；归档从新报告中移除。已有标的的市场身份不可修改。新增或重新启用时会联网验证行情，请稍候。</p><div id="asset-editor"></div><button type="button" id="add-asset">＋ 添加标的</button></details>
 <button class="save-button" type="submit">验证并保存新版本</button><p role="status" id="save-status"></p></form>
 <script id="management-data" type="application/json">{{ config|tojson }}</script><script src="/static/manage.js?v={{ asset_version }}" defer></script></main></body></html>

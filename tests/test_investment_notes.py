@@ -45,3 +45,55 @@ def test_independent_markdown_notes_roundtrip_and_replace_pin(tmp_path):
     assert [item["id"] for item in storage.investment_notes(path)] == [2, 1]
     assert "修改提醒" in client.get("/investment-notes/1").text
     assert storage.report(path) is None
+
+
+def test_delete_pinned_note_from_history(tmp_path):
+    path = tmp_path / "notes.sqlite"
+    client = TestClient(create_app(path))
+    editor = client.get("/investment-notes?new=true")
+    csrf = re.search(r'name="csrf" value="([^"]+)"', editor.text)[1]
+    client.post("/investment-notes", data={"raw": "# 保留备忘", "csrf": csrf})
+    client.post("/investment-notes", data={"raw": "# 待删除备忘", "csrf": csrf})
+    client.post("/investment-notes/2/pin", data={"csrf": csrf})
+
+    assert "<h1>待删除备忘</h1>" in client.get("/investment-notes").text
+    confirmation = client.get("/investment-notes/2/delete")
+    assert "确定删除「待删除备忘」？" in confirmation.text
+    old_version = storage.investment_note(path, 2)["updated_at"]
+    assert client.post(
+        "/investment-notes/2/delete", data={"csrf": "bad", "updated_at": old_version}
+    ).status_code == 403
+    client.post(
+        "/investment-notes",
+        data={"csrf": csrf, "note_id": 2, "raw": "# 已修改的待删除备忘"},
+    )
+    form = {"csrf": csrf, "updated_at": old_version}
+    assert client.post("/investment-notes/2/delete", data=form).status_code == 409
+    form["updated_at"] = storage.investment_note(path, 2)["updated_at"]
+    deleted = client.post("/investment-notes/2/delete", data=form)
+    assert deleted.url.path == "/investment-notes"
+    assert "待删除备忘" not in deleted.text
+    assert "待删除备忘" not in client.get("/").text
+    assert client.get("/investment-notes/2").status_code == 404
+    assert [note["title"] for note in storage.investment_notes(path)] == ["保留备忘"]
+
+
+def test_migrate_legacy_notes_without_reusing_deleted_ids(tmp_path):
+    path = tmp_path / "notes.sqlite"
+    storage.initialize(path)
+    with storage.connect(path) as db:
+        db.executescript("""
+            DROP TABLE investment_notes;
+            CREATE TABLE investment_notes (
+              id INTEGER PRIMARY KEY, title TEXT NOT NULL, markdown TEXT NOT NULL,
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+              pinned INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO investment_notes VALUES (7, '原备忘', '# 原备忘', 'day', 'day', 1);
+            PRAGMA user_version=3;
+        """)
+    storage.initialize(path)
+    assert storage.investment_note(path)["markdown"] == "# 原备忘"
+    assert storage.delete_investment_note(path, 7, "day")
+    assert storage.save_investment_note(path, None, "新备忘", "# 新备忘", "later") == 8
+    assert not storage.delete_investment_note(path, 7, "day")
+    assert storage.investment_note(path, 8)["title"] == "新备忘"

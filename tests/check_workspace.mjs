@@ -10,9 +10,10 @@ const browser = await chromium.launch({
     process.env.CHROME_BIN ||
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 });
-const page = await browser.newPage({
+const context = await browser.newContext({
   viewport: { width: 1440, height: 1000 },
 });
+const page = await context.newPage();
 const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 const base = process.env.CHANCE_TEST_URL || "http://127.0.0.1:8766";
@@ -52,7 +53,7 @@ try {
     await page.evaluate(() => new Promise((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(resolve)),
     ));
-    const note = page.getByRole("button", { name: "投资备忘录", exact: true });
+    const note = page.getByRole("button", { name: "置顶提醒", exact: true });
     const chartBeforeNote = await page.locator("#chart-title").innerText();
     const viewBeforeNote = await page.evaluate(() => window.ChanceChart.view());
     await note.click();
@@ -102,6 +103,32 @@ try {
     panel.hidden = false;
   });
   await page.setViewportSize({ width: 1440, height: 1000 });
+  const selectedBeforeReopening = await page.locator("#chart-title").innerText();
+  const reopened = await page.context().newPage();
+  await reopened.setViewportSize({ width: 390, height: 900 });
+  await reopened.goto(base);
+  await reopened.waitForSelector('#chart[data-ready="true"]');
+  assert.equal(await reopened.locator("#chart-title").innerText(), selectedBeforeReopening);
+  const nav = reopened.getByRole("navigation", { name: "一级导航" });
+  assert.deepEqual(await nav.getByRole("link").allTextContents(), ["标的", "指标", "备忘录"]);
+  await nav.getByRole("link", { name: "指标" }).click();
+  await reopened.getByRole("heading", { name: "指标库" }).waitFor();
+  assert.ok(await reopened.getByText(/监测标的：/).count());
+  await nav.getByRole("link", { name: "备忘录" }).click();
+  await reopened.getByRole("heading", { name: "历史备忘" }).waitFor();
+  const newNote = reopened.getByRole("link", { name: "新建备忘" });
+  if (await newNote.count()) await newNote.click();
+  await reopened.getByLabel("Markdown").fill("# 合成备忘");
+  await reopened.getByRole("button", { name: "保存备忘" }).click();
+  await reopened.getByRole("button", { name: "置顶" }).click();
+  await reopened.getByRole("link", { name: "删除" }).click();
+  await reopened.getByText("确定删除「合成备忘」？").waitFor();
+  await reopened.getByRole("button", { name: "确认删除" }).click();
+  assert.equal(await reopened.getByText("合成备忘", { exact: true }).count(), 0);
+  await nav.getByRole("link", { name: "标的" }).click();
+  await reopened.waitForSelector('#chart[data-ready="true"]');
+  assert.equal(await reopened.locator("#chart-title").innerText(), selectedBeforeReopening);
+  await reopened.close();
   const before = await state();
   await page.locator('.chart-toolbar [data-open="indicator-dialog"]').click();
   const catalog = page.locator(".indicator-catalog");

@@ -8,10 +8,19 @@
 </head>
 <body>
 <main class="management investment-notes">
-    <a href="/">← 返回工作台</a>
+    {% set page = 'notes' %}{% include "partials/primary_nav.html" %}
     <h1>投资备忘录</h1>
     <section class="panel">
-        {% if editing %}
+        {% if deleting %}
+            <h2>删除备忘</h2>
+            <p>确定删除「{{ note.title }}」？</p>
+            <form method="post" action="/investment-notes/{{ note.id }}/delete">
+                <input type="hidden" name="csrf" value="{{ token }}">
+                <input type="hidden" name="updated_at" value="{{ note.updated_at }}">
+                <button type="submit">确认删除</button>
+                <a href="/investment-notes/{{ note.id }}">取消</a>
+            </form>
+        {% elif editing %}
             <h2>{{ '编辑备忘' if note else '新建备忘' }}</h2>
             {% if error %}<p class="warning" role="alert">{{ error }}</p>{% endif %}
             <form method="post" action="/investment-notes">
@@ -33,7 +42,8 @@
                         <button type="submit">置顶</button>
                     </form>
                 {% endif %}
-                <a href="/investment-notes">新建备忘</a>
+                <a href="/investment-notes?new=true">新建备忘</a>
+                <a href="/investment-notes/{{ note.id }}/delete">删除</a>
             </div>
         {% endif %}
     </section>

@@ -1701,7 +1701,7 @@ td {
   margin-left: auto;
 }
 .workspace-header button,
-.workbench-main button {
+.workbench-main button:not(:where(.save-button)) {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 6px;

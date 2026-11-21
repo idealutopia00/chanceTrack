@@ -165,11 +165,21 @@ try {
           [0.2126, 0.7152, 0.0722][i],
         ).reduce((a, b) => a + b);
       };
-      const colors = [style.color, style.backgroundColor].map(luminance).sort((a, b) => b - a);
-      return { background: style.backgroundColor, contrast: (colors[0] + .05) / (colors[1] + .05) };
+      const contrast = (style) => {
+        const [lighter, darker] = [style.color, style.backgroundColor]
+          .map(luminance).sort((a, b) => b - a);
+        return (lighter + 0.05) / (darker + 0.05);
+      };
+      const saveButton = document.querySelector(".decision-panel .save-button");
+      return {
+        background: style.backgroundColor,
+        contrast: contrast(style),
+        actionContrast: contrast(getComputedStyle(saveButton)),
+      };
     });
     assert.equal(panelColors.background, dark ? "rgb(37, 35, 33)" : "rgb(252, 251, 249)");
     assert.ok(panelColors.contrast >= 4.5);
+    assert.ok(panelColors.actionContrast >= 4.5, "the primary action must remain readable");
     const note = page.getByRole("button", { name: /置顶提醒 · 合成置顶提醒/ });
     await note.focus();
     await page.keyboard.press("Shift+Tab");

@@ -4,6 +4,19 @@
   );
   const assets = document.getElementById("asset-editor"),
     strategies = document.getElementById("strategy-editor");
+  const kinds = [
+    ["macd", "MACD交叉"],
+    ["ma", "双均线交叉"],
+    ["boll_break", "布林突破"],
+    ["boll_return", "布林回归"],
+    ["donchian", "唐奇安突破与退出"],
+    ["pullback", "长期上行中的短线回调"],
+    ["trailing_exit", "突破后的 ATR 跟踪退出"],
+    ["squeeze", "波动收缩后的方向释放"],
+    ["relative_strength", "相对基准转强"],
+    ["combination", "触发 + 过滤"],
+  ];
+  const kindLabels = new Map(kinds);
   function field(parent, label, object, key, options) {
     const wrapper = document.createElement("label");
     wrapper.className = "field-label";
@@ -81,7 +94,17 @@
       card.append(bindings);
       assets.append(card);
     }
-    for (const s of config.strategies) {
+    const configurations = [...config.strategies].sort((a, b) =>
+      a.kind.localeCompare(b.kind),
+    );
+    let previousKind;
+    for (const s of configurations) {
+      if (s.kind !== previousKind) {
+        const heading = document.createElement("h3");
+        heading.textContent = kindLabels.get(s.kind) ?? s.kind;
+        strategies.append(heading);
+        previousKind = s.kind;
+      }
       const card = document.createElement("fieldset");
       card.id = `strategy-${s.id}`;
       const title = document.createElement("legend");
@@ -91,18 +114,7 @@
       id.readOnly = true;
       field(card, "配置名称", s, "name");
       field(card, "展示分组", s, "group");
-      const kind = field(card, "规则", s, "kind", [
-        ["macd", "MACD交叉"],
-        ["ma", "双均线交叉"],
-        ["boll_break", "布林突破"],
-        ["boll_return", "布林回归"],
-        ["donchian", "唐奇安突破与退出"],
-        ["pullback", "长期上行中的短线回调"],
-        ["trailing_exit", "突破后的 ATR 跟踪退出"],
-        ["squeeze", "波动收缩后的方向释放"],
-        ["relative_strength", "相对基准转强"],
-        ["combination", "触发 + 过滤"],
-      ]);
+      const kind = field(card, "规则", s, "kind", kinds);
       kind.addEventListener("change", () => {
         const defaults = {
           macd: { fast: 12, slow: 26, signal: 9 },
@@ -175,6 +187,15 @@
         render();
       };
       card.append(copy);
+
+      const usage = document.createElement("p");
+      const monitored = config.assets
+        .filter(
+          (asset) => asset.enabled && !asset.archived && asset.strategies?.includes(s.id),
+        )
+        .map((asset) => asset.label);
+      usage.textContent = `监测标的：${monitored.join("、") || "暂无"}`;
+      card.append(usage);
       strategies.append(card);
     }
   }

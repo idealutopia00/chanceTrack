@@ -1,0 +1,5 @@
+<nav class="primary-nav" aria-label="一级导航">
+    <a href="/" {% if page == 'assets' %}aria-current="page"{% endif %}>标的</a>
+    <a href="/manage" {% if page == 'indicators' %}aria-current="page"{% endif %}>指标</a>
+    <a href="/investment-notes" {% if page == 'notes' %}aria-current="page"{% endif %}>备忘录</a>
+</nav>

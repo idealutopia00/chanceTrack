@@ -45,3 +45,27 @@ def test_independent_markdown_notes_roundtrip_and_replace_pin(tmp_path):
     assert [item["id"] for item in storage.investment_notes(path)] == [2, 1]
     assert "修改提醒" in client.get("/investment-notes/1").text
     assert storage.report(path) is None
+
+
+def test_delete_pinned_note_from_history(tmp_path):
+    path = tmp_path / "notes.sqlite"
+    client = TestClient(create_app(path))
+    editor = client.get("/investment-notes?new=true")
+    csrf = re.search(r'name="csrf" value="([^"]+)"', editor.text)[1]
+    client.post("/investment-notes", data={"raw": "# 保留备忘", "csrf": csrf})
+    client.post("/investment-notes", data={"raw": "# 待删除备忘", "csrf": csrf})
+    client.post("/investment-notes/2/pin", data={"csrf": csrf})
+
+    assert "<h1>待删除备忘</h1>" in client.get("/investment-notes").text
+    confirmation = client.get("/investment-notes/2/delete")
+    assert "确定删除「待删除备忘」？" in confirmation.text
+    assert (
+        client.post("/investment-notes/2/delete", data={"csrf": "bad"}).status_code
+        == 403
+    )
+    deleted = client.post("/investment-notes/2/delete", data={"csrf": csrf})
+    assert deleted.url.path == "/investment-notes"
+    assert "待删除备忘" not in deleted.text
+    assert "待删除备忘" not in client.get("/").text
+    assert client.get("/investment-notes/2").status_code == 404
+    assert [note["title"] for note in storage.investment_notes(path)] == ["保留备忘"]

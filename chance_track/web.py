@@ -180,7 +180,9 @@ def create_app(db_path):
             headers={"Cache-Control": "no-store"},
         )
 
-    def notes_page(request, note, editing=False, raw=None, error=None):
+    def notes_page(
+        request, note, editing=False, raw=None, error=None, deleting=False
+    ):
         return templates.TemplateResponse(
             request=request,
             name="investment_notes.html",
@@ -188,6 +190,7 @@ def create_app(db_path):
                 "note": note,
                 "notes": storage.investment_notes(db_path),
                 "editing": editing,
+                "deleting": deleting,
                 "raw": raw if raw is not None else note["markdown"] if note else "",
                 "token": token,
                 "error": error,
@@ -198,8 +201,9 @@ def create_app(db_path):
         )
 
     @app.get("/investment-notes")
-    def notes_index(request: Request):
-        return notes_page(request, None, editing=True)
+    def notes_index(request: Request, new: bool = False):
+        note = None if new else storage.investment_note(db_path)
+        return notes_page(request, note, editing=note is None)
 
     @app.get("/investment-notes/{note_id}")
     def read_note(request: Request, note_id: int, edit: bool = False):
@@ -241,6 +245,21 @@ def create_app(db_path):
         if not storage.pin_investment_note(db_path, note_id):
             raise HTTPException(404, "备忘不存在")
         return RedirectResponse(f"/investment-notes/{note_id}", status_code=303)
+
+    @app.get("/investment-notes/{note_id}/delete")
+    def confirm_note_deletion(request: Request, note_id: int):
+        note = storage.investment_note(db_path, note_id)
+        if not note:
+            raise HTTPException(404, "备忘不存在")
+        return notes_page(request, note, deleting=True)
+
+    @app.post("/investment-notes/{note_id}/delete")
+    def delete_note(note_id: int, csrf: str = Form()):
+        if not secrets.compare_digest(csrf, token):
+            raise HTTPException(403, "请刷新页面后重试")
+        if not storage.delete_investment_note(db_path, note_id):
+            raise HTTPException(404, "备忘不存在")
+        return RedirectResponse("/investment-notes", status_code=303)
 
     @app.get("/manage")
     def manage(request: Request):

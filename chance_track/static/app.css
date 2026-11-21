@@ -1661,7 +1661,7 @@ td {
 .workspace-header .brand-mark {
   letter-spacing: -4px;
 }
-.workspace-header nav {
+.workspace-header .workspace-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
@@ -2015,7 +2015,7 @@ td {
     padding: 10px 12px;
     flex-wrap: wrap;
   }
-  .workspace-header nav {
+  .workspace-header .workspace-actions {
     margin-left: 0;
   }
   .workspace-header .brand {
@@ -2043,12 +2043,12 @@ td {
   .workspace-bottom .asset-detail:not([hidden]) {
     grid-template-columns: minmax(0, 1fr);
   }
-  .workspace-header nav {
+  .workspace-header .workspace-actions {
     order: 3;
     width: 100%;
     gap: 5px;
   }
-  .workspace-header nav button {
+  .workspace-header .workspace-actions button {
     font-size: 11px;
     padding: 6px 8px;
   }
@@ -2138,4 +2138,20 @@ td {
 #pinned-note-dialog .investment-markdown {
   max-width: 65ch;
   margin-block: 1rem;
+}
+
+.primary-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.primary-nav a {
+  padding: 0.4rem 0.65rem;
+  border-radius: 0.4rem;
+}
+
+.primary-nav a[aria-current="page"] {
+  background: var(--surface, rgba(128, 128, 128, 0.16));
+  font-weight: 700;
 }

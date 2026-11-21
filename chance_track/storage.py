@@ -123,6 +123,13 @@ def save_investment_note(path, note_id, title, markdown, now):
         return note_id if cursor.rowcount else None
 
 
+def delete_investment_note(path, note_id):
+    with connect(path) as db:
+        return db.execute(
+            "DELETE FROM investment_notes WHERE id=?", (note_id,)
+        ).rowcount == 1
+
+
 def pin_investment_note(path, note_id):
     with connect(path) as db:
         db.execute("BEGIN IMMEDIATE")

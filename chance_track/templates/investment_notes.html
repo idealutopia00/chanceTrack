@@ -16,6 +16,7 @@
             <p>确定删除「{{ note.title }}」？</p>
             <form method="post" action="/investment-notes/{{ note.id }}/delete">
                 <input type="hidden" name="csrf" value="{{ token }}">
+                <input type="hidden" name="updated_at" value="{{ note.updated_at }}">
                 <button type="submit">确认删除</button>
                 <a href="/investment-notes/{{ note.id }}">取消</a>
             </form>

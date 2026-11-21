@@ -236,6 +236,8 @@ def create_app(db_path):
         saved_id = storage.save_investment_note(
             db_path, note_id, title, raw, datetime.now(TZ).isoformat()
         )
+        if saved_id is None:
+            raise HTTPException(404, "备忘不存在")
         return RedirectResponse(f"/investment-notes/{saved_id}", status_code=303)
 
     @app.post("/investment-notes/{note_id}/pin")
@@ -254,11 +256,13 @@ def create_app(db_path):
         return notes_page(request, note, deleting=True)
 
     @app.post("/investment-notes/{note_id}/delete")
-    def delete_note(note_id: int, csrf: str = Form()):
+    def delete_note(note_id: int, csrf: str = Form(), updated_at: str = Form()):
         if not secrets.compare_digest(csrf, token):
             raise HTTPException(403, "请刷新页面后重试")
-        if not storage.delete_investment_note(db_path, note_id):
-            raise HTTPException(404, "备忘不存在")
+        if not storage.delete_investment_note(db_path, note_id, updated_at):
+            if not storage.investment_note(db_path, note_id):
+                raise HTTPException(404, "备忘不存在")
+            raise HTTPException(409, "备忘已更新，请重新确认删除")
         return RedirectResponse("/investment-notes", status_code=303)
 
     @app.get("/manage")

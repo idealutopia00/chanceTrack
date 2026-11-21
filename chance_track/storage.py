@@ -42,6 +42,26 @@ def migrate_notifications(db):
     db.commit()
 
 
+def migrate_investment_note_ids(db):
+    db.execute("BEGIN IMMEDIATE")
+    if db.execute("PRAGMA user_version").fetchone()[0] < 4:
+        db.execute("ALTER TABLE investment_notes RENAME TO legacy_investment_notes")
+        db.execute("""
+            CREATE TABLE investment_notes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
+              markdown TEXT NOT NULL, created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0)
+        """)
+        db.execute("INSERT INTO investment_notes SELECT * FROM legacy_investment_notes")
+        db.execute("DROP TABLE legacy_investment_notes")
+        db.execute("""
+            CREATE UNIQUE INDEX investment_notes_pin
+            ON investment_notes(pinned) WHERE pinned = 1
+        """)
+        db.execute("PRAGMA user_version=4")
+    db.commit()
+
+
 @contextmanager
 def connect(path):
     db = sqlite3.connect(path, timeout=30)
@@ -58,9 +78,11 @@ def initialize(path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as db:
-        if db.execute("PRAGMA user_version").fetchone()[0] >= 3:
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version >= 4:
             return
-        db.executescript("""
+        if version < 3:
+            db.executescript("""
     CREATE TABLE IF NOT EXISTS reports (
       id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, day TEXT NOT NULL,
       kind TEXT NOT NULL, payload TEXT NOT NULL);
@@ -82,8 +104,8 @@ def initialize(path):
     CREATE UNIQUE INDEX IF NOT EXISTS investment_notes_pin
       ON investment_notes(pinned) WHERE pinned = 1;
     """)
-        migrate_notifications(db)
-        db.execute("PRAGMA user_version=3")
+            migrate_notifications(db)
+        migrate_investment_note_ids(db)
 
 
 def investment_notes(path):
@@ -123,10 +145,11 @@ def save_investment_note(path, note_id, title, markdown, now):
         return note_id if cursor.rowcount else None
 
 
-def delete_investment_note(path, note_id):
+def delete_investment_note(path, note_id, updated_at):
     with connect(path) as db:
         return db.execute(
-            "DELETE FROM investment_notes WHERE id=?", (note_id,)
+            "DELETE FROM investment_notes WHERE id=? AND updated_at=?",
+            (note_id, updated_at),
         ).rowcount == 1
 
 

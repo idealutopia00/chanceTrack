@@ -653,6 +653,7 @@
   }
   const theme = getComputedStyle(document.documentElement);
   const color = (name) => theme.getPropertyValue(`--${name}`).trim();
+  const overlayColors = () => ["gold", "violet", "down", "up", "mist"].map(color);
   const candleColors = () => ({
     upColor: color("up"),
     downColor: color("down"),
@@ -912,7 +913,7 @@
       overlaySeries = [];
       const layerControls = document.getElementById("chart-layers");
       layerControls.replaceChildren();
-      const colors = ["gold", "violet", "down", "up", "mist"].map(color);
+      const colors = overlayColors();
       for (const [i, layer] of (content.overlays || []).entries()) {
         const series = chart.addSeries(library.LineSeries, {
           color: colors[i % colors.length],
@@ -1088,29 +1089,30 @@
       });
     },
   };
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  window.addEventListener("chancetrack:theme", () => {
     if (!chart || !selected) return;
-    const visibility = Object.fromEntries(
-      Array.from(document.querySelectorAll("[data-layer-id]"), (input) => [
-        input.dataset.layerId, input.checked,
-      ]),
-    );
-    const macdSelect = document.querySelector('[aria-label="MACD 图表配置"]');
-    const macdConfiguration = macdSelect?.value;
     chart.applyOptions(chartColors());
     candles.applyOptions(candleColors());
     dif.applyOptions({ color: color("gold") });
     dea.applyOptions({ color: color("violet") });
     zeroLine.applyOptions({ color: color("line") });
-    select(selected.asset.id, { silent: true, keepRange: true });
-    window.ChanceChart.layers(visibility);
-    if (macdConfiguration) {
-      const input = document.querySelector('[aria-label="MACD 图表配置"]');
-      if (input) {
-        input.value = macdConfiguration;
-        input.dispatchEvent(new Event("change"));
-      }
+    const colors = overlayColors();
+    overlaySeries.forEach(({ series }, index) => {
+      series.applyOptions({ color: colors[index % colors.length] });
+    });
+    const up = color("up"), down = color("down");
+    histogram.setData(histogram.data().map((point) => ({
+      ...point,
+      color: point.value >= 0 ? up : down,
+    })));
+    const highlighted = displayedBars.find(
+      (bar) => bar.time === displayedDay.get(eventSelection?.date),
+    );
+    if (highlighted) {
+      const gold = color("gold");
+      candles.update({ ...highlighted, borderColor: gold, wickColor: gold }, true);
     }
+    setMarkers();
   });
   let initialId = items[0]?.asset.id;
   try {

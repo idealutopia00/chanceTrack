@@ -51,6 +51,7 @@ def create_app(db_path):
                 "workspace.mjs",
                 "watchlist.mjs",
                 "manage.js",
+                "theme.js",
             )
         )
 

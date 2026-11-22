@@ -25,28 +25,26 @@
     "PingFang SC",
     sans-serif;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --bg: #1c1b1a;
-    --panel: #252321;
-    --surface: #302d29;
-    --selected: #354338;
-    --line: #564f47;
-    --muted: #c5bcb0;
-    --text: #f1ebe2;
-    --mint: #b7ccb9;
-    --up: #e6a096;
-    --down: #a5c6b2;
-    --gold: #dfbe88;
-    --mist: #adc2d2;
-    --violet: #c9b6e3;
-    --warning-surface: #3d3225;
-    --error-surface: #44302c;
-    --button-primary: #b7ccb9;
-    --button-primary-text: #202d23;
-    --scrim: rgb(12 11 10 / 58%);
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1c1b1a;
+  --panel: #252321;
+  --surface: #302d29;
+  --selected: #354338;
+  --line: #564f47;
+  --muted: #c5bcb0;
+  --text: #f1ebe2;
+  --mint: #b7ccb9;
+  --up: #e6a096;
+  --down: #a5c6b2;
+  --gold: #dfbe88;
+  --mist: #adc2d2;
+  --violet: #c9b6e3;
+  --warning-surface: #3d3225;
+  --error-surface: #44302c;
+  --button-primary: #b7ccb9;
+  --button-primary-text: #202d23;
+  --scrim: rgb(12 11 10 / 58%);
 }
 * {
   box-sizing: border-box;

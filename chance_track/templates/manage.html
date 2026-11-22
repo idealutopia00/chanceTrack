@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>管理 · Chance Track</title><link rel="stylesheet" href="/static/app.css?v={{ asset_version }}"></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>管理 · Chance Track</title>{% include "partials/theme_script.html" %}<link rel="stylesheet" href="/static/app.css?v={{ asset_version }}"></head>
 <body><main class="management">{% set page = 'indicators' %}{% include "partials/primary_nav.html" %}<h1>指标库</h1><p>配置版本 {{ config.version }} · 保存追加新版本，历史报告不变。保存后，下一次检查生效。</p>
 {% if error %}<p class="warning" role="alert">{{ error }}</p>{% endif %}
 {% if duplicate %}

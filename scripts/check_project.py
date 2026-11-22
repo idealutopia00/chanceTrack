@@ -16,7 +16,7 @@ def validate_source(root):
     package = root / "chance_track"
     for path in package.rglob("*.py"):
         compile(path.read_bytes(), str(path), "exec")
-    scripts = ("app.js", "manage.js", "workspace.mjs", "watchlist.mjs")
+    scripts = ("app.js", "manage.js", "workspace.mjs", "watchlist.mjs", "theme.js")
     for name in ("app.css", *scripts):
         text = (package / "static" / name).read_text()
         if "<!doctype" in text.lower() or "<html" in text.lower():

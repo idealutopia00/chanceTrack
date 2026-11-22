@@ -2332,3 +2332,43 @@ td {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+
+#automatic-monitoring-rules input[type="checkbox"] {
+  width: auto;
+  margin-inline-end: 0.5rem;
+}
+
+.rule-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) minmax(0, 2fr) minmax(8rem, 1fr);
+  align-items: baseline;
+  gap: 0.5rem;
+  padding-block: 0.45rem;
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.rule-row button {
+  justify-self: start;
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+}
+.rule-row button:first-child {
+  font-weight: 650;
+}
+.rule-editor {
+  margin: 0 0 0 auto;
+  width: min(100%, 32rem);
+  height: 100%;
+  max-height: 100%;
+}
+@media (max-width: 600px) {
+  .rule-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .rule-row span {
+    grid-row: 2;
+    grid-column: 1 / -1;
+  }
+}

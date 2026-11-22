@@ -9,6 +9,7 @@ from uuid import uuid4
 from . import storage
 from .analysis import analyze
 from .configuration import (
+    ConfigurationConflict,
     load_configuration,
     relative_benchmarks,
     save_configuration,
@@ -16,6 +17,7 @@ from .configuration import (
     validate_configuration,
 )
 from .data import TZ, fetch
+from .runner import next_regular_check
 from .strategies import benchmark_context, chart_events, evaluate
 
 
@@ -166,8 +168,11 @@ def save_template(path, name, strategies, template_id=None, expected=None):
 def edit(path, payload, fetcher=fetch):
     config = load_configuration(path)
     if payload["version"] != config["version"]:
-        raise ValueError("配置已修改，请重新加载配置后重试；探索草稿已保留")
+        raise ConfigurationConflict("配置已修改，请重新加载配置后重试；探索草稿已保留")
     action = payload["action"]
+    before = (
+        deepcopy(config) if action in ("monitor", "bind_monitor", "unmonitor") else None
+    )
     selected = None
     captured = {}
     saved_strategy_id = None
@@ -260,8 +265,17 @@ def edit(path, payload, fetcher=fetch):
                     ):
                         raise ValueError("待复用配置的组合参数已变化，请重新选择")
             bindings = a.get("strategies", [])
+            replaced = next(
+                (entry for entry in config["strategies"] if entry["id"] == payload.get("replace_id")),
+                None,
+            )
             strategy = existing
-            if reuse_id not in bindings:
+            if (
+                replaced and replaced["id"] in bindings
+                and strategy_signature(replaced) == strategy_signature(existing)
+            ):
+                strategy = replaced
+            elif reuse_id not in bindings:
                 strategy = next(
                     (
                         entry
@@ -321,14 +335,26 @@ def edit(path, payload, fetcher=fetch):
             a["strategies"].append(strategy["id"])
         selected = a["id"]
         saved_strategy_id = strategy["id"]
-    elif action == "unmonitor":
+    elif action in ("bind_monitor", "unmonitor"):
         a = next(a for a in config["assets"] if a["id"] == payload["asset_id"])
-        a["strategies"] = [
-            sid for sid in a.get("strategies", []) if sid != payload["strategy_id"]
-        ]
+        sid = payload["strategy_id"]
+        if action == "bind_monitor":
+            if not any(rule["id"] == sid for rule in config["strategies"]):
+                raise ValueError("配置已不存在，请刷新")
+            if sid not in a["strategies"]:
+                a["strategies"].append(sid)
+        else:
+            a["strategies"] = [bound for bound in a["strategies"] if bound != sid]
         selected = a["id"]
     else:
         raise ValueError("未知工作台操作")
+    if config == before:
+        return {
+            "configuration": config,
+            "selected": selected,
+            "quote": None,
+            "strategy_id": saved_strategy_id,
+        }
     save_configuration(path, config, payload["version"], fetcher=capture)
     quote = None
     if selected in captured:
@@ -378,6 +404,8 @@ def register_routes(app, path, token):
     def guarded(call):
         try:
             return call()
+        except ConfigurationConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
         except (
             ValueError,
             KeyError,
@@ -390,7 +418,12 @@ def register_routes(app, path, token):
 
     @app.get("/api/workspace")
     def state():
-        return {"configuration": load_configuration(path), "templates": templates(path)}
+        next_check = next_regular_check(datetime.now(TZ))
+        return {
+            "configuration": load_configuration(path),
+            "templates": templates(path),
+            "next_regular_check": next_check.isoformat() if next_check else None,
+        }
 
     @app.get("/api/decisions/{decision_id}/context")
     def context(decision_id: int):

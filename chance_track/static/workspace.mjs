@@ -50,7 +50,7 @@
   let previewTimer,
     previewSequence = 0,
     configurationBusy = false,
-    editingAsset;
+    editingAsset, nextRegularCheck;
   const cache = new Map();
   const status = (text, error = false) => {
     $("workspace-status").textContent = text;
@@ -102,12 +102,15 @@
     } catch {
       throw Error("本地服务暂不可用，请重试；草稿已保留");
     }
-    if (!response.ok)
-      throw Error(
+    if (!response.ok) {
+      const error = Error(
         typeof result.detail === "string"
           ? result.detail
           : "请求参数无效，请检查输入",
       );
+      error.status = response.status;
+      throw error;
+    }
     return result;
   }
   const dialogStatus = (dialog, message, error = false) => {
@@ -379,6 +382,7 @@
     if (selected !== id) {
       if (selected) saveDraft();
       selected = id;
+      updateMonitoringButton();
       status("");
       renderCatalog();
     }
@@ -487,20 +491,25 @@
       renderIndicators();
       schedulePreview();
     });
+    const choices = new Map(config.strategies.map((rule) => [rule.id, rule]));
+    for (const rule of draft)
+      if (rule.kind !== "combination") choices.set(rule.id, rule);
+    for (const rule of Object.values(s.dependencies ?? {}))
+      choices.set(rule.id, rule);
+    strategyFields(node, s, [...choices.values()], schedulePreview);
+    node.append(button("加入 / 更新监测", () => monitor(id)));
+    indicatorEditor.hidden = false;
+    node.querySelector("input").focus();
+  }
+  function strategyFields(node, s, rules, onChange) {
     if (s.kind === "combination") {
-      const choices = new Map(config.strategies.map((rule) => [rule.id, rule]));
-      for (const rule of draft)
-        if (rule.kind !== "combination") choices.set(rule.id, rule);
-      for (const rule of Object.values(s.dependencies ?? {}))
-        choices.set(rule.id, rule);
-      const rules = [...choices.values()];
       field(
         node,
         "触发规则",
         s.trigger,
         (value) => {
           s.trigger = value;
-          schedulePreview();
+          onChange();
         },
         rules
           .filter((x) => x.kind !== "combination")
@@ -512,7 +521,7 @@
         s.filter,
         (value) => {
           s.filter = value;
-          schedulePreview();
+          onChange();
         },
         [
           ["", "无过滤"],
@@ -526,7 +535,7 @@
         s.band,
         (value) => {
           s.band = value;
-          schedulePreview();
+          onChange();
         },
         rules
           .filter((x) => x.kind.startsWith("boll"))
@@ -556,7 +565,7 @@
             s.params[key],
             (value) => {
               s.params[key] = value;
-              schedulePreview();
+              onChange();
             },
             benchmarkChoices().map((a) => [a.id, a.label]),
           );
@@ -569,7 +578,7 @@
             s.params[key],
             (value) => {
               s.params[key] = value;
-              schedulePreview();
+              onChange();
             },
             [
               ["true_range", "真实振幅"],
@@ -587,7 +596,7 @@
           s.params[key],
           (value) => {
             s.params[key] = Number(value);
-            schedulePreview();
+            onChange();
           },
         );
         input.type = "number";
@@ -595,9 +604,6 @@
         input.max = factor ? "10" : key === "threshold" ? "99.9" : "250";
         input.step = factor || key === "threshold" ? "0.1" : "1";
       }
-    node.append(button("加入 / 更新监测", () => monitor(id)));
-    indicatorEditor.hidden = false;
-    node.querySelector("input").focus();
   }
   const kindNames = {
     macd: "MACD",
@@ -611,7 +617,11 @@
     relative_strength: "相对基准转强",
   };
   function describeRule(rule) {
-    return `${rule.name} · ${kindNames[rule.kind]} · ${describeParams(rule.params)}`;
+    if (rule.kind === "combination") {
+      const trigger = config.strategies.find((entry) => entry.id === rule.trigger);
+      return `${rule.name} · 组合 · ${trigger?.name ?? rule.trigger}`;
+    }
+    return `${rule.name} · ${kindNames[rule.kind] || rule.kind} · ${describeParams(rule.params)}`;
   }
   function describeParams(params, keys = Object.keys(params)) {
     return [
@@ -822,15 +832,20 @@
     catalog.append(combinations);
   }
   async function mutate(payload, dialog) {
-    if (configurationBusy) throw Error("配置正在保存，请稍候");
+    if (configurationBusy) {
+      const message = "配置正在保存，请稍候";
+      if (dialog) dialogStatus(dialog, message, true);
+      throw Error(message);
+    }
     configurationBusy = true;
     if (dialog) dialogStatus(dialog, "正在验证并保存…");
     try {
       const result = await request("/api/workspace/edit", {
-        ...payload,
         version: config.version,
+        ...payload,
       });
       config = result.configuration;
+      updateMonitoringButton();
       renderWatchlist();
       renderCatalog();
       if (dialog)
@@ -843,14 +858,171 @@
       );
       return result;
     } catch (error) {
-      if (dialog) dialogStatus(dialog, error.message, true);
+      if (dialog) {
+        dialogStatus(dialog, error.message, true);
+        if (error.status === 409 && dialog.id === "automatic-monitoring-dialog")
+          dialog.querySelector(".dialog-status").append(button("重新加载监测配置", async () => {
+            try {
+              const result = await request("/api/workspace");
+              config = result.configuration;
+              nextRegularCheck = result.next_regular_check;
+              updateMonitoringButton();
+              renderWatchlist();
+              renderCatalog();
+              showMonitoring();
+            } catch (failure) {
+              dialogStatus(dialog, failure.message, true);
+            }
+          }));
+      }
       status(error.message, true);
       throw error;
     } finally {
       configurationBusy = false;
     }
   }
+  function updateMonitoringButton() {
+    const asset = config.assets.find((entry) => entry.id === selected);
+    const trigger = $("automatic-monitoring");
+    trigger.disabled = !asset || boot.historical;
+    trigger.textContent = `自动监测（${asset?.strategies.length ?? 0}）`;
+  }
+  function paintMonitoringQuote(result, priorQuote = false) {
+    const line = $("automatic-monitoring-quote");
+    if (!result?.bar_date) {
+      line.textContent = "等待行情";
+      return;
+    }
+    const state = priorQuote || result.warnings?.length
+      ? "过期或沿用行情"
+      : result.is_provisional ? "盘中未确认" : "已收盘";
+    line.textContent = `行情 ${result.bar_date} · ${state}`;
+  }
+  function showMonitoring() {
+    const asset = config.assets.find((entry) => entry.id === selected);
+    const dialog = $("automatic-monitoring-dialog");
+    const rules = $("automatic-monitoring-rules");
+    const editor = $("automatic-monitoring-edit");
+    const assetId = asset.id, version = config.version;
+    editor.hidden = true;
+    editor.replaceChildren();
+    $("automatic-monitoring-title").textContent = `${asset.label} · 自动监测`;
+    $("automatic-monitoring-next").textContent = nextRegularCheck
+      ? `下次例行检查 ${nextRegularCheck.slice(0, 16).replace("T", " ")}（北京时间）`
+      : "下次例行检查时间暂不可用";
+    const current = chart.current();
+    paintMonitoringQuote(currentPreview?.result ?? current?.result ?? current?.last_quote,
+      current?.status === "error" || current?.carried_forward);
+    rules.replaceChildren();
+    for (const strategy of config.strategies) {
+      const row = text("div", "", "symbol-row");
+      const label = text("label", "");
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.dataset.monitorId = strategy.id;
+      toggle.checked = asset.strategies.includes(strategy.id);
+      label.append(toggle, document.createTextNode(describeRule(strategy)));
+      const usage = config.assets.filter((entry) => entry.strategies.includes(strategy.id));
+      const state = text("small", toggle.checked
+        ? (asset.enabled && !asset.archived ? "已开启" : "已绑定 · 标的停用")
+        : "未开启");
+      row.append(label, state);
+      row.append(text("small", usage.map((entry) => entry.label).join("、") || "未用于标的监测"));
+      if (toggle.checked) row.append(button("调整参数", () => editMonitoring(asset, strategy)));
+      toggle.addEventListener("change", async () => {
+        const enabled = toggle.checked;
+        rules.querySelectorAll("input, button").forEach((control) => control.disabled = true);
+        try {
+          await mutate({
+            action: enabled ? "bind_monitor" : "unmonitor",
+            asset_id: assetId,
+            strategy_id: strategy.id,
+            version,
+          }, dialog);
+          showMonitoring();
+          [...rules.querySelectorAll("input")].find((input) =>
+            input.dataset.monitorId === strategy.id)?.focus();
+          dialogStatus(dialog, enabled
+            ? (asset.enabled && !asset.archived ? "已开启监测" : "已绑定 · 标的停用")
+            : "已停止监测");
+        } catch {
+          toggle.checked = !enabled;
+          rules.querySelectorAll("input, button").forEach((control) => control.disabled = false);
+        }
+      });
+      rules.append(row);
+    }
+    openDialog(dialog.id);
+  }
+  $("automatic-monitoring").addEventListener("click", showMonitoring);
+  function editMonitoring(asset, rule) {
+    const dialog = $("automatic-monitoring-dialog");
+    const editor = $("automatic-monitoring-edit");
+    const preference = clone(rule);
+    const snapshot = source, expectedVersion = config.version;
+    let timer, sequence = 0;
+    const preview = text("p", snapshot ? "可基于当前行情预览" : "等待行情");
+    preview.setAttribute("role", "status");
+    editor.replaceChildren(text("h3", `调整 ${rule.name}`));
+    const changed = () => {
+      clearTimeout(timer);
+      const version = ++sequence;
+      if (!snapshot) return;
+      timer = setTimeout(async () => {
+        try {
+          const data = await request("/api/workspace/preview", {
+            source: snapshot,
+            asset_id: asset.id,
+            strategies: expandMonitoringRule(preference),
+          });
+          if (version !== sequence || !preview.isConnected) return;
+          const result = data.result;
+          const signal = result.strategies.find((entry) => entry.id === rule.id);
+          const mode = result.warnings.length ? "过期行情"
+            : result.is_provisional ? "盘中预览" : "收盘快照预览";
+          preview.textContent = `${result.bar_date} · ${mode} · ${signal.preview_event || signal.event || "暂无触发"}`;
+        } catch (error) {
+          if (version === sequence) preview.textContent = error.message;
+        }
+      }, 250);
+    };
+    strategyFields(editor, preference, config.strategies, changed);
+    const apply = button(`仅应用到${asset.label}`, async () => {
+      const original = config.strategies.find((entry) => entry.id === rule.id);
+      const match = original && matchesConfiguration(preference, original)
+        ? original
+        : config.strategies.find((entry) => matchesConfiguration(preference, entry));
+      apply.disabled = true;
+      try {
+        await mutate({
+          action: "monitor",
+          asset_id: asset.id,
+          strategy: preference,
+          reuse_id: match?.id,
+          replace_id: rule.id,
+          version: expectedVersion,
+        }, dialog);
+        showMonitoring();
+        dialogStatus(dialog, `已保存${asset.label}的监测规则`);
+      } catch {
+        apply.disabled = false;
+      }
+    });
+    editor.append(preview, apply, button("取消", () => {
+      clearTimeout(timer);
+      editor.hidden = true;
+      editor.replaceChildren();
+    }));
+    editor.hidden = false;
+    changed();
+  }
+  function expandMonitoringRule(rule) {
+    if (rule.kind !== "combination") return [rule];
+    const dependencies = [rule.trigger, ...(rule.filter ? [rule.band] : [])];
+    return [rule, ...config.strategies.filter((entry) => dependencies.includes(entry.id))];
+  }
   function monitor(id) {
+    const expectedVersion = config.version;
     const s = draft.find((x) => x.id === id);
     if (!s) return;
     const dialog = $("monitor-dialog");
@@ -957,6 +1129,7 @@
               shared: scope.value === "shared",
               reuse_id: matching?.id,
               replace_id: shared?.id,
+              version: expectedVersion,
             },
             dialog,
           );
@@ -1392,6 +1565,8 @@
       const result = await request("/api/workspace");
       config = result.configuration;
       templateList = result.templates;
+      nextRegularCheck = result.next_regular_check;
+      updateMonitoringButton();
       renderWatchlist();
       renderCatalog();
       renderTemplates();
@@ -1413,6 +1588,8 @@
       const result = await request("/api/workspace");
       config = result.configuration;
       templateList = result.templates;
+      nextRegularCheck = result.next_regular_check;
+      updateMonitoringButton();
       renderWatchlist();
       renderCatalog();
       renderTemplates();

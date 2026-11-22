@@ -141,7 +141,7 @@ def test_monitor_private_copy_and_explicit_shared_update(tmp_path):
                 "archived": True,
             },
         ).status_code
-        == 400
+        == 409
     )
 
 
@@ -279,6 +279,7 @@ def test_reuse_duplicate_monitor_preserves_existing_ids(tmp_path):
     legacy = deepcopy(config)
     legacy["strategies"].append({**config["strategies"][0], "id": "legacy"})
     legacy["assets"][0]["strategies"] = ["legacy"]
+    legacy["assets"][1]["strategies"] = ["macd", "legacy"]
     with storage.connect(path) as db:
         db.execute(
             "INSERT INTO configuration_versions(created_at,payload) VALUES(?,?)",
@@ -313,6 +314,15 @@ def test_reuse_duplicate_monitor_preserves_existing_ids(tmp_path):
     assert response.status_code == 200, response.text
     assert response.json()["strategy_id"] == "legacy"
     assert load_configuration(path)["assets"][0]["strategies"] == ["legacy"]
+
+    unchanged = load_configuration(path)
+    response = client.post("/api/workspace/edit", json={
+        **data, "version": unchanged["version"], "asset_id": legacy["assets"][1]["id"],
+        "reuse_id": "macd", "replace_id": "legacy",
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["strategy_id"] == "legacy"
+    assert load_configuration(path) == unchanged
 
 
 def test_watchlist_membership_is_independent_of_monitoring(tmp_path):
@@ -412,3 +422,47 @@ def test_strategy_lifecycle_migrates_references_atomically(tmp_path):
     assert submit(current, unused["id"]).status_code == 409
     assert submit(merged, unused["id"]).status_code == 200
     assert unused["id"] not in {s["id"] for s in load_configuration(path)["strategies"]}
+
+
+def test_immediate_monitor_binding_is_idempotent_and_versioned(tmp_path):
+    path, config, report_id, client, csrf = setup_workspace(tmp_path)
+    original = storage.report(path, report_id)
+    payload = {
+        "csrf": csrf,
+        "version": config["version"],
+        "asset_id": "sp500",
+        "strategy_id": "ma",
+        "action": "bind_monitor",
+    }
+    url = "/api/workspace/edit"
+    added = client.post(url, json=payload).json()["configuration"]
+    assert added["version"] == config["version"] + 1
+    assert added["assets"][0]["strategies"] == ["macd", "ma"]
+    assert added["assets"][0]["activated"]["ma"]
+    assert client.post(url, json=payload).status_code == 409
+    payload["version"] = added["version"]
+    assert client.post(url, json=payload).json()["configuration"] == added
+
+    payload["action"] = "unmonitor"
+    removed = client.post(url, json=payload).json()["configuration"]
+    assert removed["assets"][0]["strategies"] == ["macd"]
+    assert removed["assets"][1:] == added["assets"][1:]
+    assert removed["strategies"] == added["strategies"]
+    assert storage.report(path, report_id) == original
+    assert storage.notification(path, report_id) is None
+
+
+def test_check_uses_one_current_configuration_snapshot(tmp_path, monkeypatch):
+    from chance_track import runner
+
+    path, config, _, _, _ = setup_workspace(tmp_path)
+    reads = []
+
+    def load(path):
+        reads.append(path)
+        return deepcopy(config)
+
+    monkeypatch.setattr(runner, "load_configuration", load)
+    report_id = run(path, send=False, now=NOW, fetcher=lambda *_: sample())
+    assert reads == [path]
+    assert storage.report(path, report_id)["configuration"] == config

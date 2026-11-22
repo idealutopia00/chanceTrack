@@ -169,7 +169,7 @@ def test_concurrent_relational_writes_only_save_one_version(v08_database, monkey
     assert configuration.configuration_version(path, expected + 1)["assets"] == current["assets"]
 
 
-@pytest.mark.parametrize("mode", ["fresh", "upgrade", "startup_failure"])
+@pytest.mark.parametrize("mode", ["fresh", "adopt", "upgrade", "startup_failure"])
 def test_installer_rehearsal_uses_isolated_runtime(v08_database, monkeypatch, tmp_path, mode):
     import runpy
     import shutil
@@ -185,19 +185,31 @@ def test_installer_rehearsal_uses_isolated_runtime(v08_database, monkeypatch, tm
     monkeypatch.syspath_prepend(str(root / "scripts"))
     installer = runpy.run_path(str(root / "scripts" / "install_launchd.py"))
     main = installer["main"]
+    source_root = tmp_path / "candidate-source"
+    shutil.copytree(
+        root / "chance_track", source_root / "chance_track",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    for name in ("watchlist.json", "pyproject.toml", "uv.lock", "README.md"):
+        shutil.copy2(root / name, source_root / name)
+    legacy_path = source_root / "data" / "chance-track.sqlite3"
+    if mode == "adopt":
+        legacy_path.parent.mkdir()
+        shutil.copy2(v08_database, legacy_path)
     support = tmp_path / "support"
     runtime = support / "runtime"
     database = support / "data" / "chance-track.sqlite3"
     old_revision = installer["V08_RECOVERY_REVISION"]
     run_process = subprocess.run
     candidate_revision = "b" * 40
-    if mode != "fresh":
+    if mode in ("upgrade", "startup_failure"):
         runtime.mkdir(parents=True)
         (runtime / "deployment-revision.txt").write_text(old_revision)
         database.parent.mkdir()
         shutil.copy2(v08_database, database)
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setitem(main.__globals__, "ROOT", source_root)
     monkeypatch.setitem(main.__globals__, "SUPPORT", support)
     monkeypatch.setitem(main.__globals__, "RUNTIME", runtime)
     monkeypatch.setattr(sys, "argv", ["install_launchd.py"])
@@ -209,7 +221,7 @@ def test_installer_rehearsal_uses_isolated_runtime(v08_database, monkeypatch, tm
         if args[0] != "launchctl":
             return subprocess.CompletedProcess(args, 0)
         actions.append(tuple(args))
-        return subprocess.CompletedProcess(args, int(args[1] == "print" and mode == "fresh"))
+        return subprocess.CompletedProcess(args, int(args[1] == "print" and mode in ("fresh", "adopt")))
 
     def ready(expected_revision):
         assert expected_revision == candidate_revision
@@ -275,6 +287,9 @@ for scheduled in (False, True):
                 check=True,
             )
             assert any(note["title"] == "新版写入" for note in storage.investment_notes(database))
+    if mode == "adopt":
+        with storage.connect(legacy_path) as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 4
     if mode != "startup_failure":
         for scheduled in (False, True):
             report = run(database, scheduled=scheduled, now=NOW, fetcher=fetcher, send=False)

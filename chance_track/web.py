@@ -55,7 +55,11 @@ def create_app(db_path):
             )
         )
 
-    markdown = MarkdownIt("commonmark", {"html": False}).disable("image")
+    markdown = MarkdownIt("commonmark", {"html": False}).disable("image").enable("table")
+    markdown.renderer.rules["table_open"] = lambda *_: (
+        '<div class="investment-table" tabindex="0" role="region" aria-label="备忘录表格"><table>\n'
+    )
+    markdown.renderer.rules["table_close"] = lambda *_: "</table></div>\n"
     templates.env.filters["investment_markdown"] = lambda raw: Markup(
         markdown.render(raw)
     )

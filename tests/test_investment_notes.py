@@ -97,3 +97,26 @@ def test_migrate_legacy_notes_without_reusing_deleted_ids(tmp_path):
     assert storage.save_investment_note(path, None, "新备忘", "# 新备忘", "later") == 8
     assert not storage.delete_investment_note(path, 7, "day")
     assert storage.investment_note(path, 8)["title"] == "新备忘"
+
+
+def test_saved_markdown_tables_render_in_detail_and_pinned_dialog(tmp_path):
+    path = tmp_path / "notes.sqlite"
+    storage.initialize(path)
+    markdown = (
+        "| 项目 | 说明 |\n| --- | --- |\n| 示例 | **重点** |\n\n"
+        "普通段落\n\n- 列表项目\n\n![图片](/example.png)\n"
+    )
+    note_id = storage.save_investment_note(path, None, "表格", markdown, "day")
+    storage.pin_investment_note(path, note_id)
+    client = TestClient(create_app(path))
+
+    for article in (
+        client.get(f"/investment-notes/{note_id}").text,
+        client.get("/").text.split('id="pinned-note-dialog"', 1)[1].split("</dialog>", 1)[0],
+    ):
+        assert '<div class="investment-table"' in article
+        assert "<table>" in article and "<th>项目</th>" in article
+        assert "<td><strong>重点</strong></td>" in article
+        assert "<p>普通段落</p>" in article and "<li>列表项目</li>" in article
+        assert '<img src="/example.png"' not in article
+    assert storage.investment_note(path, note_id)["markdown"] == markdown

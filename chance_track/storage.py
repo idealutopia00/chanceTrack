@@ -5,6 +5,8 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from .configuration_store import SCHEMA_VERSION
+
 
 def event_key(item, rule_version):
     result = item["result"]
@@ -79,7 +81,7 @@ def initialize(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as db:
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version >= 4:
+        if version >= SCHEMA_VERSION:
             return
         if version < 3:
             db.executescript("""
@@ -105,7 +107,11 @@ def initialize(path):
       ON investment_notes(pinned) WHERE pinned = 1;
     """)
             migrate_notifications(db)
-        migrate_investment_note_ids(db)
+        if version < 4:
+            migrate_investment_note_ids(db)
+        from .configuration import migrate_configuration
+
+        migrate_configuration(db)
 
 
 def investment_notes(path):

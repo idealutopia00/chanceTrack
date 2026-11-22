@@ -6,7 +6,7 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
-from . import storage
+from . import configuration_store, storage
 from .data import TZ, fetch
 from .market_sessions import PROFILES
 
@@ -42,17 +42,43 @@ DEFAULT_STRATEGIES = [
 ]
 
 
+def migrate_configuration(db):
+    db.execute("BEGIN IMMEDIATE")
+    if db.execute("PRAGMA user_version").fetchone()[0] >= configuration_store.SCHEMA_VERSION:
+        return
+    for statement in configuration_store.SCHEMA:
+        db.execute(statement)
+    row = db.execute(
+        "SELECT id, payload FROM configuration_versions ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row:
+        try:
+            payload = json.loads(row["payload"])
+            validate_configuration(payload)
+            for rule in payload["strategies"]:
+                if rule["kind"] == "combination":
+                    known = {entry["id"] for entry in payload["strategies"]}
+                    for role in ("trigger", "band"):
+                        if rule.get(role) and rule[role] not in known:
+                            raise ValueError(f"组合 {rule['id']} 的 {role} 引用不存在：{rule[role]}")
+            configuration_store.write_current(db, payload, row["id"])
+            if configuration_store.read_current(db) != {"version": row["id"], **payload}:
+                raise ValueError("新旧配置内容不一致")
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError(f"无法迁移配置版本 {row['id']}：{exc}") from exc
+    db.execute(f"PRAGMA user_version={configuration_store.SCHEMA_VERSION}")
+
+
 def load_configuration(path):
+    storage.initialize(path)
     with storage.connect(path) as db:
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS configuration_versions (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)"
-        )
+        db.execute("BEGIN")
+        if current := configuration_store.read_current(db):
+            return current
+    with storage.connect(path) as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute(
-            "SELECT * FROM configuration_versions ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if row:
-            return {"version": row["id"], **json.loads(row["payload"])}
+        if current := configuration_store.read_current(db):
+            return current
         assets = json.loads(
             (Path(__file__).resolve().parent.parent / "watchlist.json").read_text()
         )
@@ -70,6 +96,7 @@ def load_configuration(path):
             "INSERT INTO configuration_versions(created_at,payload) VALUES(?,?)",
             (datetime.now(TZ).isoformat(), json.dumps(payload, ensure_ascii=False)),
         )
+        configuration_store.write_current(db, payload, cursor.lastrowid)
         return {"version": cursor.lastrowid, **payload}
 
 
@@ -401,6 +428,7 @@ def save_configuration(path, config, expected_version, fetcher=fetch, *, lifecyc
                 ),
             ),
         )
+        configuration_store.write_current(db, config, cursor.lastrowid)
         return cursor.lastrowid
 
 

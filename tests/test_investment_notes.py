@@ -83,6 +83,11 @@ def test_migrate_legacy_notes_without_reusing_deleted_ids(tmp_path):
     storage.initialize(path)
     with storage.connect(path) as db:
         db.executescript("""
+            DROP TABLE combination_references;
+            DROP TABLE monitoring_bindings;
+            DROP TABLE current_assets;
+            DROP TABLE current_strategies;
+            DROP TABLE current_configuration;
             DROP TABLE investment_notes;
             CREATE TABLE investment_notes (
               id INTEGER PRIMARY KEY, title TEXT NOT NULL, markdown TEXT NOT NULL,

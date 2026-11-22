@@ -54,13 +54,16 @@ def migrate_configuration(db):
     if row:
         try:
             payload = json.loads(row["payload"])
-            validate_configuration(payload)
+            known = {rule["id"] for rule in payload["strategies"]}
+            for asset in payload["assets"]:
+                if unknown := set(asset.get("strategies", [])) - known:
+                    raise ValueError(f"标的 {asset['id']} 的策略引用不存在：{', '.join(sorted(unknown))}")
             for rule in payload["strategies"]:
                 if rule["kind"] == "combination":
-                    known = {entry["id"] for entry in payload["strategies"]}
                     for role in ("trigger", "band"):
                         if rule.get(role) and rule[role] not in known:
                             raise ValueError(f"组合 {rule['id']} 的 {role} 引用不存在：{rule[role]}")
+            validate_configuration(payload)
             configuration_store.write_current(db, payload, row["id"])
             if configuration_store.read_current(db) != {"version": row["id"], **payload}:
                 raise ValueError("新旧配置内容不一致")

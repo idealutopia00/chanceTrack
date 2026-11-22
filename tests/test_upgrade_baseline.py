@@ -60,3 +60,74 @@ def test_v08_configuration_and_history_baseline(v08_database):
     replay = run(path, now=NOW, fetcher=fetcher, send=False)
     assert storage.report(path, report_id) == report
     assert not build_message(storage.report(path, replay), keys)[1]
+
+
+def test_relational_migration_is_idempotent_and_enforces_references(v08_database):
+    import sqlite3
+
+    path = v08_database
+    current = load_configuration(path)
+    old_report = storage.report(path, 1)
+    for _ in range(2):
+        storage.initialize(path)
+        assert load_configuration(path) == current
+    with storage.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert not db.execute("PRAGMA foreign_key_check").fetchall()
+        assert db.execute("SELECT count(*) FROM configuration_versions").fetchone()[0] == 2
+        assert db.execute(
+            "SELECT activated FROM monitoring_bindings WHERE asset_id=? AND strategy_id=?",
+            ("sp500", "macd_sp500"),
+        ).fetchone()[0] == ACTIVATED
+        assert db.execute("SELECT target_id FROM combination_references").fetchone()[0] == "macd_sp500"
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO monitoring_bindings VALUES ('sp500', 'macd_sp500', 2, NULL)")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO monitoring_bindings VALUES ('sp500', 'missing', 2, NULL)")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("DELETE FROM current_strategies WHERE id='macd_sp500'")
+    assert storage.report(path, 1) == old_report
+
+
+@pytest.mark.parametrize("failure", ["interrupted", "storage_full"])
+def test_migration_failure_keeps_v08_readable(v08_database, monkeypatch, failure):
+    import sqlite3
+
+    from chance_track import configuration_store
+
+    path = v08_database
+    historical_report = storage.report(path, 1)
+    original = configuration_store.write_current
+
+    def fail(db, config, version):
+        original(db, config, version)
+        if failure == "interrupted":
+            raise RuntimeError("interrupted")
+        raise sqlite3.OperationalError("database or disk is full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(configuration_store, "write_current", fail)
+        with pytest.raises((RuntimeError, sqlite3.OperationalError)):
+            storage.initialize(path)
+    with storage.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert not db.execute(
+            "SELECT name FROM sqlite_schema WHERE name='current_configuration'"
+        ).fetchall()
+    assert storage.report(path, 1) == historical_report
+    storage.initialize(path)
+    assert load_configuration(path)["version"] == 2
+
+
+def test_migration_refuses_a_dangling_reference_with_location(v08_database):
+    path = v08_database
+    with storage.connect(path) as db:
+        db.execute(
+            "UPDATE configuration_versions SET payload=json_set(payload, '$.assets[0].strategies[0]', 'missing') WHERE id=2"
+        )
+    with pytest.raises(ValueError, match="sp500.*missing"):
+        storage.initialize(path)
+    with storage.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4

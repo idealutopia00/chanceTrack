@@ -15,6 +15,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import storage
 from .configuration import (
+    ConfigurationConflict,
     DuplicateStrategy,
     configuration_history,
     configuration_version,
@@ -281,6 +282,8 @@ def create_app(db_path):
             name="manage.html",
             context={
                 "config": draft or load_configuration(db_path),
+                "show_lifecycle": draft is None,
+                "conflict": status == 409,
                 "versions": configuration_history(db_path),
                 "token": token,
                 "error": error,
@@ -314,12 +317,30 @@ def create_app(db_path):
             return management_page(
                 request,
                 exc,
-                400,
+                409 if isinstance(exc, ConfigurationConflict) else 400,
                 draft
                 if isinstance(draft, dict)
                 and "assets" in draft
                 and "strategies" in draft
                 else None,
+            )
+        return RedirectResponse("/manage", status_code=303)
+
+    @app.post("/manage/strategy-lifecycle")
+    def save_strategy_lifecycle(
+        request: Request,
+        csrf: str = Form(),
+        version: int = Form(),
+        source: str = Form(),
+        keep: str = Form(""),
+    ):
+        if not secrets.compare_digest(csrf, token):
+            raise HTTPException(403, "请刷新页面后重试")
+        try:
+            save_configuration(db_path, None, version, lifecycle=(source, keep))
+        except ValueError as exc:
+            return management_page(
+                request, exc, 409 if isinstance(exc, ConfigurationConflict) else 400
             )
         return RedirectResponse("/manage", status_code=303)
 

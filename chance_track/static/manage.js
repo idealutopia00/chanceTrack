@@ -17,6 +17,74 @@
     ["combination", "触发 + 过滤"],
   ];
   const kindLabels = new Map(kinds);
+  const draftCopies = new Set(config.draft_copies);
+  function references(snapshot, id) {
+    return [
+      ...snapshot.assets
+        .filter((asset) => asset.strategies?.includes(id))
+        .map((asset) => `标的：${asset.label}（${asset.id}）`),
+      ...snapshot.strategies
+        .filter((rule) => rule.kind === "combination" &&
+          (rule.trigger === id || rule.band === id))
+        .map((rule) => `组合策略：${rule.name}（${rule.id}）`),
+    ];
+  }
+  const lifecycle = document.getElementById("strategy-lifecycle");
+  if (lifecycle) {
+    const saved = structuredClone(config);
+    const source = lifecycle.elements.source;
+    const keep = lifecycle.elements.keep;
+    const preview = document.getElementById("strategy-lifecycle-preview");
+    const submit = lifecycle.querySelector('[type="submit"]');
+    source.append(new Option("请选择", ""));
+    keep.append(new Option("删除来源（仅限无引用）", ""));
+    for (const rule of saved.strategies) {
+      const label = `${rule.name}（${rule.id}）`;
+      source.append(new Option(label, rule.id));
+      keep.append(new Option(label, rule.id));
+    }
+    function summarize(rule) {
+      const kind = kindLabels.get(rule.kind) ?? rule.kind;
+      const settings = rule.kind === "combination"
+        ? { trigger: rule.trigger, filter: rule.filter, band: rule.band }
+        : rule.params;
+      return `${rule.name}（${rule.id}） · ${kind} · ${JSON.stringify(settings)}`;
+    }
+    function updateLifecycle() {
+      preview.replaceChildren();
+      submit.disabled = true;
+      const from = saved.strategies.find((rule) => rule.id === source.value);
+      const to = saved.strategies.find((rule) => rule.id === keep.value);
+      if (!from) return;
+      const usage = references(saved, from.id);
+      const descriptions = [
+        `来源：${summarize(from)}`,
+        to ? `保留：${summarize(to)}` : "操作：删除来源配置",
+        `来源引用：${usage.join("、") || "无"}`,
+      ];
+      if (to) {
+        const targetUsage = references(saved, to.id);
+        descriptions.push(`保留项引用：${targetUsage.join("、") || "无"}`);
+      }
+      if (!to && usage.length) {
+        descriptions.push("请先替换或解除上述引用。");
+      } else if (from === to) {
+        descriptions.push("请选择不同的保留配置。");
+      } else {
+        submit.disabled = false;
+      }
+      for (const text of descriptions) {
+        const line = document.createElement("p");
+        line.textContent = text;
+        preview.append(line);
+      }
+    }
+    lifecycle.addEventListener("change", updateLifecycle);
+    lifecycle.addEventListener("reset", () => {
+      preview.replaceChildren();
+      submit.disabled = true;
+    });
+  }
   function field(parent, label, object, key, options) {
     const wrapper = document.createElement("label");
     wrapper.className = "field-label";
@@ -184,9 +252,28 @@
         clone.name += " 副本";
         delete clone.revision;
         config.strategies.push(clone);
+        draftCopies.add(clone.id);
         render();
       };
       card.append(copy);
+
+      if (draftCopies.has(s.id)) {
+        const undo = document.createElement("button");
+        undo.type = "button";
+        undo.textContent = "撤销复制";
+        undo.onclick = () => {
+          const usage = references(config, s.id);
+          if (usage.length) {
+            document.getElementById("save-status").textContent =
+              `请先解除草稿引用：${usage.join("、")}`;
+            return;
+          }
+          config.strategies = config.strategies.filter((rule) => rule.id !== s.id);
+          draftCopies.delete(s.id);
+          render();
+        };
+        card.append(undo);
+      }
 
       const usage = document.createElement("p");
       const monitored = config.assets
@@ -223,6 +310,7 @@
     render();
   };
   document.getElementById("management-form").onsubmit = () => {
+    config.draft_copies = [...draftCopies];
     document.getElementById("config-payload").value = JSON.stringify(config);
     document.getElementById("save-status").textContent =
       "正在校验配置及行情，请稍候…";

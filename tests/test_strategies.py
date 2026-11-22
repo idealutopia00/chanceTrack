@@ -213,7 +213,7 @@ def test_management_csrf_save_and_historical_snapshot(tmp_path):
         "macd",
         "boll_break",
     ]
-    assert client.post("/manage", data=data).status_code == 400
+    assert client.post("/manage", data=data).status_code == 409
 
 
 def test_new_binding_old_event_is_reference_not_notification(tmp_path):

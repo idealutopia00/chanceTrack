@@ -344,3 +344,59 @@ def test_watchlist_membership_is_independent_of_monitoring(tmp_path):
         and not item["enabled"]
         and item["strategies"] == old["strategies"]
     )
+
+
+def test_strategy_lifecycle_migrates_references_atomically(tmp_path):
+    path, config, report_id, client, csrf = setup_workspace(tmp_path)
+    retained = config["strategies"][0]
+    source = {**retained, "id": "macd_sp500", "revision": 3}
+    unused = {**retained, "id": "macd_unused", "revision": 2}
+    combination = {
+        "id": "combo",
+        "kind": "combination",
+        "name": "组合",
+        "trigger": source["id"],
+    }
+    config["strategies"].extend([source, unused, combination])
+    config["assets"][0]["strategies"] = [source["id"], "combo"]
+    config["assets"][1]["strategies"].append(source["id"])
+    source_activation = "2026-10-01T00:00:00+08:00"
+    config["assets"][0]["activated"] = {source["id"]: source_activation}
+    retained_activation = config["assets"][1]["activated"][retained["id"]]
+    with storage.connect(path) as db:
+        version = db.execute(
+            "INSERT INTO configuration_versions(created_at,payload) VALUES (?,?)",
+            (source_activation, json.dumps({k: config[k] for k in ("assets", "strategies")})),
+        ).lastrowid
+
+    current = load_configuration(path)
+    report = storage.report(path, report_id)
+    data = {"csrf": csrf, "version": version, "source": source["id"]}
+    endpoint = "/manage/strategy-lifecycle"
+    blocked = client.post(endpoint, data=data)
+    assert blocked.status_code == 400
+    assert "sp500" in blocked.text and "combo" in blocked.text
+    assert client.post(endpoint, data={**data, "keep": "ma"}).status_code == 400
+    assert load_configuration(path) == current
+
+    saved = client.post(endpoint, data={**data, "keep": retained["id"]})
+    assert saved.status_code == 200
+    merged = load_configuration(path)
+    assert merged["version"] == version + 1
+    assert all(a["strategies"].count(retained["id"]) == 1 for a in merged["assets"])
+    assert all(source["id"] not in a["strategies"] for a in merged["assets"])
+    assert source["id"] not in merged["assets"][0]["activated"]
+    assert merged["assets"][0]["activated"][retained["id"]] > source_activation
+    assert merged["assets"][1]["activated"][retained["id"]] == retained_activation
+    assert next(s for s in merged["strategies"] if s["id"] == "combo")["trigger"] == retained["id"]
+    assert storage.report(path, report_id) == report
+    assert client.get(f"/configuration/{version}").json() == {
+        **current, "created_at": source_activation
+    }
+    assert storage.notification(path, report_id) is None
+
+    remove = {**data, "source": unused["id"]}
+    assert client.post(endpoint, data=remove).status_code == 409
+    remove["version"] = merged["version"]
+    assert client.post(endpoint, data=remove).status_code == 200
+    assert unused["id"] not in {s["id"] for s in load_configuration(path)["strategies"]}

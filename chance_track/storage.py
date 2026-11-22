@@ -17,52 +17,43 @@ def event_key(item, rule_version):
 
 
 def migrate_notifications(db):
-    if db.execute("PRAGMA user_version").fetchone()[0] >= 1:
-        return
-    db.execute("BEGIN IMMEDIATE")
-    if db.execute("PRAGMA user_version").fetchone()[0] < 1:
-        columns = {
-            row["name"] for row in db.execute("PRAGMA table_info(notifications)")
-        }
-        if "message" not in columns:
-            db.execute("ALTER TABLE notifications ADD COLUMN message TEXT")
-        # Old popups counted only new_event; a silent report or a zero-count popup
-        # must not be backfilled as having delivered that signal.
-        for row in db.execute(
-            "SELECT r.id,r.payload FROM reports r JOIN notifications n ON n.report_id=r.id WHERE n.sent_at IS NOT NULL"
-        ).fetchall():
-            report_data = json.loads(row["payload"])
-            for item in report_data["items"]:
-                if item.get("result", {}).get("event") and item["result"].get(
-                    "new_event"
-                ):
-                    db.execute(
-                        "INSERT OR IGNORE INTO notification_events VALUES(?,?)",
-                        (event_key(item, report_data["rule"]["version"]), row["id"]),
-                    )
-        db.execute("PRAGMA user_version=1")
-    db.commit()
+    columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(notifications)")
+    }
+    if "message" not in columns:
+        db.execute("ALTER TABLE notifications ADD COLUMN message TEXT")
+    # Old popups counted only new_event; a silent report or a zero-count popup
+    # must not be backfilled as having delivered that signal.
+    for row in db.execute(
+        "SELECT r.id,r.payload FROM reports r JOIN notifications n ON n.report_id=r.id WHERE n.sent_at IS NOT NULL"
+    ).fetchall():
+        report_data = json.loads(row["payload"])
+        for item in report_data["items"]:
+            if item.get("result", {}).get("event") and item["result"].get(
+                "new_event"
+            ):
+                db.execute(
+                    "INSERT OR IGNORE INTO notification_events VALUES(?,?)",
+                    (event_key(item, report_data["rule"]["version"]), row["id"]),
+                )
+    db.execute("PRAGMA user_version=1")
 
 
 def migrate_investment_note_ids(db):
-    db.execute("BEGIN IMMEDIATE")
-    if db.execute("PRAGMA user_version").fetchone()[0] < 4:
-        db.execute("ALTER TABLE investment_notes RENAME TO legacy_investment_notes")
-        db.execute("""
-            CREATE TABLE investment_notes (
-              id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
-              markdown TEXT NOT NULL, created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0)
-        """)
-        db.execute("INSERT INTO investment_notes SELECT * FROM legacy_investment_notes")
-        db.execute("DROP TABLE legacy_investment_notes")
-        db.execute("""
-            CREATE UNIQUE INDEX investment_notes_pin
-            ON investment_notes(pinned) WHERE pinned = 1
-        """)
-        db.execute("PRAGMA user_version=4")
-    db.commit()
-
+    db.execute("ALTER TABLE investment_notes RENAME TO legacy_investment_notes")
+    db.execute("""
+        CREATE TABLE investment_notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
+          markdown TEXT NOT NULL, created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0)
+    """)
+    db.execute("INSERT INTO investment_notes SELECT * FROM legacy_investment_notes")
+    db.execute("DROP TABLE legacy_investment_notes")
+    db.execute("""
+        CREATE UNIQUE INDEX investment_notes_pin
+        ON investment_notes(pinned) WHERE pinned = 1
+    """)
+    db.execute("PRAGMA user_version=4")
 
 @contextmanager
 def connect(path):
@@ -76,7 +67,7 @@ def connect(path):
         db.close()
 
 
-def initialize(path):
+def initialize(path, *, upgrade_configuration=False):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as db:
@@ -85,8 +76,19 @@ def initialize(path):
             raise ValueError(f"数据库结构版本 {version} 高于本程序支持的 {SCHEMA_VERSION}")
         if version == SCHEMA_VERSION:
             return
+        db.execute("BEGIN IMMEDIATE")
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version == SCHEMA_VERSION:
+            return
+        if version > SCHEMA_VERSION:
+            raise ValueError(f"数据库结构版本 {version} 高于本程序支持的 {SCHEMA_VERSION}")
+        has_tables = db.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
+        ).fetchone()
+        if (version or has_tables) and not upgrade_configuration:
+            raise ValueError("旧数据库需要使用安装器完成备份与配置升级")
         if version < 3:
-            db.executescript("""
+            statements = """
     CREATE TABLE IF NOT EXISTS reports (
       id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, day TEXT NOT NULL,
       kind TEXT NOT NULL, payload TEXT NOT NULL);
@@ -107,8 +109,11 @@ def initialize(path):
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0);
     CREATE UNIQUE INDEX IF NOT EXISTS investment_notes_pin
       ON investment_notes(pinned) WHERE pinned = 1;
-    """)
-            migrate_notifications(db)
+    """
+            for statement in statements.strip().removesuffix(";").split(";"):
+                db.execute(statement)
+            if version < 1:
+                migrate_notifications(db)
         if version < 4:
             migrate_investment_note_ids(db)
         from .configuration import migrate_configuration

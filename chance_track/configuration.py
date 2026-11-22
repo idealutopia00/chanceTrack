@@ -43,9 +43,6 @@ DEFAULT_STRATEGIES = [
 
 
 def migrate_configuration(db):
-    db.execute("BEGIN IMMEDIATE")
-    if db.execute("PRAGMA user_version").fetchone()[0] >= configuration_store.SCHEMA_VERSION:
-        return
     for statement in configuration_store.SCHEMA:
         db.execute(statement)
     row = db.execute(

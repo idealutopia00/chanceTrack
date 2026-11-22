@@ -1,6 +1,7 @@
 """Deploy an explicit runtime snapshot to Application Support and install user agents."""
 
 import argparse
+import json
 import os
 import plistlib
 import shutil
@@ -22,9 +23,10 @@ ROOT = Path(__file__).resolve().parent.parent
 LABEL = "local.chancetrack"
 SUPPORT = Path.home() / "Library" / "Application Support" / "ChanceTrack"
 RUNTIME = SUPPORT / "runtime"
+V08_RECOVERY_REVISION = "e67e3bca51b4d0b5332673ee773b97ffe36a9c3e"
 
 
-def prepare_configuration_upgrade(target_db):
+def prepare_configuration_upgrade(target_db, *, adopting=False):
     if not target_db.is_file():
         return
     with closing(sqlite3.connect(target_db.as_uri() + "?mode=ro", uri=True)) as source:
@@ -33,7 +35,10 @@ def prepare_configuration_upgrade(target_db):
             return
         if version != 4:
             raise RuntimeError(f"配置升级需要 SQLite 结构版本 4，当前为 {version}")
-        old_revision = (RUNTIME / "deployment-revision.txt").read_text().strip()
+        old_revision = (
+            V08_RECOVERY_REVISION if adopting
+            else (RUNTIME / "deployment-revision.txt").read_text().strip()
+        )
         if not old_revision:
             raise RuntimeError("缺少可恢复的旧程序版本")
         backups = SUPPORT / "backups"
@@ -48,7 +53,7 @@ def prepare_configuration_upgrade(target_db):
     with tempfile.TemporaryDirectory() as directory:
         trial = Path(directory) / "configuration-upgrade.sqlite3"
         shutil.copy2(backup, trial)
-        storage.initialize(trial)
+        storage.initialize(trial, upgrade_configuration=True)
         with storage.connect(trial) as db:
             if (
                 db.execute("PRAGMA quick_check").fetchone()[0] != "ok"
@@ -56,6 +61,7 @@ def prepare_configuration_upgrade(target_db):
             ):
                 raise RuntimeError(f"配置升级预演校验失败：{bundle}")
     print(f"已验证配置升级和旧版恢复备份：{bundle}")
+    return backup
 
 
 def deploy_runtime():
@@ -84,13 +90,13 @@ def deploy_runtime():
     )
 
 
-def wait_for_web():
+def wait_for_web(expected_revision):
     for _ in range(10):
         try:
-            with urlopen("http://127.0.0.1:8765/", timeout=1) as response:
-                if response.status == 200:
+            with urlopen("http://127.0.0.1:8765/api/runtime-health", timeout=1) as response:
+                if response.status == 200 and json.load(response).get("revision") == expected_revision:
                     return
-        except OSError:
+        except (OSError, ValueError, AttributeError):
             pass
         time.sleep(1)
     raise RuntimeError("新运行副本未通过 HTTP 检查，定时检查保持停止；请参阅升级恢复说明")
@@ -125,15 +131,19 @@ def main():
             print("已移除 Chance Track 自启动任务；历史数据和运行副本未删除")
             return
         with check_lock(target_db):
-            prepare_configuration_upgrade(target_db)
+            legacy_path = ROOT / "data" / "chance-track.sqlite3"
+            adopt = not target_db.exists() and legacy_path.is_file()
+            if adopt:
+                with check_lock(legacy_path):
+                    backup = prepare_configuration_upgrade(legacy_path, adopting=True)
+                    source_path = backup or legacy_path
+                    with closing(sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True)) as source, closing(sqlite3.connect(target_db)) as target:
+                        source.backup(target)
+            else:
+                prepare_configuration_upgrade(target_db)
             recover_old_jobs = False
             deploy_runtime()
-            # Retain the original development database when adopting it on first install.
-            old = ROOT / "data" / "chance-track.sqlite3"
-            if old.exists() and not target_db.exists():
-                with closing(sqlite3.connect(old)) as source, closing(sqlite3.connect(target_db)) as target:
-                    source.backup(target)
-            storage.initialize(target_db)
+            storage.initialize(target_db, upgrade_configuration=True)
     except Exception:
         if recover_old_jobs:
             for plist in reversed(active):
@@ -172,7 +182,8 @@ def main():
             plistlib.dump(config, stream)
         subprocess.run(["launchctl", "bootstrap", domain, str(target)], check=True)
         if suffix == "web":
-            wait_for_web()
+            expected_revision = (RUNTIME / "deployment-revision.txt").read_text().strip()
+            wait_for_web(expected_revision)
         print(f"已安装 {target}")
     print(f"运行副本：{RUNTIME}\n历史数据：{target_db}\n日志：{logs}")
 

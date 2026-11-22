@@ -35,6 +35,7 @@ def test_v08_configuration_and_history_baseline(v08_database):
         expected = {"version": row["id"], **json.loads(row["payload"])}
         event_keys = {row["key"] for row in db.execute("SELECT key FROM events")}
     report_id = 1
+    storage.initialize(path, upgrade_configuration=True)
     assert load_configuration(path) == expected
     assets = {asset["id"]: asset for asset in expected["assets"]}
     assert assets["sp500"]["strategies"] == ["macd_sp500", "macd_combo"]
@@ -66,6 +67,7 @@ def test_relational_migration_is_idempotent_and_enforces_references(v08_database
     import sqlite3
 
     path = v08_database
+    storage.initialize(path, upgrade_configuration=True)
     current = load_configuration(path)
     old_report = storage.report(path, 1)
     for _ in range(2):
@@ -109,7 +111,7 @@ def test_migration_failure_keeps_v08_readable(v08_database, monkeypatch, failure
     with monkeypatch.context() as patch:
         patch.setattr(configuration_store, "write_current", fail)
         with pytest.raises((RuntimeError, sqlite3.OperationalError)):
-            storage.initialize(path)
+            storage.initialize(path, upgrade_configuration=True)
     with storage.connect(path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 4
         assert db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
@@ -117,7 +119,7 @@ def test_migration_failure_keeps_v08_readable(v08_database, monkeypatch, failure
             "SELECT name FROM sqlite_schema WHERE name='current_configuration'"
         ).fetchall()
     assert storage.report(path, 1) == historical_report
-    storage.initialize(path)
+    storage.initialize(path, upgrade_configuration=True)
     assert load_configuration(path)["version"] == 2
 
 
@@ -128,7 +130,7 @@ def test_migration_refuses_a_dangling_reference_with_location(v08_database):
             "UPDATE configuration_versions SET payload=json_set(payload, '$.assets[0].strategies[0]', 'missing') WHERE id=2"
         )
     with pytest.raises(ValueError, match="sp500.*missing"):
-        storage.initialize(path)
+        storage.initialize(path, upgrade_configuration=True)
     with storage.connect(path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 4
 
@@ -140,6 +142,7 @@ def test_concurrent_relational_writes_only_save_one_version(v08_database, monkey
     from chance_track import configuration
 
     path = v08_database
+    storage.initialize(path, upgrade_configuration=True)
     expected = load_configuration(path)["version"]
     ready = Barrier(2)
 
@@ -172,6 +175,7 @@ def test_installer_rehearsal_uses_isolated_runtime(v08_database, monkeypatch, tm
     import shutil
     import subprocess
     import sys
+    import tarfile
 
     from fastapi.testclient import TestClient
 
@@ -184,7 +188,8 @@ def test_installer_rehearsal_uses_isolated_runtime(v08_database, monkeypatch, tm
     support = tmp_path / "support"
     runtime = support / "runtime"
     database = support / "data" / "chance-track.sqlite3"
-    old_revision = "a" * 40
+    old_revision = installer["V08_RECOVERY_REVISION"]
+    run_process = subprocess.run
     candidate_revision = "b" * 40
     if mode != "fresh":
         runtime.mkdir(parents=True)
@@ -206,7 +211,8 @@ def test_installer_rehearsal_uses_isolated_runtime(v08_database, monkeypatch, tm
         actions.append(tuple(args))
         return subprocess.CompletedProcess(args, int(args[1] == "print" and mode == "fresh"))
 
-    def ready():
+    def ready(expected_revision):
+        assert expected_revision == candidate_revision
         if mode == "startup_failure":
             raise RuntimeError("synthetic web startup failure")
         assert TestClient(create_app(database)).get("/").status_code == 200
@@ -231,6 +237,44 @@ def test_installer_rehearsal_uses_isolated_runtime(v08_database, monkeypatch, tm
             assert db.execute("PRAGMA user_version").fetchone()[0] == 4
             assert db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert storage.report(backup / "chance-track.sqlite3", 1) == storage.report(database, 1)
+
+        if mode == "startup_failure" and (root / ".git").exists():
+            old_runtime = tmp_path / "restored-runtime"
+            old_runtime.mkdir()
+            archive = tmp_path / "v08-runtime.tar"
+            with archive.open("wb") as stream:
+                run_process(["git", "archive", old_revision], cwd=root, stdout=stream, check=True)
+            with tarfile.open(archive) as source:
+                source.extractall(old_runtime, filter="data")
+            (old_runtime / "deployment-revision.txt").write_text(old_revision)
+            recovered_db = tmp_path / "restored-v08.sqlite"
+            shutil.copy2(backup / "chance-track.sqlite3", recovered_db)
+            storage.save_investment_note(database, None, "新版写入", "# 新版写入", ACTIVATED)
+            run_process(
+                [sys.executable, "-c", """
+import sys
+from pathlib import Path
+sys.path.insert(0, 'tests')
+from fastapi.testclient import TestClient
+from test_loop import NOW, fetcher
+from chance_track import storage
+from chance_track.runner import revision, run
+from chance_track.web import create_app
+
+path = Path(sys.argv[1])
+assert revision() == sys.argv[2]
+assert TestClient(create_app(path)).get('/').status_code == 200
+assert storage.investment_note(path)['title'] == '合成备忘'
+with storage.connect(path) as db:
+    assert db.execute('PRAGMA user_version').fetchone()[0] == 4
+for scheduled in (False, True):
+    report = run(path, now=NOW, scheduled=scheduled, fetcher=fetcher, send=False)
+    assert storage.report(path, report)['kind'] == ('scheduled' if scheduled else 'manual')
+""", str(recovered_db), old_revision],
+                cwd=old_runtime,
+                check=True,
+            )
+            assert any(note["title"] == "新版写入" for note in storage.investment_notes(database))
     if mode != "startup_failure":
         for scheduled in (False, True):
             report = run(database, scheduled=scheduled, now=NOW, fetcher=fetcher, send=False)
@@ -248,6 +292,7 @@ def test_upgraded_user_can_merge_and_customize_without_rewriting_history(v08_dat
     path = v08_database
     old = storage.report(path, 1)
     notified = storage.notified_event_keys(path)
+    storage.initialize(path, upgrade_configuration=True)
     client = TestClient(create_app(path))
     current = load_configuration(path)
     csrf = re.search(r'name="csrf" value="([^"]+)"', client.get("/manage").text)[1]
@@ -278,3 +323,15 @@ def test_upgraded_user_can_merge_and_customize_without_rewriting_history(v08_dat
     assert "macd_sp500" in client.get("/reports/1").text
     replay = run(path, now=NOW, fetcher=fetcher, send=False)
     assert not build_message(storage.report(path, replay), notified)[1]
+
+
+def test_runtime_cannot_bypass_v08_upgrade_gate(v08_database):
+    from chance_track.web import create_app
+
+    path = v08_database
+    for start in (create_app, load_configuration, lambda db: run(db, now=NOW, send=False)):
+        with pytest.raises(ValueError, match="使用安装器"):
+            start(path)
+    with storage.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("SELECT count(*) FROM configuration_versions").fetchone()[0] == 2

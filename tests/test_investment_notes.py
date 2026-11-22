@@ -83,6 +83,11 @@ def test_migrate_legacy_notes_without_reusing_deleted_ids(tmp_path):
     storage.initialize(path)
     with storage.connect(path) as db:
         db.executescript("""
+            DROP TABLE combination_references;
+            DROP TABLE monitoring_bindings;
+            DROP TABLE current_assets;
+            DROP TABLE current_strategies;
+            DROP TABLE current_configuration;
             DROP TABLE investment_notes;
             CREATE TABLE investment_notes (
               id INTEGER PRIMARY KEY, title TEXT NOT NULL, markdown TEXT NOT NULL,
@@ -91,7 +96,7 @@ def test_migrate_legacy_notes_without_reusing_deleted_ids(tmp_path):
             INSERT INTO investment_notes VALUES (7, '原备忘', '# 原备忘', 'day', 'day', 1);
             PRAGMA user_version=3;
         """)
-    storage.initialize(path)
+    storage.initialize(path, upgrade_configuration=True)
     assert storage.investment_note(path)["markdown"] == "# 原备忘"
     assert storage.delete_investment_note(path, 7, "day")
     assert storage.save_investment_note(path, None, "新备忘", "# 新备忘", "later") == 8

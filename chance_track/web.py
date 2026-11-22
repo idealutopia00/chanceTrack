@@ -25,7 +25,7 @@ from .configuration import (
 from .data import TZ
 from .notifications import NOTIFICATION_TITLE, build_message
 from .presentation import signal_rows
-from .runner import CheckInProgress, is_running, run
+from .runner import CheckInProgress, is_running, revision, run
 from .workspace import preview, register_routes
 
 
@@ -66,6 +66,12 @@ def create_app(db_path):
     )
     token = secrets.token_urlsafe(32)
     register_routes(app, db_path, token)
+
+    runtime_revision = revision()
+
+    @app.get("/api/runtime-health", include_in_schema=False)
+    def runtime_health():
+        return {"revision": runtime_revision}
 
     @app.get("/")
     @app.get("/reports/{report_id}")

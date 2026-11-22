@@ -177,6 +177,7 @@ def test_legacy_migration_only_backfills_signals_actually_counted_by_old_popup(
                         None if delivered else "failed",
                     ),
                 )
+    storage.initialize(path, upgrade_configuration=True)
     start(path)
     assert storage.report(path, 1)["items"][0]["asset"]["id"] == "notified"
     keys = storage.notified_event_keys(path)

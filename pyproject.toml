@@ -1,6 +1,6 @@
 [project]
 name = "chance-track"
-version = "0.8.0"
+version = "0.9.0"
 description = "Local index strategy observations and decision journal"
 requires-python = ">=3.12"
 dependencies = [

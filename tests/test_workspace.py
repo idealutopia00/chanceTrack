@@ -5,7 +5,7 @@ from copy import deepcopy
 from fastapi.testclient import TestClient
 from test_loop import NOW, sample
 
-from chance_track import storage, workspace
+from chance_track import configuration_store, storage, workspace
 from chance_track.configuration import load_configuration
 from chance_track.runner import run
 from chance_track.web import create_app
@@ -20,6 +20,16 @@ def setup_workspace(tmp_path):
     html = client.get("/").text
     csrf = re.search(r'name="csrf" value="([^"]+)"', html)[1]
     return path, config, rid, client, csrf
+
+
+def seed_configuration(path, config, timestamp):
+    with storage.connect(path) as db:
+        version = db.execute(
+            "INSERT INTO configuration_versions(created_at,payload) VALUES (?,?)",
+            (timestamp, json.dumps({key: config[key] for key in ("assets", "strategies")})),
+        ).lastrowid
+        configuration_store.write_current(db, config, version)
+    return version
 
 
 def test_preview_does_not_write_report_event_configuration_or_notification(tmp_path):
@@ -280,14 +290,7 @@ def test_reuse_duplicate_monitor_preserves_existing_ids(tmp_path):
     legacy["strategies"].append({**config["strategies"][0], "id": "legacy"})
     legacy["assets"][0]["strategies"] = ["legacy"]
     legacy["assets"][1]["strategies"] = ["macd", "legacy"]
-    with storage.connect(path) as db:
-        db.execute(
-            "INSERT INTO configuration_versions(created_at,payload) VALUES(?,?)",
-            (
-                NOW.isoformat(),
-                json.dumps({k: legacy[k] for k in ("assets", "strategies")}),
-            ),
-        )
+    seed_configuration(path, legacy, NOW.isoformat())
     data = {
         "csrf": csrf,
         "version": 2,
@@ -377,11 +380,7 @@ def test_strategy_lifecycle_migrates_references_atomically(tmp_path):
     source_activation = "2026-10-01T00:00:00+08:00"
     config["assets"][0]["activated"] = {source["id"]: source_activation}
     retained_activation = config["assets"][1]["activated"][retained["id"]]
-    with storage.connect(path) as db:
-        version = db.execute(
-            "INSERT INTO configuration_versions(created_at,payload) VALUES (?,?)",
-            (source_activation, json.dumps({k: config[k] for k in ("assets", "strategies")})),
-        ).lastrowid
+    version = seed_configuration(path, config, source_activation)
 
     current = load_configuration(path)
     report = storage.report(path, report_id)

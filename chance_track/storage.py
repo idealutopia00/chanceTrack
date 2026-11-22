@@ -81,7 +81,9 @@ def initialize(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as db:
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version >= SCHEMA_VERSION:
+        if version > SCHEMA_VERSION:
+            raise ValueError(f"数据库结构版本 {version} 高于本程序支持的 {SCHEMA_VERSION}")
+        if version == SCHEMA_VERSION:
             return
         if version < 3:
             db.executescript("""

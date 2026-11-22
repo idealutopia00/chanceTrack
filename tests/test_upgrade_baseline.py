@@ -131,3 +131,150 @@ def test_migration_refuses_a_dangling_reference_with_location(v08_database):
         storage.initialize(path)
     with storage.connect(path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+
+
+def test_concurrent_relational_writes_only_save_one_version(v08_database, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from chance_track import configuration
+
+    path = v08_database
+    expected = load_configuration(path)["version"]
+    ready = Barrier(2)
+
+    def synchronized_load(db_path):
+        current = load_configuration(db_path)
+        ready.wait(timeout=5)
+        return current
+
+    def save(label):
+        current = load_configuration(path)
+        current["assets"][0]["label"] = label
+        try:
+            return configuration.save_configuration(path, current, expected)
+        except configuration.ConfigurationConflict:
+            return None
+
+    monkeypatch.setattr(configuration, "load_configuration", synchronized_load)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(save, ["并发修改甲", "并发修改乙"]))
+    assert results.count(expected + 1) == results.count(None) == 1
+    current = load_configuration(path)
+    assert current["version"] == expected + 1
+    assert current["assets"][0]["label"] in {"并发修改甲", "并发修改乙"}
+    assert configuration.configuration_version(path, expected + 1)["assets"] == current["assets"]
+
+
+@pytest.mark.parametrize("mode", ["fresh", "upgrade", "startup_failure"])
+def test_installer_rehearsal_uses_isolated_runtime(v08_database, monkeypatch, tmp_path, mode):
+    import runpy
+    import shutil
+    import subprocess
+    import sys
+
+    from fastapi.testclient import TestClient
+
+    from chance_track.web import create_app
+
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.syspath_prepend(str(root / "scripts"))
+    installer = runpy.run_path(str(root / "scripts" / "install_launchd.py"))
+    main = installer["main"]
+    support = tmp_path / "support"
+    runtime = support / "runtime"
+    database = support / "data" / "chance-track.sqlite3"
+    old_revision = "a" * 40
+    candidate_revision = "b" * 40
+    if mode != "fresh":
+        runtime.mkdir(parents=True)
+        (runtime / "deployment-revision.txt").write_text(old_revision)
+        database.parent.mkdir()
+        shutil.copy2(v08_database, database)
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setitem(main.__globals__, "SUPPORT", support)
+    monkeypatch.setitem(main.__globals__, "RUNTIME", runtime)
+    monkeypatch.setattr(sys, "argv", ["install_launchd.py"])
+    actions = []
+
+    def command(args, **kwargs):
+        if args[0] == "git":
+            return subprocess.CompletedProcess(args, 0, stdout=candidate_revision)
+        if args[0] != "launchctl":
+            return subprocess.CompletedProcess(args, 0)
+        actions.append(tuple(args))
+        return subprocess.CompletedProcess(args, int(args[1] == "print" and mode == "fresh"))
+
+    def ready():
+        if mode == "startup_failure":
+            raise RuntimeError("synthetic web startup failure")
+        assert TestClient(create_app(database)).get("/").status_code == 200
+
+    monkeypatch.setattr(subprocess, "run", command)
+    monkeypatch.setitem(main.__globals__, "wait_for_web", ready)
+    if mode == "startup_failure":
+        with pytest.raises(RuntimeError, match="synthetic web startup failure"):
+            main()
+        assert not any(action[1] == "bootstrap" and action[-1].endswith("check.plist")
+                       for action in actions)
+    else:
+        main()
+        assert actions[-1][-1].endswith("check.plist")
+    assert (runtime / "deployment-revision.txt").read_text() == candidate_revision
+    assert load_configuration(database)["version"] == (1 if mode == "fresh" else 2)
+
+    if mode != "fresh":
+        backup, = (support / "backups").glob("configuration-v4-*")
+        assert (backup / "runtime-revision.txt").read_text().strip() == old_revision
+        with storage.connect(backup / "chance-track.sqlite3") as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+            assert db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert storage.report(backup / "chance-track.sqlite3", 1) == storage.report(database, 1)
+    if mode != "startup_failure":
+        for scheduled in (False, True):
+            report = run(database, scheduled=scheduled, now=NOW, fetcher=fetcher, send=False)
+            assert storage.report(database, report)["kind"] == ("scheduled" if scheduled else "manual")
+
+
+def test_upgraded_user_can_merge_and_customize_without_rewriting_history(v08_database):
+    import re
+    from copy import deepcopy
+
+    from fastapi.testclient import TestClient
+
+    from chance_track.web import create_app
+
+    path = v08_database
+    old = storage.report(path, 1)
+    notified = storage.notified_event_keys(path)
+    client = TestClient(create_app(path))
+    current = load_configuration(path)
+    csrf = re.search(r'name="csrf" value="([^"]+)"', client.get("/manage").text)[1]
+    assert client.post("/manage", data={
+        "csrf": csrf,
+        "version": current["version"],
+        "payload": json.dumps({**current, "lifecycle": ["macd_sp500", "macd"]}),
+    }).status_code == 200
+    merged = load_configuration(path)
+    assert all(asset["strategies"].count("macd") == 1 for asset in merged["assets"])
+
+    private = deepcopy(next(rule for rule in merged["strategies"] if rule["id"] == "macd"))
+    private["params"]["fast"] = 10
+    response = client.post("/api/workspace/edit", json={
+        "csrf": csrf,
+        "version": merged["version"],
+        "action": "monitor",
+        "asset_id": "sp500",
+        "replace_id": "macd",
+        "strategy": private,
+    })
+    assert response.status_code == 200, response.text
+    config = response.json()["configuration"]
+    assert config["assets"][1:] == merged["assets"][1:]
+    assert "macd" not in config["assets"][0]["strategies"]
+    assert storage.notified_event_keys(path) == notified
+    assert storage.report(path, 1) == old
+    assert "macd_sp500" in client.get("/reports/1").text
+    replay = run(path, now=NOW, fetcher=fetcher, send=False)
+    assert not build_message(storage.report(path, replay), notified)[1]

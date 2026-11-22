@@ -923,7 +923,9 @@
       toggle.checked = asset.strategies.includes(strategy.id);
       label.append(toggle, document.createTextNode(describeRule(strategy)));
       const usage = config.assets.filter((entry) => entry.strategies.includes(strategy.id));
-      const state = text("small", toggle.checked ? "已开启" : "未开启");
+      const state = text("small", toggle.checked
+        ? (asset.enabled && !asset.archived ? "已开启" : "已绑定 · 标的停用")
+        : "未开启");
       row.append(label, state);
       row.append(text("small", usage.map((entry) => entry.label).join("、") || "未用于标的监测"));
       if (toggle.checked) row.append(button("调整参数", () => editMonitoring(asset, strategy)));
@@ -940,7 +942,9 @@
           showMonitoring();
           [...rules.querySelectorAll("input")].find((input) =>
             input.dataset.monitorId === strategy.id)?.focus();
-          dialogStatus(dialog, enabled ? "已开启监测" : "已停止监测");
+          dialogStatus(dialog, enabled
+            ? (asset.enabled && !asset.archived ? "已开启监测" : "已绑定 · 标的停用")
+            : "已停止监测");
         } catch {
           toggle.checked = !enabled;
           rules.querySelectorAll("input, button").forEach((control) => control.disabled = false);
@@ -984,7 +988,10 @@
     };
     strategyFields(editor, preference, config.strategies, changed);
     const apply = button(`仅应用到${asset.label}`, async () => {
-      const match = config.strategies.find((entry) => matchesConfiguration(preference, entry));
+      const original = config.strategies.find((entry) => entry.id === rule.id);
+      const match = original && matchesConfiguration(preference, original)
+        ? original
+        : config.strategies.find((entry) => matchesConfiguration(preference, entry));
       apply.disabled = true;
       try {
         await mutate({

@@ -265,8 +265,17 @@ def edit(path, payload, fetcher=fetch):
                     ):
                         raise ValueError("待复用配置的组合参数已变化，请重新选择")
             bindings = a.get("strategies", [])
+            replaced = next(
+                (entry for entry in config["strategies"] if entry["id"] == payload.get("replace_id")),
+                None,
+            )
             strategy = existing
-            if reuse_id not in bindings:
+            if (
+                replaced and replaced["id"] in bindings
+                and strategy_signature(replaced) == strategy_signature(existing)
+            ):
+                strategy = replaced
+            elif reuse_id not in bindings:
                 strategy = next(
                     (
                         entry

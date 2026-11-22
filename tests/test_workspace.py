@@ -279,6 +279,7 @@ def test_reuse_duplicate_monitor_preserves_existing_ids(tmp_path):
     legacy = deepcopy(config)
     legacy["strategies"].append({**config["strategies"][0], "id": "legacy"})
     legacy["assets"][0]["strategies"] = ["legacy"]
+    legacy["assets"][1]["strategies"] = ["macd", "legacy"]
     with storage.connect(path) as db:
         db.execute(
             "INSERT INTO configuration_versions(created_at,payload) VALUES(?,?)",
@@ -313,6 +314,15 @@ def test_reuse_duplicate_monitor_preserves_existing_ids(tmp_path):
     assert response.status_code == 200, response.text
     assert response.json()["strategy_id"] == "legacy"
     assert load_configuration(path)["assets"][0]["strategies"] == ["legacy"]
+
+    unchanged = load_configuration(path)
+    response = client.post("/api/workspace/edit", json={
+        **data, "version": unchanged["version"], "asset_id": legacy["assets"][1]["id"],
+        "reuse_id": "macd", "replace_id": "legacy",
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["strategy_id"] == "legacy"
+    assert load_configuration(path) == unchanged
 
 
 def test_watchlist_membership_is_independent_of_monitoring(tmp_path):

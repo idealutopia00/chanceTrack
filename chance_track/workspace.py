@@ -9,6 +9,7 @@ from uuid import uuid4
 from . import storage
 from .analysis import analyze
 from .configuration import (
+    ConfigurationConflict,
     load_configuration,
     relative_benchmarks,
     save_configuration,
@@ -167,7 +168,7 @@ def save_template(path, name, strategies, template_id=None, expected=None):
 def edit(path, payload, fetcher=fetch):
     config = load_configuration(path)
     if payload["version"] != config["version"]:
-        raise ValueError("配置已修改，请重新加载配置后重试；探索草稿已保留")
+        raise ConfigurationConflict("配置已修改，请重新加载配置后重试；探索草稿已保留")
     action = payload["action"]
     before = (
         deepcopy(config) if action in ("monitor", "bind_monitor", "unmonitor") else None
@@ -394,6 +395,8 @@ def register_routes(app, path, token):
     def guarded(call):
         try:
             return call()
+        except ConfigurationConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
         except (
             ValueError,
             KeyError,

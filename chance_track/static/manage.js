@@ -18,6 +18,53 @@
   ];
   const kindLabels = new Map(kinds);
   const draftCopies = new Set(config.draft_copies);
+  const paramLabels = {
+    fast: "快线", slow: "慢线", signal: "信号线", period: "周期",
+    stddev: "标准差倍数", trend: "趋势均线", recovery: "修复均线",
+    rsi: "RSI 周期", threshold: "RSI 阈值", entry: "突破周期",
+    exit: "退出周期", multiple: "通道倍数", relative_period: "比值均线周期",
+    range: "振幅口径", benchmark: "基准",
+  };
+  const byId = (id) => document.getElementById(id);
+  const editor = byId("rule-editor");
+  const fields = byId("rule-fields");
+  const editToggle = byId("rule-fields-toggle");
+  const saveRule = byId("save-rule");
+  let activeId, previousRule;
+  function element(tag, value) {
+    const node = document.createElement(tag);
+    node.textContent = value;
+    return node;
+  }
+  function action(label, handler) {
+    const node = element("button", label);
+    node.type = "button";
+    node.onclick = handler;
+    return node;
+  }
+  function affectedAssets(ruleId) {
+    const dependencies = config.strategies
+      .filter((rule) => rule.kind === "combination" &&
+        (rule.trigger === ruleId || (rule.filter && rule.band === ruleId)))
+      .map((rule) => rule.id);
+    const ids = new Set([ruleId, ...dependencies]);
+    return config.assets.filter((asset) => asset.strategies.some((id) => ids.has(id)));
+  }
+  function ruleSummary(rule) {
+    const title = (id) => config.strategies.find((entry) => entry.id === id)?.name ?? "未选择";
+    if (rule.kind === "combination") {
+      const condition = rule.filter === "above_mid" ? "高于" : "低于";
+      return rule.filter
+        ? `触发：${title(rule.trigger)} / 收盘${condition}${title(rule.band)}中轨`
+        : `触发：${title(rule.trigger)}`;
+    }
+    return Object.entries(rule.params || {}).map(([key, value]) => {
+      const display = key === "benchmark"
+        ? config.assets.find((asset) => asset.id === value)?.label ?? value
+        : key === "range" ? (value === "true_range" ? "真实振幅" : "高低价差") : value;
+      return `${paramLabels[key] ?? key} ${display}`;
+    }).join(" / ");
+  }
   function references(snapshot, id) {
     return [
       ...snapshot.assets
@@ -46,10 +93,7 @@
   keep.value = config.lifecycle?.[1] ?? "";
   function summarize(rule) {
     const kind = kindLabels.get(rule.kind) ?? rule.kind;
-    const settings = rule.kind === "combination"
-      ? { trigger: rule.trigger, filter: rule.filter, band: rule.band }
-      : rule.params;
-    return `${rule.name}（${rule.id}） · ${kind} · ${JSON.stringify(settings)}`;
+    return `${rule.name}（${rule.id}） · ${kind} · ${ruleSummary(rule)}`;
   }
   function updateLifecycle() {
     preview.replaceChildren();
@@ -174,15 +218,47 @@
         strategies.append(heading);
         previousKind = s.kind;
       }
-      const card = document.createElement("fieldset");
-      card.id = `strategy-${s.id}`;
-      const title = document.createElement("legend");
-      title.textContent = s.name;
-      card.append(title);
-      const id = field(card, "唯一ID", s, "id");
-      id.readOnly = true;
-      field(card, "配置名称", s, "name");
-      field(card, "展示分组", s, "group");
+      const row = element("div", "");
+      row.className = "rule-row";
+      row.id = `strategy-${s.id}`;
+      const usage = affectedAssets(s.id);
+      const usageLabel = usage.length > 1 ? `${usage.length} 个标的 ›`
+        : usage.length === 1 ? `${usage[0].label} ›` : "未用于标的监测";
+      row.append(action(s.name, () => openRule(s.id)), element("span", ruleSummary(s)),
+        action(usageLabel, () => openRule(s.id)));
+      strategies.append(row);
+    }
+    if (activeId) renderRule();
+  }
+  function openRule(id, editing = false) {
+    activeId = id;
+    const rule = config.strategies.find((entry) => entry.id === id);
+    previousRule = structuredClone(rule);
+    editToggle.open = editing;
+    byId("rule-more").open = false;
+    renderRule();
+    if (!editor.open) editor.showModal();
+  }
+  function paintRuleSummary(rule) {
+    const affected = affectedAssets(rule.id);
+    byId("rule-title").textContent = rule.name;
+    byId("rule-summary").textContent = `${kindLabels.get(rule.kind)} · ${ruleSummary(rule)}`;
+    byId("rule-impact").textContent = affected.length
+      ? `影响范围：${affected.map((asset) => asset.label).join("、")}`
+      : "未用于标的监测";
+    saveRule.textContent = affected.length
+      ? `应用到 ${affected.length} 个标的`
+      : "保存规则";
+  }
+  function renderRule() {
+    const s = config.strategies.find((rule) => rule.id === activeId);
+    if (!s) return;
+    paintRuleSummary(s);
+    byId("rule-identity").textContent = `ID ${s.id} · 配置版本 ${config.version}`;
+    const card = fields;
+    card.replaceChildren();
+    field(card, "配置名称", s, "name");
+    field(card, "展示分组", s, "group");
       const kind = field(card, "规则", s, "kind", kinds);
       kind.addEventListener("change", () => {
         const defaults = {
@@ -235,7 +311,7 @@
             ]);
             continue;
           }
-          const input = field(card, key, s.params, key);
+          const input = field(card, paramLabels[key] ?? key, s.params, key);
           input.type = "number";
           input.step = ["stddev", "multiple", "threshold"].includes(key)
             ? "0.1"
@@ -244,49 +320,72 @@
             s.params[key] = Number(input.value);
           });
         }
-      const copy = document.createElement("button");
-      copy.type = "button";
-      copy.textContent = "复制为新配置";
-      copy.onclick = () => {
-        const clone = structuredClone(s);
-        clone.id = `strategy_${Date.now()}`;
-        clone.name += " 副本";
-        delete clone.revision;
-        config.strategies.push(clone);
-        draftCopies.add(clone.id);
-        render();
-      };
-      card.append(copy);
-
-      if (draftCopies.has(s.id)) {
-        const undo = document.createElement("button");
-        undo.type = "button";
-        undo.textContent = "撤销复制";
-        undo.onclick = () => {
-          const usage = references(config, s.id);
-          if (usage.length) {
-            document.getElementById("save-status").textContent =
-              `请先解除草稿引用：${usage.join("、")}`;
-            return;
-          }
-          config.strategies = config.strategies.filter((rule) => rule.id !== s.id);
-          draftCopies.delete(s.id);
-          render();
-        };
-        card.append(undo);
-      }
-
-      const usage = document.createElement("p");
-      const monitored = config.assets
-        .filter(
-          (asset) => asset.enabled && !asset.archived && asset.strategies?.includes(s.id),
-        )
-        .map((asset) => asset.label);
-      usage.textContent = `监测标的：${monitored.join("、") || "暂无"}`;
-      card.append(usage);
-      strategies.append(card);
+    const actions = byId("rule-actions");
+    actions.replaceChildren(action("复制为新配置", () => {
+      const copy = structuredClone(s);
+      copy.id = `strategy_${Date.now()}`;
+      copy.name += " 副本";
+      delete copy.revision;
+      restoreRule();
+      config.strategies.push(copy);
+      draftCopies.add(copy.id);
+      openRule(copy.id, true);
+      render();
+    }));
+    if (draftCopies.has(s.id)) {
+      actions.append(action("撤销复制", () => {
+        const usage = references(config, s.id);
+        if (usage.length) {
+          byId("rule-impact").textContent = `请先解除草稿引用：${usage.join("、")}`;
+          return;
+        }
+        config.strategies = config.strategies.filter((rule) => rule.id !== s.id);
+        draftCopies.delete(s.id);
+        previousRule = null;
+        editor.close();
+      }));
+    }
+    if (savedIds.has(s.id)) {
+      actions.append(action("标记删除或合并", () => {
+        source.value = s.id;
+        keep.value = "";
+        editor.close();
+        byId("strategy-lifecycle").open = true;
+        updateLifecycle();
+        source.focus();
+      }));
+    }
+    if (savedIds.has(s.id)) {
+      actions.append(action(`暂存修改 · ${saveRule.textContent}`, () => {
+        previousRule = null;
+        editor.close();
+      }));
     }
   }
+  function restoreRule() {
+    if (previousRule)
+      config.strategies = config.strategies.map((rule) =>
+        rule.id === previousRule.id ? previousRule : rule);
+  }
+  fields.addEventListener("change", () => {
+    const rule = config.strategies.find((entry) => entry.id === activeId);
+    if (rule) paintRuleSummary(rule);
+  });
+  byId("close-rule").onclick = () => editor.close();
+  editor.addEventListener("close", () => {
+    restoreRule();
+    previousRule = null;
+    activeId = null;
+    render();
+    updateLifecycle();
+  });
+  saveRule.onclick = () => {
+    if (submit.disabled) {
+      byId("rule-impact").textContent += "。请先完成或取消待保存的合并或删除。";
+      return;
+    }
+    form.requestSubmit(submit);
+  };
   document.getElementById("add-asset").onclick = () => {
     config.assets.push({
       id: `asset_${Date.now()}`,
@@ -301,13 +400,15 @@
     render();
   };
   document.getElementById("add-strategy").onclick = () => {
+    const id = `strategy_${Date.now()}`;
     config.strategies.push({
-      id: `strategy_${Date.now()}`,
+      id,
       name: "新策略",
       group: "未分组",
       kind: "macd",
       params: { fast: 12, slow: 26, signal: 9 },
     });
+    openRule(id, true);
     render();
   };
   form.onsubmit = () => {

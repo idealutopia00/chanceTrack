@@ -152,6 +152,10 @@ try {
     ));
     const dark = width === 390;
     await page.emulateMedia({ colorScheme: dark ? "dark" : "light" });
+    await page.waitForFunction(
+      (theme) => document.documentElement.dataset.theme === theme,
+      dark ? "dark" : "light",
+    );
     assert.equal(
       await page.locator("body").evaluate((element) => getComputedStyle(element).backgroundColor),
       dark ? "rgb(28, 27, 26)" : "rgb(247, 245, 240)",
@@ -247,7 +251,11 @@ try {
   assert.deepEqual(await nav.getByRole("link").allTextContents(), ["标的", "指标", "备忘录"]);
   await nav.getByRole("link", { name: "指标" }).click();
   await reopened.getByRole("heading", { name: "指标库" }).waitFor();
-  assert.ok(await reopened.getByText(/监测标的：/).count());
+  const libraryRule = reopened.locator("#strategy-macd");
+  assert.ok(await libraryRule.getByText(/个标的/).isVisible());
+  await libraryRule.getByRole("button", { name: "MACD 默认" }).click();
+  await reopened.getByText(/影响范围：/).waitFor();
+  await reopened.getByRole("button", { name: "关闭规则" }).click();
   await nav.getByRole("link", { name: "备忘录" }).click();
   await reopened.getByRole("heading", { name: "历史备忘" }).waitFor();
   const newNote = reopened.getByRole("link", { name: "新建备忘" });

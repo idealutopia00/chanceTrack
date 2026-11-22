@@ -102,12 +102,15 @@
     } catch {
       throw Error("本地服务暂不可用，请重试；草稿已保留");
     }
-    if (!response.ok)
-      throw Error(
+    if (!response.ok) {
+      const error = Error(
         typeof result.detail === "string"
           ? result.detail
           : "请求参数无效，请检查输入",
       );
+      error.status = response.status;
+      throw error;
+    }
     return result;
   }
   const dialogStatus = (dialog, message, error = false) => {
@@ -829,13 +832,17 @@
     catalog.append(combinations);
   }
   async function mutate(payload, dialog) {
-    if (configurationBusy) throw Error("配置正在保存，请稍候");
+    if (configurationBusy) {
+      const message = "配置正在保存，请稍候";
+      if (dialog) dialogStatus(dialog, message, true);
+      throw Error(message);
+    }
     configurationBusy = true;
     if (dialog) dialogStatus(dialog, "正在验证并保存…");
     try {
       const result = await request("/api/workspace/edit", {
-        ...payload,
         version: config.version,
+        ...payload,
       });
       config = result.configuration;
       updateMonitoringButton();
@@ -851,7 +858,23 @@
       );
       return result;
     } catch (error) {
-      if (dialog) dialogStatus(dialog, error.message, true);
+      if (dialog) {
+        dialogStatus(dialog, error.message, true);
+        if (error.status === 409 && dialog.id === "automatic-monitoring-dialog")
+          dialog.querySelector(".dialog-status").append(button("重新加载监测配置", async () => {
+            try {
+              const result = await request("/api/workspace");
+              config = result.configuration;
+              nextRegularCheck = result.next_regular_check;
+              updateMonitoringButton();
+              renderWatchlist();
+              renderCatalog();
+              showMonitoring();
+            } catch (failure) {
+              dialogStatus(dialog, failure.message, true);
+            }
+          }));
+      }
       status(error.message, true);
       throw error;
     } finally {
@@ -880,7 +903,7 @@
     const dialog = $("automatic-monitoring-dialog");
     const rules = $("automatic-monitoring-rules");
     const editor = $("automatic-monitoring-edit");
-    const assetId = asset.id;
+    const assetId = asset.id, version = config.version;
     editor.hidden = true;
     editor.replaceChildren();
     $("automatic-monitoring-title").textContent = `${asset.label} · 自动监测`;
@@ -889,7 +912,7 @@
       : "下次例行检查时间暂不可用";
     const current = chart.current();
     paintMonitoringQuote(currentPreview?.result ?? current?.result ?? current?.last_quote,
-      current?.status === "error");
+      current?.status === "error" || current?.carried_forward);
     rules.replaceChildren();
     for (const strategy of config.strategies) {
       const row = text("div", "", "symbol-row");
@@ -912,6 +935,7 @@
             action: enabled ? "bind_monitor" : "unmonitor",
             asset_id: assetId,
             strategy_id: strategy.id,
+            version,
           }, dialog);
           showMonitoring();
           [...rules.querySelectorAll("input")].find((input) =>
@@ -931,7 +955,7 @@
     const dialog = $("automatic-monitoring-dialog");
     const editor = $("automatic-monitoring-edit");
     const preference = clone(rule);
-    const snapshot = source;
+    const snapshot = source, expectedVersion = config.version;
     let timer, sequence = 0;
     const preview = text("p", snapshot ? "可基于当前行情预览" : "等待行情");
     preview.setAttribute("role", "status");
@@ -969,6 +993,7 @@
           strategy: preference,
           reuse_id: match?.id,
           replace_id: rule.id,
+          version: expectedVersion,
         }, dialog);
         showMonitoring();
         dialogStatus(dialog, `已保存${asset.label}的监测规则`);
@@ -990,6 +1015,7 @@
     return [rule, ...config.strategies.filter((entry) => dependencies.includes(entry.id))];
   }
   function monitor(id) {
+    const expectedVersion = config.version;
     const s = draft.find((x) => x.id === id);
     if (!s) return;
     const dialog = $("monitor-dialog");
@@ -1096,6 +1122,7 @@
               shared: scope.value === "shared",
               reuse_id: matching?.id,
               replace_id: shared?.id,
+              version: expectedVersion,
             },
             dialog,
           );

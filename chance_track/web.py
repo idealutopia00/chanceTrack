@@ -15,6 +15,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import storage
 from .configuration import (
+    ConfigurationConflict,
     DuplicateStrategy,
     configuration_history,
     configuration_version,
@@ -276,11 +277,16 @@ def create_app(db_path):
         return management_page(request)
 
     def management_page(request, error=None, status=200, draft=None):
+        saved = load_configuration(db_path)
         return templates.TemplateResponse(
             request=request,
             name="manage.html",
             context={
-                "config": draft or load_configuration(db_path),
+                "config": draft or saved,
+                "saved_strategy_ids": [
+                    rule["id"] for rule in saved["strategies"]
+                ],
+                "conflict": status == 409,
                 "versions": configuration_history(db_path),
                 "token": token,
                 "error": error,
@@ -309,12 +315,19 @@ def create_app(db_path):
         draft = None
         try:
             draft = json.loads(payload)
-            save_configuration(db_path, draft, version)
+            lifecycle = draft.get("lifecycle") if isinstance(draft, dict) else None
+            if lifecycle is not None and (
+                not isinstance(lifecycle, list)
+                or len(lifecycle) != 2
+                or not all(isinstance(value, str) for value in lifecycle)
+            ):
+                raise ValueError("无效的配置合并或删除操作")
+            save_configuration(db_path, draft, version, lifecycle=lifecycle)
         except (ValueError, KeyError, TypeError, httpx.HTTPError) as exc:
             return management_page(
                 request,
                 exc,
-                400,
+                409 if isinstance(exc, ConfigurationConflict) else 400,
                 draft
                 if isinstance(draft, dict)
                 and "assets" in draft

@@ -2,6 +2,7 @@
 
 import json
 import re
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
@@ -246,11 +247,66 @@ def relative_benchmarks(configs, asset):
     }
 
 
-def save_configuration(path, config, expected_version, fetcher=fetch):
+def strategy_references(config, strategy_id):
+    assets = [
+        asset for asset in config["assets"] if strategy_id in asset.get("strategies", [])
+    ]
+    combinations = [
+        (rule, key)
+        for rule in config["strategies"]
+        if rule["kind"] == "combination"
+        for key in ("trigger", "band")
+        if rule.get(key) == strategy_id
+    ]
+    return assets, combinations
+
+
+def _change_strategy(draft, source_id, keep_id):
+    config = deepcopy(draft)
+    rules = {rule["id"]: rule for rule in config["strategies"]}
+    source = rules.get(source_id)
+    if not source:
+        raise ValueError("来源配置已不存在")
+    assets, combinations = strategy_references(config, source_id)
+    if keep_id:
+        keep = rules.get(keep_id)
+        if not keep or source_id == keep_id:
+            raise ValueError("请选择不同的保留配置")
+        if strategy_signature(source)[1:] != strategy_signature(keep)[1:]:
+            raise ValueError("仅可合并规则和参数等价的配置")
+        for asset in assets:
+            asset["strategies"] = list(dict.fromkeys(
+                keep_id if sid == source_id else sid for sid in asset["strategies"]
+            ))
+        for rule, key in combinations:
+            rule[key] = keep_id
+    elif assets or combinations:
+        locations = [
+            *(f"{asset['label']}（{asset['id']}）" for asset in assets),
+            *(f"{rule['name']}（{rule['id']}）" for rule, _ in combinations),
+        ]
+        raise ValueError("仍被引用，请先替换或解除绑定：" + "、".join(locations))
+    config["strategies"].remove(source)
+    return config
+
+
+class ConfigurationConflict(ValueError):
+    pass
+
+
+def save_configuration(path, config, expected_version, fetcher=fetch, *, lifecycle=None):
     previous = load_configuration(path)
     if previous["version"] != expected_version:
-        raise ValueError("配置已被修改，请重新加载后保存")
+        raise ConfigurationConflict("配置已被修改，请重新加载后保存")
     validate_configuration(config)
+    old_ids = {rule["id"] for rule in previous["strategies"]}
+    if lifecycle is not None:
+        source_id, keep_id = lifecycle
+        if source_id not in old_ids or keep_id and keep_id not in old_ids:
+            raise ValueError("请选择已保存的配置")
+        config = _change_strategy(config, source_id, keep_id)
+        validate_configuration(config)
+        old_ids.remove(source_id)
     old_assets = {a["id"]: a for a in previous["assets"]}
     if not set(old_assets).issubset({a["id"] for a in config["assets"]}):
         raise ValueError("已有标的不能删除，请归档")
@@ -276,7 +332,7 @@ def save_configuration(path, config, expected_version, fetcher=fetch):
             if unchanged
             else (old.get("revision", 1) + 1 if old else 1)
         )
-    if not set(old_strategies).issubset({s["id"] for s in config["strategies"]}):
+    if not old_ids.issubset({s["id"] for s in config["strategies"]}):
         raise ValueError("已有策略请解除绑定，不可删除")
     for a in config["assets"]:
         old = old_assets.get(a["id"])
@@ -303,6 +359,8 @@ def save_configuration(path, config, expected_version, fetcher=fetch):
             a["validated_at"] = now.isoformat()
         a["kind"] = "spot" if a["session_profile"] == "sge_gold" else "index"
         activations = dict(old.get("activated", {})) if old else {}
+        if lifecycle is not None:
+            activations.pop(lifecycle[0], None)
         for sid in a.get("strategies", []):
             s = next(s for s in config["strategies"] if s["id"] == sid)
             dependencies = (
@@ -332,7 +390,7 @@ def save_configuration(path, config, expected_version, fetcher=fetch):
         db.execute("BEGIN IMMEDIATE")
         latest = db.execute("SELECT max(id) FROM configuration_versions").fetchone()[0]
         if latest != expected_version:
-            raise ValueError("配置已被修改，请重新加载后保存")
+            raise ConfigurationConflict("配置已被修改，请重新加载后保存")
         cursor = db.execute(
             "INSERT INTO configuration_versions(created_at,payload) VALUES(?,?)",
             (

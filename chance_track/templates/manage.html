@@ -9,22 +9,15 @@
 <a href="#strategy-{{ duplicate.match_id }}">查看匹配配置</a>
 {% endif %}
 <details><summary>配置修改历史</summary>{% for v in versions %}<p><a href="/configuration/{{ v.id }}">版本 {{ v.id }} · {{ v.created_at }}</a></p>{% endfor %}</details>
-{% if show_lifecycle %}
-<details class="panel">
-  <summary>合并或删除已保存配置</summary>
-  <form method="post" action="/manage/strategy-lifecycle" id="strategy-lifecycle">
-    <input type="hidden" name="csrf" value="{{ token }}">
-    <input type="hidden" name="version" value="{{ config.version }}">
-    <label class="field-label">来源配置<select name="source" required></select></label>
-    <label class="field-label">保留配置<select name="keep"></select></label>
-    <div id="strategy-lifecycle-preview" aria-live="polite"></div>
-    <button type="submit" disabled>验证并保存新版本</button>
-    <button type="reset">取消</button>
-  </form>
-</details>
-{% endif %}
 <form method="post" action="/manage" id="management-form"><input type="hidden" name="csrf" value="{{ token }}"><input type="hidden" name="version" value="{{ config.version }}"><input type="hidden" name="payload" id="config-payload">
+<details class="panel" id="strategy-lifecycle"{% if config.lifecycle %} open{% endif %}>
+  <summary>合并或删除已保存配置</summary>
+  <label class="field-label">来源配置<select id="lifecycle-source"></select></label>
+  <label class="field-label">保留配置<select id="lifecycle-keep"></select></label>
+  <div id="strategy-lifecycle-preview" aria-live="polite"></div>
+  <button type="button" id="cancel-lifecycle">取消</button>
+</details>
 <section class="panel"><h2>命名策略配置</h2><p>分组仅组织展示。新增策略不会自动绑定；复制配置可设置不同参数。周期默认值仅用于功能演示。</p><div id="strategy-editor"></div><button type="button" id="add-strategy">＋ 添加策略</button></section>
 <details class="panel"><summary>标的与监测绑定</summary><p>停用保留配置；归档从新报告中移除。已有标的的市场身份不可修改。新增或重新启用时会联网验证行情，请稍候。</p><div id="asset-editor"></div><button type="button" id="add-asset">＋ 添加标的</button></details>
 <button class="save-button" type="submit">验证并保存新版本</button><p role="status" id="save-status"></p></form>
-<script id="management-data" type="application/json">{{ config|tojson }}</script><script src="/static/manage.js?v={{ asset_version }}" defer></script></main></body></html>
+<script id="saved-strategy-ids" type="application/json">{{ saved_strategy_ids|tojson }}</script><script id="management-data" type="application/json">{{ config|tojson }}</script><script src="/static/manage.js?v={{ asset_version }}" defer></script></main></body></html>

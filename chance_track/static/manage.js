@@ -29,62 +29,63 @@
         .map((rule) => `组合策略：${rule.name}（${rule.id}）`),
     ];
   }
-  const lifecycle = document.getElementById("strategy-lifecycle");
-  if (lifecycle) {
-    const saved = structuredClone(config);
-    const source = lifecycle.elements.source;
-    const keep = lifecycle.elements.keep;
-    const preview = document.getElementById("strategy-lifecycle-preview");
-    const submit = lifecycle.querySelector('[type="submit"]');
-    source.append(new Option("请选择", ""));
-    keep.append(new Option("删除来源（仅限无引用）", ""));
-    for (const rule of saved.strategies) {
-      const label = `${rule.name}（${rule.id}）`;
-      source.append(new Option(label, rule.id));
-      keep.append(new Option(label, rule.id));
-    }
-    function summarize(rule) {
-      const kind = kindLabels.get(rule.kind) ?? rule.kind;
-      const settings = rule.kind === "combination"
-        ? { trigger: rule.trigger, filter: rule.filter, band: rule.band }
-        : rule.params;
-      return `${rule.name}（${rule.id}） · ${kind} · ${JSON.stringify(settings)}`;
-    }
-    function updateLifecycle() {
-      preview.replaceChildren();
-      submit.disabled = true;
-      const from = saved.strategies.find((rule) => rule.id === source.value);
-      const to = saved.strategies.find((rule) => rule.id === keep.value);
-      if (!from) return;
-      const usage = references(saved, from.id);
-      const descriptions = [
-        `来源：${summarize(from)}`,
-        to ? `保留：${summarize(to)}` : "操作：删除来源配置",
-        `来源引用：${usage.join("、") || "无"}`,
-      ];
-      if (to) {
-        const targetUsage = references(saved, to.id);
-        descriptions.push(`保留项引用：${targetUsage.join("、") || "无"}`);
-      }
-      if (!to && usage.length) {
-        descriptions.push("请先替换或解除上述引用。");
-      } else if (from === to) {
-        descriptions.push("请选择不同的保留配置。");
-      } else {
-        submit.disabled = false;
-      }
-      for (const text of descriptions) {
-        const line = document.createElement("p");
-        line.textContent = text;
-        preview.append(line);
-      }
-    }
-    lifecycle.addEventListener("change", updateLifecycle);
-    lifecycle.addEventListener("reset", () => {
-      preview.replaceChildren();
-      submit.disabled = true;
-    });
+  const form = document.getElementById("management-form");
+  const source = document.getElementById("lifecycle-source");
+  const keep = document.getElementById("lifecycle-keep");
+  const preview = document.getElementById("strategy-lifecycle-preview");
+  const submit = form.querySelector('[type="submit"]');
+  const savedIds = new Set(JSON.parse(document.getElementById("saved-strategy-ids").textContent));
+  source.append(new Option("请选择", ""));
+  keep.append(new Option("删除来源（仅限无引用）", ""));
+  for (const rule of config.strategies.filter((rule) => savedIds.has(rule.id))) {
+    const label = `${rule.name}（${rule.id}）`;
+    source.append(new Option(label, rule.id));
+    keep.append(new Option(label, rule.id));
   }
+  source.value = config.lifecycle?.[0] ?? "";
+  keep.value = config.lifecycle?.[1] ?? "";
+  function summarize(rule) {
+    const kind = kindLabels.get(rule.kind) ?? rule.kind;
+    const settings = rule.kind === "combination"
+      ? { trigger: rule.trigger, filter: rule.filter, band: rule.band }
+      : rule.params;
+    return `${rule.name}（${rule.id}） · ${kind} · ${JSON.stringify(settings)}`;
+  }
+  function updateLifecycle() {
+    preview.replaceChildren();
+    submit.disabled = false;
+    const from = config.strategies.find((rule) => rule.id === source.value);
+    const to = config.strategies.find((rule) => rule.id === keep.value);
+    config.lifecycle = from ? [from.id, to?.id ?? ""] : null;
+    if (!from) return;
+    const usage = references(config, from.id);
+    const descriptions = [
+      `来源：${summarize(from)}`,
+      to ? `保留：${summarize(to)}` : "操作：删除来源配置",
+      `来源引用：${usage.join("、") || "无"}`,
+    ];
+    if (to) {
+      const targetUsage = references(config, to.id);
+      descriptions.push(`保留项引用：${targetUsage.join("、") || "无"}`);
+    }
+    if (!to && usage.length) {
+      descriptions.push("请先替换或解除上述引用。");
+      submit.disabled = true;
+    } else if (from === to) {
+      descriptions.push("请选择不同的保留配置。");
+      submit.disabled = true;
+    }
+    for (const text of descriptions) {
+      const line = document.createElement("p");
+      line.textContent = text;
+      preview.append(line);
+    }
+  }
+  form.addEventListener("change", updateLifecycle);
+  document.getElementById("cancel-lifecycle").addEventListener("click", () => {
+    source.value = keep.value = "";
+    updateLifecycle();
+  });
   function field(parent, label, object, key, options) {
     const wrapper = document.createElement("label");
     wrapper.className = "field-label";
@@ -309,7 +310,7 @@
     });
     render();
   };
-  document.getElementById("management-form").onsubmit = () => {
+  form.onsubmit = () => {
     config.draft_copies = [...draftCopies];
     document.getElementById("config-payload").value = JSON.stringify(config);
     document.getElementById("save-status").textContent =
@@ -342,4 +343,5 @@
       "已在草稿中复用配置，请保存新版本。";
   });
   render();
+  updateLifecycle();
 })();

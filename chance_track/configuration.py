@@ -261,8 +261,8 @@ def strategy_references(config, strategy_id):
     return assets, combinations
 
 
-def _change_strategy(previous, source_id, keep_id):
-    config = deepcopy(previous)
+def _change_strategy(draft, source_id, keep_id):
+    config = deepcopy(draft)
     rules = {rule["id"]: rule for rule in config["strategies"]}
     source = rules.get(source_id)
     if not source:
@@ -298,9 +298,15 @@ def save_configuration(path, config, expected_version, fetcher=fetch, *, lifecyc
     previous = load_configuration(path)
     if previous["version"] != expected_version:
         raise ConfigurationConflict("配置已被修改，请重新加载后保存")
-    if lifecycle is not None:
-        config = _change_strategy(previous, *lifecycle)
     validate_configuration(config)
+    old_ids = {rule["id"] for rule in previous["strategies"]}
+    if lifecycle is not None:
+        source_id, keep_id = lifecycle
+        if source_id not in old_ids or keep_id and keep_id not in old_ids:
+            raise ValueError("请选择已保存的配置")
+        config = _change_strategy(config, source_id, keep_id)
+        validate_configuration(config)
+        old_ids.remove(source_id)
     old_assets = {a["id"]: a for a in previous["assets"]}
     if not set(old_assets).issubset({a["id"] for a in config["assets"]}):
         raise ValueError("已有标的不能删除，请归档")
@@ -326,9 +332,7 @@ def save_configuration(path, config, expected_version, fetcher=fetch, *, lifecyc
             if unchanged
             else (old.get("revision", 1) + 1 if old else 1)
         )
-    if lifecycle is None and not set(old_strategies).issubset(
-        {s["id"] for s in config["strategies"]}
-    ):
+    if not old_ids.issubset({s["id"] for s in config["strategies"]}):
         raise ValueError("已有策略请解除绑定，不可删除")
     for a in config["assets"]:
         old = old_assets.get(a["id"])

@@ -277,12 +277,15 @@ def create_app(db_path):
         return management_page(request)
 
     def management_page(request, error=None, status=200, draft=None):
+        saved = load_configuration(db_path)
         return templates.TemplateResponse(
             request=request,
             name="manage.html",
             context={
-                "config": draft or load_configuration(db_path),
-                "show_lifecycle": draft is None,
+                "config": draft or saved,
+                "saved_strategy_ids": [
+                    rule["id"] for rule in saved["strategies"]
+                ],
                 "conflict": status == 409,
                 "versions": configuration_history(db_path),
                 "token": token,
@@ -312,7 +315,14 @@ def create_app(db_path):
         draft = None
         try:
             draft = json.loads(payload)
-            save_configuration(db_path, draft, version)
+            lifecycle = draft.get("lifecycle") if isinstance(draft, dict) else None
+            if lifecycle is not None and (
+                not isinstance(lifecycle, list)
+                or len(lifecycle) != 2
+                or not all(isinstance(value, str) for value in lifecycle)
+            ):
+                raise ValueError("无效的配置合并或删除操作")
+            save_configuration(db_path, draft, version, lifecycle=lifecycle)
         except (ValueError, KeyError, TypeError, httpx.HTTPError) as exc:
             return management_page(
                 request,
@@ -323,24 +333,6 @@ def create_app(db_path):
                 and "assets" in draft
                 and "strategies" in draft
                 else None,
-            )
-        return RedirectResponse("/manage", status_code=303)
-
-    @app.post("/manage/strategy-lifecycle")
-    def save_strategy_lifecycle(
-        request: Request,
-        csrf: str = Form(),
-        version: int = Form(),
-        source: str = Form(),
-        keep: str = Form(""),
-    ):
-        if not secrets.compare_digest(csrf, token):
-            raise HTTPException(403, "请刷新页面后重试")
-        try:
-            save_configuration(db_path, None, version, lifecycle=(source, keep))
-        except ValueError as exc:
-            return management_page(
-                request, exc, 409 if isinstance(exc, ConfigurationConflict) else 400
             )
         return RedirectResponse("/manage", status_code=303)
 

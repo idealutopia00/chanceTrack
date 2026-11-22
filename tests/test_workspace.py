@@ -357,7 +357,11 @@ def test_strategy_lifecycle_migrates_references_atomically(tmp_path):
         "name": "组合",
         "trigger": source["id"],
     }
-    config["strategies"].extend([source, unused, combination])
+    different = {
+        **retained, "id": "macd_different",
+        "params": {**retained["params"], "fast": 10},
+    }
+    config["strategies"].extend([source, unused, combination, different])
     config["assets"][0]["strategies"] = [source["id"], "combo"]
     config["assets"][1]["strategies"].append(source["id"])
     source_activation = "2026-10-01T00:00:00+08:00"
@@ -371,18 +375,28 @@ def test_strategy_lifecycle_migrates_references_atomically(tmp_path):
 
     current = load_configuration(path)
     report = storage.report(path, report_id)
-    data = {"csrf": csrf, "version": version, "source": source["id"]}
-    endpoint = "/manage/strategy-lifecycle"
-    blocked = client.post(endpoint, data=data)
+    def submit(draft, source_id, keep_id=""):
+        return client.post(
+            "/manage", data={
+                "csrf": csrf,
+                "version": draft["version"],
+                "payload": json.dumps({**draft, "lifecycle": [source_id, keep_id]}),
+            },
+        )
+
+    blocked = submit(current, source["id"])
     assert blocked.status_code == 400
     assert "sp500" in blocked.text and "combo" in blocked.text
-    assert client.post(endpoint, data={**data, "keep": "ma"}).status_code == 400
+    assert submit(current, source["id"], different["id"]).status_code == 400
     assert load_configuration(path) == current
 
-    saved = client.post(endpoint, data={**data, "keep": retained["id"]})
+    draft = deepcopy(current)
+    draft["strategies"][0]["name"] = "保留并重命名"
+    saved = submit(draft, source["id"], retained["id"])
     assert saved.status_code == 200
     merged = load_configuration(path)
     assert merged["version"] == version + 1
+    assert merged["strategies"][0]["name"] == "保留并重命名"
     assert all(a["strategies"].count(retained["id"]) == 1 for a in merged["assets"])
     assert all(source["id"] not in a["strategies"] for a in merged["assets"])
     assert source["id"] not in merged["assets"][0]["activated"]
@@ -395,8 +409,6 @@ def test_strategy_lifecycle_migrates_references_atomically(tmp_path):
     }
     assert storage.notification(path, report_id) is None
 
-    remove = {**data, "source": unused["id"]}
-    assert client.post(endpoint, data=remove).status_code == 409
-    remove["version"] = merged["version"]
-    assert client.post(endpoint, data=remove).status_code == 200
+    assert submit(current, unused["id"]).status_code == 409
+    assert submit(merged, unused["id"]).status_code == 200
     assert unused["id"] not in {s["id"] for s in load_configuration(path)["strategies"]}

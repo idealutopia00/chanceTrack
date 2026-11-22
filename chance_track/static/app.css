@@ -2113,8 +2113,17 @@ td {
 .investment-markdown {
   overflow-wrap: anywhere;
 }
-.investment-markdown pre {
+.investment-markdown pre,
+.investment-table {
   overflow-x: auto;
+}
+.investment-table table {
+  white-space: nowrap;
+}
+.investment-table th,
+.investment-table td {
+  padding: 0.4rem 0.65rem;
+  border-bottom: 1px solid var(--line);
 }
 .pinned-note {
   border-bottom: 1px solid var(--line);

@@ -17,6 +17,7 @@ from .strategies import benchmark_context, chart_events, evaluate
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_ATTEMPTS = 3
+CHECK_START = time(14, 35)
 RETRY_INTERVAL = timedelta(minutes=5)
 RETRY_CUTOFF = time(15)
 
@@ -95,7 +96,19 @@ def code_hash():
 
 def due(now):
     # Chinese weekends remain excluded even when designated administrative workdays.
-    return now.weekday() < 5 and is_workday(now.date()) and now.time() >= time(14, 35)
+    return now.weekday() < 5 and is_workday(now.date()) and now.time() >= CHECK_START
+
+
+def next_regular_check(now):
+    candidate = datetime.combine(now.date(), CHECK_START, tzinfo=TZ)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    try:
+        while not due(candidate):
+            candidate += timedelta(days=1)
+    except NotImplementedError:
+        return None
+    return candidate
 
 
 def deliver(db_path, report_id, sender):
@@ -138,10 +151,8 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
     if scheduled and not due(now):
         return None
     day = now.date().isoformat()
-    assets = (
-        watchlist if watchlist is not None else load_configuration(db_path)["assets"]
-    )
     config = load_configuration(db_path)
+    assets = watchlist if watchlist is not None else config["assets"]
     assets = [a for a in assets if not a.get("archived")]
     previous = (
         storage.latest_scheduled(db_path, day, RULE["version"]) if scheduled else None

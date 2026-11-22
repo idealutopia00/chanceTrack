@@ -8,3 +8,15 @@
   {% if pinned_note %}<article class="investment-markdown">{{ pinned_note.markdown|investment_markdown }}</article>{% endif %}
   <a href="/investment-notes">管理备忘录与历史 ↗</a>
 </dialog>
+
+<dialog id="automatic-monitoring-dialog" class="workspace-dialog" aria-labelledby="automatic-monitoring-title">
+  <div class="dialog-heading">
+    <h2 id="automatic-monitoring-title">自动监测</h2>
+    <button type="button" data-close aria-label="关闭自动监测">×</button>
+  </div>
+  <p id="automatic-monitoring-quote"></p>
+  <p id="automatic-monitoring-next"></p>
+  <div id="automatic-monitoring-rules"></div>
+  <section id="automatic-monitoring-edit" hidden></section>
+  <p class="dialog-status" role="status"></p>
+</dialog>

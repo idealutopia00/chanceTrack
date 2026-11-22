@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import plistlib
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -39,8 +40,12 @@ def prepare_configuration_upgrade(target_db, *, adopting=False):
             V08_RECOVERY_REVISION if adopting
             else (RUNTIME / "deployment-revision.txt").read_text().strip()
         )
-        if not old_revision:
-            raise RuntimeError("缺少可恢复的旧程序版本")
+        if not re.fullmatch(r"[0-9a-f]{40}", old_revision) or subprocess.run(
+            ["git", "cat-file", "-e", f"{old_revision}^{{commit}}"],
+            cwd=ROOT,
+            capture_output=True,
+        ).returncode != 0:
+            raise RuntimeError("缺少可恢复的旧程序提交，升级已停止")
         backups = SUPPORT / "backups"
         backups.mkdir(mode=0o700, exist_ok=True)
         bundle = Path(tempfile.mkdtemp(dir=backups, prefix="configuration-v4-"))

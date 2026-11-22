@@ -335,3 +335,23 @@ def test_runtime_cannot_bypass_v08_upgrade_gate(v08_database):
     with storage.connect(path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 4
         assert db.execute("SELECT count(*) FROM configuration_versions").fetchone()[0] == 2
+
+
+def test_installer_refuses_an_unrecoverable_old_revision(v08_database, monkeypatch, tmp_path):
+    import runpy
+
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.syspath_prepend(str(root / "scripts"))
+    installer = runpy.run_path(str(root / "scripts" / "install_launchd.py"))
+    prepare = installer["prepare_configuration_upgrade"]
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setitem(prepare.__globals__, "RUNTIME", runtime)
+    monkeypatch.setitem(prepare.__globals__, "SUPPORT", tmp_path)
+    for revision in ("uncommitted", "0" * 40):
+        (runtime / "deployment-revision.txt").write_text(revision)
+        with pytest.raises(RuntimeError, match="可恢复的旧程序提交"):
+            prepare(v08_database)
+    assert not (tmp_path / "backups").exists()
+    with storage.connect(v08_database) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4

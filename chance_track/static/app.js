@@ -164,10 +164,11 @@
     dea,
     histogram,
     zeroLine,
-    markers,
+    priceMarks,
+    macdMarks,
     selected,
     range = 126;
-  let overlaySeries = [];
+  let overlaySeries = [], bands = new Map(), activeMacdId;
   let period = "day",
     displayedBars = [],
     displayedDay = new Map();
@@ -317,8 +318,9 @@
     for (const event of chartEvents().filter(
       (entry) => displayedDay.get(entry.time) === date,
     )) {
+      const { macd, config } = eventReadings(event);
       readings.push(
-        `${event.time} · ${eventTitle(event, eventReadings(event).macd)} · ${eventState(event)}`,
+        `${event.time} · ${eventTitle(event, macd, config)} · ${eventState(event)}`,
       );
     }
     legend(macd);
@@ -397,13 +399,16 @@
         ? "收盘确认"
         : "确认状态未记录";
   }
-  function eventReadings(event) {
-    const { chart: content } = selected.result;
-    const date = event.time;
+  function savedEventRule(event) {
     const matches = (selected.result.strategies ?? []).filter(
       (strategy) => strategy.name === event.name,
     );
-    const saved = matches.length === 1 ? matches[0] : null;
+    return matches.length === 1 ? matches[0] : null;
+  }
+  function eventReadings(event) {
+    const { chart: content } = selected.result;
+    const date = event.time;
+    const saved = savedEventRule(event);
     const rule = event.config ?? saved?.config;
     const macdPoints = event.kind
       ? content.macd
@@ -439,9 +444,15 @@
       event.price ?? content.candles.find((bar) => bar.time === date)?.close;
     return { macd, overlays, config, price, saved };
   }
-  function eventTitle(event, macd) {
+  function eventTitle(event, macd, config) {
     const name = eventName(event);
-    return macd && (name === "金叉" || name === "死叉") ? `MACD ${name}` : name;
+    const rule = config?.dependencies?.[config.trigger] ?? config;
+    const params = rule?.params;
+    if (macd && (name === "金叉" || name === "死叉"))
+      return params ? `MACD（${params.fast}/${params.slow}/${params.signal}）${name}` : `MACD ${name}`;
+    if (params && bandEvents[name])
+      return `布林带（${params.period}，${params.stddev}）${name}`;
+    return name;
   }
   function eventSummary(event, { macd, overlays, price }) {
     const name = eventName(event);
@@ -505,7 +516,8 @@
       date,
       event.name ?? "MACD",
       event.version ?? saved?.version,
-      eventTitle(event, macd),
+      eventTitle(event, macd, config),
+      eventSummary(event, { macd, overlays, price }),
       eventState(event),
       price != null && `价格 ${price}`,
       macd && `DIF ${macd.dif} · DEA ${macd.dea} · 柱 ${macd.histogram}`,
@@ -522,6 +534,7 @@
     label.textContent = "触发详情与参数";
     const description = document.createElement("p");
     description.textContent = full;
+    details.open = true;
     details.append(label, description);
     if (config) {
       const parameters = document.createElement("pre");
@@ -579,7 +592,7 @@
         button.dataset.eventOffset = offset;
         const readings = eventReadings(event);
         const title = document.createElement("strong");
-        title.textContent = `${eventTitle(event, readings.macd)} · ${date} · ${eventState(event)}`;
+        title.textContent = `${eventTitle(event, readings.macd, readings.config)} · ${date} · ${eventState(event)}`;
         const summary = document.createElement("small");
         summary.textContent = eventSummary(event, readings);
         button.append(title, summary);
@@ -605,55 +618,153 @@
     if (eventSelection)
       showEvent(eventSelection.date, false, eventSelection.offset);
   });
+  const bandEvents = {
+    向上突破上轨: ["上轨", true],
+    向下突破下轨: ["下轨", false],
+    上轨外回归轨内: ["上轨", false],
+    下轨外回归轨内: ["下轨", true],
+  };
   function setMarkers() {
-    if (!markers || !selected?.result?.chart) return;
-    const meanings = {
-      金叉: ["金叉", "up"],
-      死叉: ["死叉", "down"],
-      向上突破上轨: ["上破上轨", "up"],
-      向下突破下轨: ["下破下轨", "down"],
-      上轨外回归轨内: ["跌回上轨内", "down"],
-      下轨外回归轨内: ["升回下轨内", "up"],
+    if (!priceMarks || !selected?.result?.chart) return;
+    const price = [], macd = [];
+    const dateIndex = new Map(displayedBars.map((bar, index) => [bar.time, index]));
+    if (markerToggle.checked) {
+      const macdIds = new Set(selected.result.chart.macd_configs?.map(({ id }) => id));
+      for (const [date, events] of eventsByDate()) {
+        const time = displayedDay.get(date);
+        if (!time) continue;
+        for (const [offset, event] of events.entries()) {
+          const config = event.config ?? savedEventRule(event)?.config;
+          const bar = displayedBars[dateIndex.get(time)];
+          const id = config?.trigger ?? config?.id;
+          const name = eventName(event);
+          const item = {
+            time, date, offset, shape: "circle",
+            up: name === "金叉", provisional: event.provisional,
+          };
+          if (event.kind || macdIds.has(id)) {
+            const point = displayedMacd.get(time);
+            if (!point || (!event.kind && id !== activeMacdId)) continue;
+            item.value = (point.dif + point.dea) / 2;
+            item.shape = "diamond";
+            macd.push(item);
+          } else {
+            const band = bands.get(id);
+            if (bandEvents[name]) {
+              const [rail, up] = bandEvents[name];
+              const value = band?.rails.get(rail)?.get(time);
+              if (!band?.visible() || value == null) continue;
+              const side = rail === "上轨" ? -1 : 1;
+              const bodyLow = Math.min(bar.open, bar.close);
+              const bodyHigh = Math.max(bar.open, bar.close);
+              const anchor = value >= bodyLow && value <= bodyHigh
+                ? (side < 0 ? bodyHigh : bodyLow)
+                : value;
+              Object.assign(item, { value: anchor, up, shape: "triangle", side });
+            } else {
+              item.value = Math.max(bar.open, bar.close);
+              item.side = -1;
+            }
+            price.push(item);
+          }
+        }
+      }
+    }
+    priceMarks.set(price);
+    macdMarks.set(macd);
+  }
+  let displayedMacd = new Map();
+  function markerPrimitive(series, visible = () => true) {
+    let points = [], hits = [], requestUpdate;
+    const renderer = {
+      draw(target) {
+        hits = [];
+        if (!visible()) return;
+        target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
+          for (const point of points) {
+            const x = chart.timeScale().timeToCoordinate(point.time);
+            const y = series.priceToCoordinate(point.value);
+            if (x == null || y == null || x < -8 || x > mediaSize.width + 8) continue;
+            const anchor = y + (point.side ?? 0) * 6;
+            let cx = x, cy = anchor;
+            // Fan out coincident markers while keeping them close to their series.
+            while (hits.some((hit) => Math.hypot(hit.x - cx, hit.y - cy) < 9))
+              cy += (point.side ?? 1) * 9;
+            hits.push({ x: cx, y: cy, point });
+            ctx.beginPath();
+            const selected = eventSelection?.date === point.date && eventSelection.offset === point.offset;
+            ctx.fillStyle = ctx.strokeStyle = color(selected ? "text" : point.up ? "gold" : "violet");
+            if (point.shape === "diamond") {
+              ctx.moveTo(cx, cy - 4);
+              ctx.lineTo(cx + 4, cy);
+              ctx.lineTo(cx, cy + 4);
+              ctx.lineTo(cx - 4, cy);
+            } else if (point.shape === "triangle") {
+              const tip = point.up ? -4 : 4;
+              ctx.moveTo(cx, cy + tip);
+              ctx.lineTo(cx + 4, cy - tip);
+              ctx.lineTo(cx - 4, cy - tip);
+            } else {
+              ctx.arc(cx, cy, 3, 0, 2 * Math.PI);
+            }
+            ctx.closePath();
+            if (point.provisional) ctx.stroke();
+            else ctx.fill();
+          }
+        });
+      },
     };
-    markers.setMarkers(
-      markerToggle.checked
-        ? [...eventsByDate()]
-            .sort(([left], [right]) => left.localeCompare(right))
-            .filter(([date]) => displayedDay.has(date))
-            .map(([date, events]) => {
-              const event = eventName(events[0]);
-              const [label, firstDirection] = meanings[event] || [event, null];
-              const grouped = events.length > 1;
-              const direction = events.every(
-                (entry) => meanings[eventName(entry)]?.[1] === firstDirection,
-              )
-                ? firstDirection
-                : null;
-              const up = direction === "up";
-              const provisional = events.every(
-                (entry) => entry.provisional === true,
-              );
-              const pendingCount = events.filter(
-                (entry) => entry.provisional === true,
-              ).length;
-              const active = eventSelection?.date === date;
-              const glyph = !direction ? "○" : up ? "⇧" : "⇩";
-              return {
-                time: displayedDay.get(date),
-                id: `event:${date}`,
-                position: up ? "belowBar" : "aboveBar",
-                color: color(active ? "text" : up ? "gold" : "violet"),
-                shape: !direction ? "circle" : up ? "arrowUp" : "arrowDown",
-                size: provisional ? 0 : 1,
-                text: `${provisional ? `${glyph} 待确认 ` : ""}${grouped ? `${events.length} 条事件` : label}${pendingCount && !provisional ? `（${pendingCount} 条待确认）` : ""}`,
-              };
-            })
-        : [],
-    );
+    const view = { renderer: () => renderer, zOrder: () => "top" };
+    const primitive = {
+      attached: (params) => { requestUpdate = params.requestUpdate; },
+      paneViews: () => [view],
+      hitTest(x, y) {
+        if (!visible()) return null;
+        const hit = hits.find((hit) => Math.hypot(hit.x - x, hit.y - y) <= 5);
+        if (!hit) return null;
+        return { externalId: `event:${hit.point.date}:${hit.point.offset}`, zOrder: "top", cursorStyle: "pointer" };
+      },
+      set(next) {
+        hits = [];
+        points = next;
+        requestUpdate();
+      },
+    };
+    series.attachPrimitive(primitive);
+    return primitive;
+  }
+  function drawBands(target) {
+    target.useMediaCoordinateSpace(({ context: ctx }) => {
+      const scale = chart.timeScale();
+      for (const band of bands.values()) {
+        if (!band.visible()) continue;
+        const upper = [], lower = [];
+        for (const [time, value] of band.rails.get("上轨") ?? []) {
+          const x = scale.timeToCoordinate(time);
+          const top = candles.priceToCoordinate(value);
+          const lowerValue = band.rails.get("下轨")?.get(time);
+          if (lowerValue == null) continue;
+          const bottom = candles.priceToCoordinate(lowerValue);
+          if (x == null || top == null || bottom == null) continue;
+          upper.push([x, top]);
+          lower.push([x, bottom]);
+        }
+        if (!upper.length) continue;
+        ctx.save();
+        ctx.globalAlpha = 0.10;
+        ctx.fillStyle = color(band.color);
+        ctx.beginPath();
+        ctx.moveTo(...upper[0]);
+        for (const point of upper.slice(1)) ctx.lineTo(...point);
+        for (const point of lower.reverse()) ctx.lineTo(...point);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    });
   }
   const theme = getComputedStyle(document.documentElement);
   const color = (name) => theme.getPropertyValue(`--${name}`).trim();
-  const overlayColors = () => ["gold", "violet", "down", "up", "mist"].map(color);
   const candleColors = () => ({
     upColor: color("up"),
     downColor: color("down"),
@@ -751,10 +862,18 @@
     });
     chart.panes()[0].setHeight(380);
     chart.panes()[1].setHeight(180);
-    markers = library.createSeriesMarkers(candles, []);
+    priceMarks = markerPrimitive(candles);
+    macdMarks = markerPrimitive(dif, () => dif.options().visible);
+    candles.attachPrimitive({
+      paneViews: () => [{ renderer: () => ({ draw: drawBands }), zOrder: () => "bottom" }],
+    });
     chart.subscribeClick((event) => {
-      if (event.hoveredObjectId?.startsWith?.("event:"))
-        showEvent(event.hoveredObjectId.slice(6));
+      if (!event.point) return;
+      const marks = event.paneIndex === 1 ? macdMarks : priceMarks;
+      const hit = marks.hitTest(event.point.x, event.point.y);
+      if (!hit) return;
+      const [, date, offset] = hit.externalId.split(":");
+      showEvent(date, true, Number(offset));
     });
     chart.subscribeCrosshairMove((param) => {
       const content = selected?.result?.chart;
@@ -913,41 +1032,84 @@
       overlaySeries = [];
       const layerControls = document.getElementById("chart-layers");
       layerControls.replaceChildren();
-      const colors = overlayColors();
+      bands = new Map();
+      let focusedBand;
+      const colors = ["gold", "violet", "down", "up", "mist"];
+      const configFor = (id) =>
+        selected.result.strategies?.find((strategy) => strategy.id === id)?.config ??
+        selected.result.strategies?.map((strategy) => strategy.config?.dependencies?.[id]).find(Boolean);
+      function refreshLayers() {
+        for (const { series, visible } of overlaySeries)
+          series.applyOptions({ visible: visible() });
+        for (const [id, band] of bands)
+          band.focus.setAttribute("aria-pressed", String(id === focusedBand));
+        setMarkers();
+      }
+      function layerToggle(id, title) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = true;
+        input.dataset.layerId = id;
+        input.addEventListener("change", () => {
+          refreshLayers();
+          window.dispatchEvent(
+            new CustomEvent("chart:layer", { detail: { id, visible: input.checked } }),
+          );
+        });
+        label.append(input, document.createTextNode(title));
+        layerControls.append(label);
+        return input;
+      }
       for (const [i, layer] of (content.overlays || []).entries()) {
+        const separator = layer.id.lastIndexOf(":");
+        const id = layer.id.slice(0, separator);
+        const rail = layer.id.slice(separator + 1);
+        let band;
+        if (["上轨", "中轨", "下轨"].includes(rail) &&
+            (layer.kind?.startsWith("boll") || configFor(id)?.kind?.startsWith("boll"))) {
+          band = bands.get(id);
+          if (!band) {
+            const params = configFor(id)?.params;
+            const title = params ? `布林带（${params.period}，${params.stddev}）` : layer.name.split(" · ")[0];
+            const input = layerToggle(layer.id, title);
+            const focus = document.createElement("button");
+            focus.type = "button";
+            focus.textContent = "突出";
+            focus.setAttribute("aria-label", `突出${title}`);
+            focus.setAttribute("aria-pressed", "false");
+            focus.addEventListener("click", () => {
+              focusedBand = focusedBand === id ? undefined : id;
+              refreshLayers();
+            });
+            input.parentElement.after(focus);
+            band = { color: colors[i % colors.length], focus, rails: new Map(),
+              visible: () => focusedBand ? focusedBand === id : input.checked };
+            bands.set(id, band);
+          }
+        }
+        const points = displayedPoints(layer.points);
+        const seriesColor = band?.color ?? colors[i % colors.length];
         const series = chart.addSeries(library.LineSeries, {
-          color: colors[i % colors.length],
+          color: color(seriesColor),
           lineWidth: 1,
+          lineStyle: band && rail === "中轨" ? library.LineStyle.Dashed : library.LineStyle.Solid,
           priceLineVisible: false,
           lastValueVisible: false,
         });
-        series.setData(
-          displayedPoints(layer.points).map((point) => ({ ...point })),
-        );
-        overlaySeries.push({ id: layer.id, series });
-        const label = document.createElement("label"),
-          input = document.createElement("input");
-        input.type = "checkbox";
-        input.checked = true;
-        input.dataset.layerId = layer.id;
-        input.addEventListener("change", () => {
-          series.applyOptions({ visible: input.checked });
-          window.dispatchEvent(
-            new CustomEvent("chart:layer", {
-              detail: { id: layer.id, visible: input.checked },
-            }),
-          );
-        });
-        label.append(input, document.createTextNode(layer.name));
-        layerControls.append(label);
+        series.setData(points.map((point) => ({ ...point })));
+        const input = band ? null : layerToggle(layer.id, layer.name);
+        overlaySeries.push({ series, color: seriesColor, visible: band?.visible ?? (() => input.checked) });
+        band?.rails.set(rail, new Map(points.map(({ time, value }) => [time, value])));
       }
       const macdConfigs = content.macd_configs || [
         { name: "MACD 历史配置", points: content.macd },
       ];
-      let activeMacd = macdConfigs[0]?.points || content.macd;
-      function drawMacd(points) {
-        activeMacd = points;
+      function drawMacd(config) {
+        const points = config?.points ?? [];
+        activeMacdId = config?.id;
         const visiblePoints = displayedPoints(points);
+        displayedMacd = new Map(visiblePoints.map((point) => [point.time, point]));
         const up = color("up"), down = color("down");
         histogram.setData(
           visiblePoints.map((p) => ({
@@ -960,6 +1122,7 @@
         dea.setData(visiblePoints.map((p) => ({ time: p.time, value: p.dea })));
         legend(points.at(-1));
         selected.activeMacd = points;
+        setMarkers();
       }
       if (macdConfigs.length > 1) {
         const select = document.createElement("select");
@@ -971,7 +1134,7 @@
           select.append(option);
         });
         select.addEventListener("change", () =>
-          drawMacd(macdConfigs[Number(select.value)].points),
+          drawMacd(macdConfigs[Number(select.value)]),
         );
         layerControls.append(select);
       }
@@ -984,6 +1147,7 @@
         [dif, dea, histogram].forEach((series) =>
           series.applyOptions({ visible: macdInput.checked }),
         );
+        setMarkers();
         window.dispatchEvent(
           new CustomEvent("chart:layer", {
             detail: { id: "macd", visible: macdInput.checked },
@@ -992,7 +1156,7 @@
       });
       macdLabel.append(macdInput, document.createTextNode("MACD 副图"));
       layerControls.append(macdLabel);
-      drawMacd(activeMacd);
+      drawMacd(macdConfigs[0]);
       const hasMacd = macdConfigs.length > 0;
       macdLabel.hidden = !hasMacd;
       document.querySelector(".macd-legend").hidden = !hasMacd;
@@ -1096,9 +1260,8 @@
     dif.applyOptions({ color: color("gold") });
     dea.applyOptions({ color: color("violet") });
     zeroLine.applyOptions({ color: color("line") });
-    const colors = overlayColors();
-    overlaySeries.forEach(({ series }, index) => {
-      series.applyOptions({ color: colors[index % colors.length] });
+    overlaySeries.forEach(({ series, color: name }) => {
+      series.applyOptions({ color: color(name) });
     });
     const up = color("up"), down = color("down");
     histogram.setData(histogram.data().map((point) => ({

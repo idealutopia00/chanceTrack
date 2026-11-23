@@ -78,7 +78,7 @@ with TemporaryDirectory() as directory:
 PY
 ```
 
-确认上面的测试服务成功启动后，在另一终端执行 `CHANCE_TEST_URL=http://127.0.0.1:8766 PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node tests/check_workspace.mjs`。`CHROME_BIN` 可覆盖浏览器路径。测试会保存测试模板、监测配置和决策。验证完成后停止测试服务。
+确认上面的测试服务成功启动后，在另一终端执行 `CHANCE_TEST_URL=http://127.0.0.1:8766 PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node tests/check_workspace.mjs`。`CHROME_BIN` 可覆盖浏览器路径。测试会保存测试模板、监测配置和决策。同一测试服务也可运行 `tests/check_indicator_markers.mjs`，沿用上述环境变量，在桌面和窄屏验证布林带与 MACD 事件定位。验证完成后停止测试服务。
 
 ## 监测配置升级与恢复
 

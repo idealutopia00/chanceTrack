@@ -166,6 +166,7 @@
     zeroLine,
     priceMarks,
     macdMarks,
+    selectEventMacd,
     selected,
     range = 126;
   let overlaySeries = [], bands = new Map(), activeMacdId;
@@ -492,6 +493,8 @@
       );
     }
     eventSelection = { date, offset: activeOffset };
+    const rule = event.config ?? savedEventRule(event)?.config;
+    if (locate) selectEventMacd(rule?.trigger ?? rule?.id);
     let active = [...eventList.querySelectorAll("button")].find(
       (button) =>
         button.dataset.eventDate === date &&
@@ -655,12 +658,7 @@
               const value = band?.rails.get(rail)?.get(time);
               if (!band?.visible() || value == null) continue;
               const side = rail === "上轨" ? -1 : 1;
-              const bodyLow = Math.min(bar.open, bar.close);
-              const bodyHigh = Math.max(bar.open, bar.close);
-              const anchor = value >= bodyLow && value <= bodyHigh
-                ? (side < 0 ? bodyHigh : bodyLow)
-                : value;
-              Object.assign(item, { value: anchor, up, shape: "triangle", side });
+              Object.assign(item, { value, up, shape: "triangle", side, bar });
             } else {
               item.value = Math.max(bar.open, bar.close);
               item.side = -1;
@@ -685,11 +683,21 @@
             const x = chart.timeScale().timeToCoordinate(point.time);
             const y = series.priceToCoordinate(point.value);
             if (x == null || y == null || x < -8 || x > mediaSize.width + 8) continue;
-            const anchor = y + (point.side ?? 0) * 6;
-            let cx = x, cy = anchor;
-            // Fan out coincident markers while keeping them close to their series.
-            while (hits.some((hit) => Math.hypot(hit.x - cx, hit.y - cy) < 9))
+            let cy = y + (point.side ?? 0) * 6;
+            const cx = x;
+            const body = point.bar && [point.bar.open, point.bar.close].map(
+              (value) => series.priceToCoordinate(value),
+            );
+            for (;;) {
+              if (body && body.every((value) => value != null)) {
+                const top = Math.min(...body), bottom = Math.max(...body);
+                if (cy + 4 >= top && cy - 4 <= bottom)
+                  cy = point.side < 0 ? top - 6 : bottom + 6;
+              }
+              if (!hits.some((hit) => Math.hypot(hit.x - cx, hit.y - cy) < 9))
+                break;
               cy += (point.side ?? 1) * 9;
+            }
             hits.push({ x: cx, y: cy, point });
             ctx.beginPath();
             const selected = eventSelection?.date === point.date && eventSelection.offset === point.offset;
@@ -874,6 +882,7 @@
       if (!hit) return;
       const [, date, offset] = hit.externalId.split(":");
       showEvent(date, true, Number(offset));
+      eventDetail.scrollIntoView({ block: "nearest" });
     });
     chart.subscribeCrosshairMove((param) => {
       const content = selected?.result?.chart;
@@ -1124,8 +1133,9 @@
         selected.activeMacd = points;
         setMarkers();
       }
+      const macdSelect = document.createElement("select");
       if (macdConfigs.length > 1) {
-        const select = document.createElement("select");
+        const select = macdSelect;
         select.setAttribute("aria-label", "MACD 图表配置");
         macdConfigs.forEach((config, i) => {
           const option = document.createElement("option");
@@ -1154,9 +1164,20 @@
           }),
         );
       });
+      selectEventMacd = (id) => {
+        if (id == null || id === activeMacdId) return;
+        const index = macdConfigs.findIndex((config) => config.id === id);
+        if (index < 0) return;
+        macdSelect.value = String(index);
+        drawMacd(macdConfigs[index]);
+      };
       macdLabel.append(macdInput, document.createTextNode("MACD 副图"));
       layerControls.append(macdLabel);
-      drawMacd(macdConfigs[0]);
+      const macdIndex = previousId === id
+        ? Math.max(0, macdConfigs.findIndex((config) => config.id === activeMacdId))
+        : 0;
+      macdSelect.value = String(macdIndex);
+      drawMacd(macdConfigs[macdIndex]);
       const hasMacd = macdConfigs.length > 0;
       macdLabel.hidden = !hasMacd;
       document.querySelector(".macd-legend").hidden = !hasMacd;

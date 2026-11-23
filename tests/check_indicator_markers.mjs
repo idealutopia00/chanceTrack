@@ -10,7 +10,7 @@ const base = process.env.CHANCE_TEST_URL || "http://127.0.0.1:8766";
 try {
   for (const width of [1440, 390]) {
     const page = await browser.newPage({
-      viewport: { width, height: 1000 },
+      viewport: { width, height: width === 390 ? 844 : 1000 },
       hasTouch: width === 390,
     });
     const errors = [];
@@ -19,7 +19,7 @@ try {
       const response = await route.fetch();
       const body = (await response.text()).replace(
         "chart.subscribeClick((event) => {",
-        `window.testMarkers = { chart, priceMarks, macdMarks };
+        `window.testMarkers = { chart, candles, priceMarks, macdMarks };
         chart.subscribeClick((event) => {`,
       );
       await route.fulfill({ response, body });
@@ -29,8 +29,12 @@ try {
     const dates = await page.evaluate(() => {
       const item = structuredClone(ChanceChart.current());
       const chart = item.result.chart;
-      const candles = chart.candles.slice(-14);
+      const candles = chart.candles.slice(-14).map(({ time }, index) => {
+        const close = 109 + index / 10;
+        return { time, open: close - 0.2, close, high: close + 0.3, low: close - 0.3 };
+      });
       const events = candles.slice(-3, -1);
+      Object.assign(events[0], { open: 107, close: 85, high: 107, low: 85 });
       const bands = [20, 10].map((period) => ({
         kind: "boll_break", id: `boll-${period}`, name: `布林 ${period}`,
         params: { period, stddev: 2 },
@@ -40,24 +44,27 @@ try {
       const points = candles.map(({ time }, index) => ({
         time, dif: index < 12 ? 0.3 : 0.2, dea: 0.25, histogram: index < 12 ? 0.05 : -0.05,
       }));
+      const secondMacd = { ...macd, id: "macd-8", params: { fast: 8, slow: 17, signal: 9 } };
       chart.candles = candles;
       chart.macd = points;
-      chart.macd_configs = [{ ...macd, points }];
+      chart.macd_configs = [{ ...macd, points }, { ...secondMacd, points }];
       chart.overlays = bands.flatMap((band) =>
         [["上轨", 2], ["中轨", 0], ["下轨", -2]].map(([rail, delta]) => ({
           id: `${band.id}:${rail}`, kind: band.kind, name: `${band.name} · ${rail}`,
           points: candles.map(({ time, close }) => ({
-            time, value: close + delta * (band.params.period === 10 ? 0.95 : 1),
+            time, value: time === events[0].time && band.params.period === 20
+              ? 109.0002 + delta : close + delta * (band.params.period === 10 ? 0.95 : 1),
           })),
         })),
       );
-      item.result.strategies = [...bands, macd].map((config) => ({ ...config, config }));
+      item.result.strategies = [...bands, macd, secondMacd].map((config) => ({ ...config, config }));
       chart.strategy_events = [
         ...events.flatMap(({ time, close }, index) => bands.map((config) => ({
           time, price: close, name: config.name, config, event: "向下突破下轨",
           provisional: index === 1,
         }))),
         { time: events[1].time, name: "MACD", config: macd, event: "死叉" },
+        { time: events[1].time, name: "MACD", config: secondMacd, event: "死叉" },
       ];
       ChanceChart.show(item, { view: { from: 0, to: candles.length + 2 } });
       return events.map(({ time }) => time);
@@ -81,7 +88,14 @@ try {
     }
     await page.getByText("布林带（20，2）", { exact: true }).waitFor();
     await page.getByText("布林带（10，2）", { exact: true }).waitFor();
-    assert.ok(await marker(0, dates[0], 0));
+    const gapMark = await marker(0, dates[0], 0);
+    assert.ok(gapMark);
+    const gapBodyBottom = await page.evaluate((date) => {
+      const bar = ChanceChart.current().result.chart.candles.find((bar) => bar.time === date);
+      const pane = document.querySelector("#chart tr").children[1];
+      return pane.getBoundingClientRect().top + testMarkers.candles.priceToCoordinate(bar.close);
+    }, dates[0]);
+    assert.ok(gapMark.y - 4 > gapBodyBottom);
     assert.ok(await marker(0, dates[1], 0));
     assert.ok(await marker(0, dates[1], 1));
     assert.equal(await marker(0, dates[1], 2), null);
@@ -92,7 +106,16 @@ try {
     else await page.mouse.click(diamond.x, diamond.y);
     const detail = page.locator("#chart-event-detail");
     assert.match(await detail.innerText(), /MACD（12\/26\/9）死叉.*DIF .*下穿 DEA/s);
+    const description = await detail.locator("p").boundingBox();
+    assert.ok(description.y >= 0 && description.y + description.height <= page.viewportSize().height);
+    assert.equal(await marker(1, dates[1], 3), null);
     assert.equal(await page.locator('#chart-event-list [aria-current="true"]').getAttribute("data-event-offset"), "2");
+    const otherMacd = page.locator(`#chart-event-list button[data-event-date="${dates[1]}"][data-event-offset="3"]`);
+    await otherMacd.click();
+    assert.match(await detail.innerText(), /MACD（8\/17\/9）死叉/);
+    assert.equal(await page.getByLabel("MACD 图表配置").inputValue(), "1");
+    assert.ok(await marker(1, dates[1], 3));
+    assert.equal(await marker(1, dates[1], 2), null);
     const sameDay = page.locator(`#chart-event-list button[data-event-date="${dates[1]}"][data-event-offset="1"]`);
     await sameDay.locator("..").evaluate((group) => group.open = true);
     await sameDay.click();
@@ -110,7 +133,7 @@ try {
     else await page.mouse.click(triangle.x, triangle.y);
     assert.match(await detail.innerText(), /布林带（20，2）向下突破下轨/);
     await page.getByRole("checkbox", { name: "MACD 副图" }).uncheck();
-    assert.equal(await marker(1, dates[1], 2), null);
+    assert.equal(await marker(1, dates[1], 3), null);
     assert.deepEqual(errors, []);
     await page.close();
   }

@@ -19,9 +19,14 @@ try {
       const response = await route.fetch();
       const body = (await response.text()).replace(
         "chart.subscribeClick((event) => {",
-        `window.testMarkers = { chart, candles, priceMarks, macdMarks };
+        `window.testMarkers = { chart, candles, dif, dea, priceMarks, macdMarks, overlays: () => overlaySeries.map(({ series }) => series) };
         chart.subscribeClick((event) => {`,
-      );
+      ).replace("if (label) {", `
+        (window.testLabels ??= {})[series === candles ? "price" : "macd"] =
+          label && { date: label.point.date, offset: label.point.offset, name: label.point.name };
+        if (label) {`).replace("const anchorX =", `
+        (window.testLabelBoxes ??= {})[series === candles ? "price" : "macd"] = { left, top, width };
+        const anchorX =`);
       await route.fulfill({ response, body });
     });
     await page.goto(base);
@@ -88,6 +93,35 @@ try {
     }
     await page.getByText("布林带（20，2）", { exact: true }).waitFor();
     await page.getByText("布林带（10，2）", { exact: true }).waitFor();
+    const label = (pane) => page.evaluate((key) => testLabels[key] ?? null, pane);
+    await page.waitForFunction(() => window.testLabels?.price && window.testLabels?.macd);
+    assert.deepEqual(await label("price"), { date: dates[1], offset: 0, name: "跌破下轨" });
+    assert.deepEqual(await label("macd"), { date: dates[1], offset: 2, name: "死叉" });
+    await page.evaluate(() => testMarkers.chart.timeScale().setVisibleLogicalRange({ from: 6, to: 13 }));
+    await page.evaluate(() => new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const coversCurve = await page.evaluate(() => {
+      const { chart, dif, dea, overlays } = testMarkers;
+      const overlaps = ({ left, top, width }, line) => {
+        const data = line.data();
+        return data.slice(1).some((p, i) => {
+          const q = data[i];
+          const x1 = chart.timeScale().timeToCoordinate(q.time);
+          const x2 = chart.timeScale().timeToCoordinate(p.time);
+          const y1 = line.priceToCoordinate(q.value);
+          const y2 = line.priceToCoordinate(p.value);
+          return left <= x2 && left + width >= x1 &&
+            top <= Math.max(y1, y2) && top + 20 >= Math.min(y1, y2);
+        });
+      };
+      return [dif, dea].some((line) => overlaps(testLabelBoxes.macd, line)) ||
+        overlays().some((line) => overlaps(testLabelBoxes.price, line));
+    });
+    assert.equal(coversCurve, false);
+    await page.evaluate(() => testMarkers.chart.timeScale().setVisibleLogicalRange({ from: 0, to: 10 }));
+    await page.waitForFunction(() => !testLabels.price && !testLabels.macd);
+    await page.evaluate(() => testMarkers.chart.timeScale().setVisibleLogicalRange({ from: 0, to: 16 }));
+    await page.waitForFunction(() => testLabels.price && testLabels.macd);
     const gapMark = await marker(0, dates[0], 0);
     assert.ok(gapMark);
     const gapBodyBottom = await page.evaluate((date) => {
@@ -124,6 +158,7 @@ try {
     const sameDay = page.locator(`#chart-event-list button[data-event-date="${dates[1]}"][data-event-offset="1"]`);
     await sameDay.locator("..").evaluate((group) => group.open = true);
     await sameDay.click();
+    await page.waitForFunction(() => testLabels.price?.offset === 1 && !testLabels.macd);
     assert.match(await detail.textContent(), /布林带（10，2）向下突破下轨/);
     const focus = page.getByRole("button", { name: "突出布林带（20，2）" });
     await focus.click();
@@ -176,6 +211,11 @@ try {
     assert.ok(box.y >= 0 && box.y + box.height < page.viewportSize().height);
     await page.keyboard.press("Escape");
     assert.equal(await summary.isHidden(), true);
+    await page.getByRole("button", { name: "回到最新" }).click();
+    await page.waitForFunction(() => testLabels.price?.offset === 0);
+    await page.getByRole("checkbox", { name: "显示策略事件" }).uncheck();
+    await page.waitForFunction(() => !testLabels.price && !testLabels.macd);
+    await page.getByRole("checkbox", { name: "显示策略事件" }).check();
     await page.getByRole("checkbox", { name: "MACD 副图" }).uncheck();
     assert.equal(await marker(1, dates[1], 3), null);
     assert.deepEqual(errors, []);

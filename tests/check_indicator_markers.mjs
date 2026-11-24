@@ -138,6 +138,27 @@ try {
     else await page.mouse.click(triangle.x, triangle.y);
     assert.match(await detail.textContent(), /布林带（20，2）向下突破下轨/);
     assert.match(await summary.innerText(), /下轨.*收盘价 85/);
+    const previous = page.getByRole("button", { name: "上一事件" });
+    const next = page.getByRole("button", { name: "下一事件" });
+    await next.scrollIntoViewIfNeeded();
+    const navigationView = await view();
+    await next.click();
+    await previous.click();
+    assert.deepEqual(await view(), navigationView);
+    await next.click();
+    await page.evaluate(() => testMarkers.chart.timeScale().setVisibleLogicalRange({ from: 12, to: 16 }));
+    const narrowView = await view();
+    await previous.click();
+    await page.waitForFunction((date) => {
+      const x = testMarkers.chart.timeScale().timeToCoordinate(date);
+      return x > 0 && x < testMarkers.chart.timeScale().width();
+    }, dates[0]);
+    const shiftedView = await view();
+    assert.equal(shiftedView.scroll, narrowView.scroll);
+    assert.equal(shiftedView.range.to - shiftedView.range.from, 4);
+    assert.notDeepEqual(shiftedView.range, narrowView.range);
+    const box = await summary.boundingBox();
+    assert.ok(box.y >= 0 && box.y + box.height < page.viewportSize().height);
     await page.keyboard.press("Escape");
     assert.equal(await summary.isHidden(), true);
     await page.getByRole("checkbox", { name: "MACD 副图" }).uncheck();

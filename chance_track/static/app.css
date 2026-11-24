@@ -463,6 +463,7 @@ h3 {
 }
 #chart-event-summary {
   position: absolute;
+  z-index: 2;
   top: var(--event-summary-top, 4px);
   left: 6px;
   max-width: calc(100% - 82px);

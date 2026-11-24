@@ -146,6 +146,13 @@ try {
     const header = await page.locator(".workspace-header").boundingBox();
     assert.ok(partialSummary.y >= header.y + header.height);
     assert.ok(partialSummary.y + partialSummary.height < page.viewportSize().height);
+    assert.ok(await summary.evaluate((node) => {
+      const { x, y, width, height } = node.getBoundingClientRect();
+      node.style.pointerEvents = "auto";
+      const top = document.elementFromPoint(x + width / 2, y + height / 2);
+      node.style.removeProperty("pointer-events");
+      return node.contains(top);
+    }));
     const previous = page.getByRole("button", { name: "上一事件" });
     const next = page.getByRole("button", { name: "下一事件" });
     await next.scrollIntoViewIfNeeded();

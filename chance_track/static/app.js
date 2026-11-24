@@ -481,6 +481,15 @@
       );
     return readings.join("｜");
   }
+  function positionEventSummary() {
+    if (eventSummaryBox.hidden) return;
+    const bounds = container.getBoundingClientRect();
+    const latest = bounds.height - eventSummaryBox.offsetHeight - 4;
+    const top = Math.min(latest, Math.max(4, 4 - bounds.top));
+    eventSummaryBox.style.setProperty("--event-summary-top", `${top}px`);
+  }
+  window.addEventListener("scroll", positionEventSummary, { passive: true });
+  window.addEventListener("resize", positionEventSummary);
   function showEvent(date, locate = true, offset = undefined) {
     const rows = eventsByDate().get(date);
     if (!rows?.length) return;
@@ -558,6 +567,7 @@
     eventSummaryBox.querySelector("small").textContent =
       eventSummary(event, { macd, overlays, price });
     eventSummaryBox.hidden = false;
+    positionEventSummary();
     setMarkers();
     syncEventNavigation();
     if (!locate) return;

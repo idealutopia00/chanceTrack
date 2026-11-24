@@ -132,12 +132,18 @@ try {
     await focus.click();
     assert.ok(await marker(0, dates[1], 1));
     await page.locator("#chart").scrollIntoViewIfNeeded();
+    await page.locator("#chart").evaluate((node) =>
+      window.scrollBy(0, node.getBoundingClientRect().top + 100));
+    const partiallyScrolled = await view();
     const triangle = await marker(0, dates[0], 0);
     assert.ok(triangle);
     if (width === 390) await page.touchscreen.tap(triangle.x, triangle.y);
     else await page.mouse.click(triangle.x, triangle.y);
     assert.match(await detail.textContent(), /布林带（20，2）向下突破下轨/);
     assert.match(await summary.innerText(), /下轨.*收盘价 85/);
+    assert.deepEqual(await view(), partiallyScrolled);
+    const partialSummary = await summary.boundingBox();
+    assert.ok(partialSummary.y >= 0 && partialSummary.y + partialSummary.height < triangle.y);
     const previous = page.getByRole("button", { name: "上一事件" });
     const next = page.getByRole("button", { name: "下一事件" });
     await next.scrollIntoViewIfNeeded();

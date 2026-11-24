@@ -484,8 +484,22 @@
   function positionEventSummary() {
     if (eventSummaryBox.hidden) return;
     const bounds = container.getBoundingClientRect();
-    const latest = bounds.height - eventSummaryBox.offsetHeight - 4;
-    const top = Math.min(latest, Math.max(4, 4 - bounds.top));
+    const header = document.querySelector(".workspace-header")?.getBoundingClientRect();
+    const height = eventSummaryBox.offsetHeight;
+    const first = Math.max(4, (header?.bottom ?? 0) + 4 - bounds.top);
+    const last = Math.min(bounds.height, window.innerHeight - bounds.top) - height - 4;
+    let top = Math.min(last, first);
+    const bar = displayedBars.find((row) => row.time === displayedDay.get(eventSelection?.date));
+    if (bar) {
+      const x = chart.timeScale().timeToCoordinate(bar.time);
+      const high = candles.priceToCoordinate(bar.high);
+      const low = candles.priceToCoordinate(bar.low);
+      if (x != null && high != null && low != null && x <= eventSummaryBox.offsetWidth + 12 &&
+          top + height >= high - 6 && top <= low + 6) {
+        if (low + 12 <= last) top = low + 12;
+        else if (high - height - 12 >= first) top = high - height - 12;
+      }
+    }
     eventSummaryBox.style.setProperty("--event-summary-top", `${top}px`);
   }
   window.addEventListener("scroll", positionEventSummary, { passive: true });
@@ -579,6 +593,7 @@
     }
     chart.setCrosshairPosition(bars[index].close, time, candles);
     syncCrosshair(bars[index]);
+    requestAnimationFrame(positionEventSummary);
   }
   function resetEventPanel() {
     eventSummaryBox.hidden = true;

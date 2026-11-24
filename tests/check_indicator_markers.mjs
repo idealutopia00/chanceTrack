@@ -143,7 +143,9 @@ try {
     assert.match(await summary.innerText(), /下轨.*收盘价 85/);
     assert.deepEqual(await view(), partiallyScrolled);
     const partialSummary = await summary.boundingBox();
-    assert.ok(partialSummary.y >= 0 && partialSummary.y + partialSummary.height < triangle.y);
+    const header = await page.locator(".workspace-header").boundingBox();
+    assert.ok(partialSummary.y >= header.y + header.height);
+    assert.ok(partialSummary.y + partialSummary.height < page.viewportSize().height);
     const previous = page.getByRole("button", { name: "上一事件" });
     const next = page.getByRole("button", { name: "下一事件" });
     await next.scrollIntoViewIfNeeded();

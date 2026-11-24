@@ -153,6 +153,7 @@
   const markerToggle = document.getElementById("show-markers");
   const eventPanel = document.getElementById("chart-events");
   const eventList = document.getElementById("chart-event-list");
+  const eventSummaryBox = document.getElementById("chart-event-summary");
   const eventDetail = document.getElementById("chart-event-detail");
   const allEventsButton = document.getElementById("chart-all-events");
   let eventSelection,
@@ -354,20 +355,28 @@
     showEvent(adjacentEvent(-1)),
   );
   nextEventButton.addEventListener("click", () => showEvent(adjacentEvent(1)));
-  latestButton.addEventListener("click", () => {
+  function clearEventSelection() {
     const previous = displayedBars.find(
       (bar) => bar.time === displayedDay.get(eventSelection?.date),
     );
     if (previous) candles.update({ ...previous }, true);
     eventSelection = undefined;
+    eventSummaryBox.hidden = true;
     eventDetail.replaceChildren();
     for (const button of eventList.querySelectorAll("button"))
       button.removeAttribute("aria-current");
     setMarkers();
-    setRange();
     chart.clearCrosshairPosition();
     syncCrosshair(displayedBars.at(-1));
     syncEventNavigation();
+  }
+  latestButton.addEventListener("click", () => {
+    clearEventSelection();
+    setRange();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && eventSelection && !document.querySelector("dialog[open]"))
+      clearEventSelection();
   });
   document
     .getElementById("chart-period")
@@ -534,10 +543,9 @@
       .join(" · ");
     const details = document.createElement("details");
     const label = document.createElement("summary");
-    label.textContent = "触发详情与参数";
     const description = document.createElement("p");
     description.textContent = full;
-    details.open = true;
+    label.textContent = "查看完整详情";
     details.append(label, description);
     if (config) {
       const parameters = document.createElement("pre");
@@ -545,25 +553,25 @@
       details.append(parameters);
     }
     eventDetail.replaceChildren(details);
+    eventSummaryBox.querySelector("strong").textContent =
+      `${date} · ${eventName(event)} · ${eventState(event)}`;
+    eventSummaryBox.querySelector("small").textContent =
+      eventSummary(event, { macd, overlays, price });
+    eventSummaryBox.hidden = false;
     setMarkers();
     syncEventNavigation();
     if (!locate) return;
-    if (active) {
-      const rowBounds = active.getBoundingClientRect();
-      const listBounds = eventList.getBoundingClientRect();
-      if (rowBounds.top < listBounds.top)
-        eventList.scrollTop += rowBounds.top - listBounds.top;
-      if (rowBounds.bottom > listBounds.bottom)
-        eventList.scrollTop += rowBounds.bottom - listBounds.bottom;
+    const scale = chart.timeScale();
+    const range = scale.getVisibleLogicalRange();
+    if (range && (index < range.from || index > range.to)) {
+      const shift = index - (range.from + range.to) / 2;
+      scale.setVisibleLogicalRange({ from: range.from + shift, to: range.to + shift });
     }
-    chart.timeScale().setVisibleLogicalRange({
-      from: Math.max(0, index - 25),
-      to: index + 8,
-    });
     chart.setCrosshairPosition(bars[index].close, time, candles);
     syncCrosshair(bars[index]);
   }
   function resetEventPanel() {
+    eventSummaryBox.hidden = true;
     eventList.replaceChildren();
     eventDetail.replaceChildren();
     eventPanel.hidden = true;
@@ -879,10 +887,12 @@
       if (!event.point) return;
       const marks = event.paneIndex === 1 ? macdMarks : priceMarks;
       const hit = marks.hitTest(event.point.x, event.point.y);
-      if (!hit) return;
+      if (!hit) {
+        if (eventSelection) clearEventSelection();
+        return;
+      }
       const [, date, offset] = hit.externalId.split(":");
       showEvent(date, true, Number(offset));
-      eventDetail.scrollIntoView({ block: "nearest" });
     });
     chart.subscribeCrosshairMove((param) => {
       const content = selected?.result?.chart;

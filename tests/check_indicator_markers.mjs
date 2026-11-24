@@ -102,24 +102,29 @@ try {
     const diamond = await marker(1, dates[1], 2);
     assert.ok(diamond);
     assert.equal(await marker(1, dates[1], 0), null);
+    const view = () => page.evaluate(() => ({
+      scroll: window.scrollY, range: testMarkers.chart.timeScale().getVisibleLogicalRange(),
+    }));
+    const before = await view();
     if (width === 390) await page.touchscreen.tap(diamond.x, diamond.y);
     else await page.mouse.click(diamond.x, diamond.y);
     const detail = page.locator("#chart-event-detail");
-    assert.match(await detail.innerText(), /MACD（12\/26\/9）死叉.*DIF .*下穿 DEA/s);
-    const description = await detail.locator("p").boundingBox();
-    assert.ok(description.y >= 0 && description.y + description.height <= page.viewportSize().height);
+    assert.deepEqual(await view(), before);
+    const summary = page.locator("#chart-event-summary");
+    assert.match(await summary.innerText(), /死叉.*DIF .*下穿 DEA/s);
+    assert.equal(await detail.locator("details").evaluate((node) => node.open), false);
     assert.equal(await marker(1, dates[1], 3), null);
     assert.equal(await page.locator('#chart-event-list [aria-current="true"]').getAttribute("data-event-offset"), "2");
     const otherMacd = page.locator(`#chart-event-list button[data-event-date="${dates[1]}"][data-event-offset="3"]`);
     await otherMacd.click();
-    assert.match(await detail.innerText(), /MACD（8\/17\/9）死叉/);
+    assert.match(await detail.textContent(), /MACD（8\/17\/9）死叉/);
     assert.equal(await page.getByLabel("MACD 图表配置").inputValue(), "1");
     assert.ok(await marker(1, dates[1], 3));
     assert.equal(await marker(1, dates[1], 2), null);
     const sameDay = page.locator(`#chart-event-list button[data-event-date="${dates[1]}"][data-event-offset="1"]`);
     await sameDay.locator("..").evaluate((group) => group.open = true);
     await sameDay.click();
-    assert.match(await detail.innerText(), /布林带（10，2）向下突破下轨/);
+    assert.match(await detail.textContent(), /布林带（10，2）向下突破下轨/);
     const focus = page.getByRole("button", { name: "突出布林带（20，2）" });
     await focus.click();
     assert.equal(await focus.getAttribute("aria-pressed"), "true");
@@ -131,7 +136,10 @@ try {
     assert.ok(triangle);
     if (width === 390) await page.touchscreen.tap(triangle.x, triangle.y);
     else await page.mouse.click(triangle.x, triangle.y);
-    assert.match(await detail.innerText(), /布林带（20，2）向下突破下轨/);
+    assert.match(await detail.textContent(), /布林带（20，2）向下突破下轨/);
+    assert.match(await summary.innerText(), /下轨.*收盘价 85/);
+    await page.keyboard.press("Escape");
+    assert.equal(await summary.isHidden(), true);
     await page.getByRole("checkbox", { name: "MACD 副图" }).uncheck();
     assert.equal(await marker(1, dates[1], 3), null);
     assert.deepEqual(errors, []);

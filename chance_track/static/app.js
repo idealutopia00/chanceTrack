@@ -660,6 +660,12 @@
     上轨外回归轨内: ["上轨", false],
     下轨外回归轨内: ["下轨", true],
   };
+  const shortEventNames = {
+    向上突破上轨: "突破上轨",
+    向下突破下轨: "跌破下轨",
+    上轨外回归轨内: "回归上轨内",
+    下轨外回归轨内: "回归下轨内",
+  };
   function setMarkers() {
     if (!priceMarks || !selected?.result?.chart) return;
     const price = [], macd = [];
@@ -677,6 +683,7 @@
           const item = {
             time, date, offset, shape: "circle",
             up: name === "金叉", provisional: event.provisional,
+            name: shortEventNames[name] ?? name,
           };
           if (event.kind || macdIds.has(id)) {
             const point = displayedMacd.get(time);
@@ -712,6 +719,7 @@
         hits = [];
         if (!visible()) return;
         target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
+          let label;
           for (const point of points) {
             const x = chart.timeScale().timeToCoordinate(point.time);
             const y = series.priceToCoordinate(point.value);
@@ -751,6 +759,36 @@
             ctx.closePath();
             if (point.provisional) ctx.stroke();
             else ctx.fill();
+            if (
+              cx >= 0 && cx < mediaSize.width && cy >= 0 && cy < mediaSize.height &&
+              (selected || (!eventSelection && (!label || point.date > label.point.date)))
+            ) label = { cx, cy, point };
+          }
+          if (label) {
+            const { cx, cy, point } = label;
+            const glyph = point.shape === "diamond" ? "◆" :
+              point.shape === "triangle" ? (point.up ? "▲" : "▼") : "●";
+            const text = `${glyph} ${point.name}`;
+            ctx.save();
+            ctx.font = "12px system-ui";
+            const width = Math.min(ctx.measureText(text).width + 12, mediaSize.width - 8);
+            const side = cx + width + 16 <= mediaSize.width ? 1 : -1;
+            const left = Math.max(4, Math.min(mediaSize.width - width - 4,
+              side > 0 ? cx + 12 : cx - width - 12));
+            const top = Math.max(4, Math.min(mediaSize.height - 24,
+              cy + ((point.side ?? -1) < 0 ? -30 : 10)));
+            ctx.strokeStyle = color(point.up ? "gold" : "violet");
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(side > 0 ? left : left + width, top + 10);
+            ctx.stroke();
+            ctx.fillStyle = color("panel");
+            ctx.fillRect(left, top, width, 20);
+            ctx.strokeRect(left, top, width, 20);
+            ctx.fillStyle = color("text");
+            ctx.textBaseline = "middle";
+            ctx.fillText(text, left + 6, top + 10, width - 12);
+            ctx.restore();
           }
         });
       },

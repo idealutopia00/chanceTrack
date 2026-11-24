@@ -19,12 +19,14 @@ try {
       const response = await route.fetch();
       const body = (await response.text()).replace(
         "chart.subscribeClick((event) => {",
-        `window.testMarkers = { chart, candles, priceMarks, macdMarks };
+        `window.testMarkers = { chart, candles, dif, dea, priceMarks, macdMarks };
         chart.subscribeClick((event) => {`,
       ).replace("if (label) {", `
         (window.testLabels ??= {})[series === candles ? "price" : "macd"] =
           label && { date: label.point.date, offset: label.point.offset, name: label.point.name };
-        if (label) {`);
+        if (label) {`).replace("const anchorX =", `
+        (window.testLabelBoxes ??= {})[series === candles ? "price" : "macd"] = { left, top, width };
+        const anchorX =`);
       await route.fulfill({ response, body });
     });
     await page.goto(base);
@@ -95,6 +97,23 @@ try {
     await page.waitForFunction(() => window.testLabels?.price && window.testLabels?.macd);
     assert.deepEqual(await label("price"), { date: dates[1], offset: 0, name: "跌破下轨" });
     assert.deepEqual(await label("macd"), { date: dates[1], offset: 2, name: "死叉" });
+    await page.evaluate(() => testMarkers.chart.timeScale().setVisibleLogicalRange({ from: 6, to: 13 }));
+    await page.evaluate(() => new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const coversCurve = await page.evaluate(() => {
+      const { left, top, width } = testLabelBoxes.macd;
+      const { chart, dif, dea } = testMarkers;
+      return [dif, dea].some((line) => line.data().slice(1).some((p, i) => {
+        const q = line.data()[i];
+        const x1 = chart.timeScale().timeToCoordinate(q.time);
+        const x2 = chart.timeScale().timeToCoordinate(p.time);
+        const y1 = line.priceToCoordinate(q.value);
+        const y2 = line.priceToCoordinate(p.value);
+        return left <= x2 && left + width >= x1 &&
+          top <= Math.max(y1, y2) && top + 20 >= Math.min(y1, y2);
+      }));
+    });
+    assert.equal(coversCurve, false);
     await page.evaluate(() => testMarkers.chart.timeScale().setVisibleLogicalRange({ from: 0, to: 10 }));
     await page.waitForFunction(() => !testLabels.price && !testLabels.macd);
     await page.evaluate(() => testMarkers.chart.timeScale().setVisibleLogicalRange({ from: 0, to: 16 }));

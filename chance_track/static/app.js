@@ -712,6 +712,62 @@
     macdMarks.set(macd);
   }
   let displayedMacd = new Map();
+  function labelPosition(series, hits, { cx, cy, point }, width, size) {
+    const scale = chart.timeScale();
+    const preferred = (point.side ?? -1) < 0 ? -1 : 1;
+    const sides = cx + width + 16 <= size.width ? [1, -1] : [-1, 1];
+    const positions = [10, 26, 42].flatMap((gap) =>
+      [preferred, -preferred].flatMap((vertical) =>
+        sides.map((side) => ({
+          left: Math.max(4, Math.min(size.width - width - 4,
+            side > 0 ? cx + 12 : cx - width - 12)),
+          top: Math.max(4, Math.min(size.height - 24,
+            vertical > 0 ? cy + gap : cy - gap - 20)),
+        })),
+      ),
+    );
+    const seriesList = series === candles
+      ? [candles, ...overlaySeries.filter(({ visible }) => visible()).map(({ series }) => series)]
+      : [dif, dea, histogram];
+    const occupied = hits.map(({ x, y }) => [x - 5, x + 5, y - 5, y + 5]);
+    const halfBar = Math.max(2, scale.options().barSpacing / 2);
+    for (const layer of seriesList) {
+      let previous;
+      for (const row of layer.data()) {
+        const x = scale.timeToCoordinate(row.time);
+        if (x == null) continue;
+        if (layer === candles || layer === histogram) {
+          if (x < -halfBar || x > size.width + halfBar) continue;
+          const high = layer.priceToCoordinate(row.high ?? Math.max(0, row.value));
+          const low = layer.priceToCoordinate(row.low ?? Math.min(0, row.value));
+          if (high != null && low != null)
+            occupied.push([x - halfBar, x + halfBar, high, low]);
+        } else {
+          const y = layer.priceToCoordinate(row.value);
+          if (y == null) {
+            previous = undefined;
+            continue;
+          }
+          if (previous && x >= 0 && previous.x <= size.width)
+            occupied.push([previous.x, x, Math.min(y, previous.y), Math.max(y, previous.y)]);
+          previous = { x, y };
+        }
+      }
+    }
+    const overlaps = ({ left, top }) => occupied.filter(([x1, x2, y1, y2]) =>
+      left - 3 <= x2 && left + width + 3 >= x1 &&
+      top - 3 <= y2 && top + 23 >= y1).length;
+    let best = positions[0], score = Infinity;
+    for (const position of positions) {
+      const count = overlaps(position);
+      if (count === 0) return position;
+      if (count < score) {
+        best = position;
+        score = count;
+      }
+    }
+    return best;
+  }
   function markerPrimitive(series, visible = () => true) {
     let points = [], hits = [], requestUpdate;
     const renderer = {
@@ -772,15 +828,12 @@
             ctx.save();
             ctx.font = "12px system-ui";
             const width = Math.min(ctx.measureText(text).width + 12, mediaSize.width - 8);
-            const side = cx + width + 16 <= mediaSize.width ? 1 : -1;
-            const left = Math.max(4, Math.min(mediaSize.width - width - 4,
-              side > 0 ? cx + 12 : cx - width - 12));
-            const top = Math.max(4, Math.min(mediaSize.height - 24,
-              cy + ((point.side ?? -1) < 0 ? -30 : 10)));
+            const { left, top } = labelPosition(series, hits, label, width, mediaSize);
+            const anchorX = Math.max(left, Math.min(left + width, cx));
             ctx.strokeStyle = color(point.up ? "gold" : "violet");
             ctx.beginPath();
             ctx.moveTo(cx, cy);
-            ctx.lineTo(side > 0 ? left : left + width, top + 10);
+            ctx.lineTo(anchorX, top + 10);
             ctx.stroke();
             ctx.fillStyle = color("panel");
             ctx.fillRect(left, top, width, 20);

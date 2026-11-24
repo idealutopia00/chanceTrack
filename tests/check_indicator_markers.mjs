@@ -19,7 +19,7 @@ try {
       const response = await route.fetch();
       const body = (await response.text()).replace(
         "chart.subscribeClick((event) => {",
-        `window.testMarkers = { chart, candles, dif, dea, priceMarks, macdMarks };
+        `window.testMarkers = { chart, candles, dif, dea, priceMarks, macdMarks, overlays: () => overlaySeries.map(({ series }) => series) };
         chart.subscribeClick((event) => {`,
       ).replace("if (label) {", `
         (window.testLabels ??= {})[series === candles ? "price" : "macd"] =
@@ -101,17 +101,21 @@ try {
     await page.evaluate(() => new Promise((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const coversCurve = await page.evaluate(() => {
-      const { left, top, width } = testLabelBoxes.macd;
-      const { chart, dif, dea } = testMarkers;
-      return [dif, dea].some((line) => line.data().slice(1).some((p, i) => {
-        const q = line.data()[i];
-        const x1 = chart.timeScale().timeToCoordinate(q.time);
-        const x2 = chart.timeScale().timeToCoordinate(p.time);
-        const y1 = line.priceToCoordinate(q.value);
-        const y2 = line.priceToCoordinate(p.value);
-        return left <= x2 && left + width >= x1 &&
-          top <= Math.max(y1, y2) && top + 20 >= Math.min(y1, y2);
-      }));
+      const { chart, dif, dea, overlays } = testMarkers;
+      const overlaps = ({ left, top, width }, line) => {
+        const data = line.data();
+        return data.slice(1).some((p, i) => {
+          const q = data[i];
+          const x1 = chart.timeScale().timeToCoordinate(q.time);
+          const x2 = chart.timeScale().timeToCoordinate(p.time);
+          const y1 = line.priceToCoordinate(q.value);
+          const y2 = line.priceToCoordinate(p.value);
+          return left <= x2 && left + width >= x1 &&
+            top <= Math.max(y1, y2) && top + 20 >= Math.min(y1, y2);
+        });
+      };
+      return [dif, dea].some((line) => overlaps(testLabelBoxes.macd, line)) ||
+        overlays().some((line) => overlaps(testLabelBoxes.price, line));
     });
     assert.equal(coversCurve, false);
     await page.evaluate(() => testMarkers.chart.timeScale().setVisibleLogicalRange({ from: 0, to: 10 }));

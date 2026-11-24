@@ -786,6 +786,22 @@
         score = count;
       }
     }
+    // Try chart edges and the nearest free gap when nearby labels would cover data.
+    const maxTop = Math.max(4, size.height - 24);
+    const columns = new Set([...positions.map(({ left }) => left), 4, size.width - width - 4]);
+    let nearest = Infinity;
+    for (const left of columns) {
+      const obstacles = occupied.filter(([x1, x2]) => left - 3 <= x2 && left + width + 3 >= x1);
+      const edges = [4, maxTop, ...obstacles.flatMap(([, , y1, y2]) => [y1 - 24, y2 + 4])];
+      for (const top of edges) {
+        if (top < 4 || top > maxTop) continue;
+        const distance = Math.hypot(Math.max(left - cx, cx - left - width, 0), top + 10 - cy);
+        if (distance < nearest && !overlaps({ left, top })) {
+          best = { left, top };
+          nearest = distance;
+        }
+      }
+    }
     return best;
   }
   function markerPrimitive(series, visible = () => true) {

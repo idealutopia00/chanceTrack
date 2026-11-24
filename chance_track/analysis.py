@@ -1,8 +1,10 @@
 """Pure indicator computation: one result supplies signals and chart series."""
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
+
+from .market_sessions import cn_trading_day
 
 RULE = {
     "version": "macd-market-sessions-v4",
@@ -19,12 +21,34 @@ RULE = {
 }
 
 
+def chart_volumes(snapshot):
+    unit = snapshot.get("volume_unit")
+    if not unit:
+        return {}, []
+    volumes = {
+        row["date"]: round(row["volume"] * snapshot.get("volume_multiplier", 1), 8)
+        for row in snapshot["rows"]
+        if row.get("volume") is not None
+    }
+    # The validated Au99.99 feed uses the existing mainland holiday calendar.
+    days = {date.fromisoformat(day) for day in volumes}
+    mondays = {day - timedelta(days=day.weekday()) for day in days}
+    complete = []
+    for monday in sorted(mondays):
+        week = [monday + timedelta(days=i) for i in range(5)]
+        trading = [day for day in week if cn_trading_day(day)]
+        if trading and days.issuperset(trading):
+            complete.append(trading[-1].isoformat())
+    return volumes, complete
+
+
 def analyze(snapshot, as_of):
     if snapshot.get("basis") != "market_ohlc":
         raise ValueError("新分析仅接受真实行情 OHLC，不接受基金净值")
     rows = snapshot["rows"]
     if not rows:
         raise ValueError("至少需要 120 个已完成日线样本")
+    volumes, complete_volume_weeks = chart_volumes(snapshot)
     is_provisional = snapshot.get("provisional_date") == rows[-1]["date"]
     confirmed_index = len(rows) - 2 if is_provisional else len(rows) - 1
     if confirmed_index + 1 < RULE["minimum_samples"]:
@@ -112,9 +136,12 @@ def analyze(snapshot, as_of):
         "age_days": max(0, age),
         "session": snapshot.get("session"),
         "chart": {
+            "volume_unit": snapshot.get("volume_unit"),
+            "complete_volume_weeks": complete_volume_weeks,
             "candles": [
                 {
                     "time": r["date"],
+                    **({"volume": volumes[r["date"]]} if r["date"] in volumes else {}),
                     **{k: r[k] for k in ("open", "high", "low", "close")},
                 }
                 for r in rows

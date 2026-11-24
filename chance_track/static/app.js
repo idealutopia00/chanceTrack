@@ -150,6 +150,7 @@
   const items = JSON.parse(dataNode.textContent);
   const container = document.getElementById("chart");
   const empty = document.getElementById("chart-empty");
+  const volumeToggle = document.getElementById("show-volume");
   const markerToggle = document.getElementById("show-markers");
   const eventPanel = document.getElementById("chart-events");
   const eventList = document.getElementById("chart-event-list");
@@ -161,6 +162,7 @@
   const library = window.LightweightCharts;
   let chart,
     candles,
+    volumeBars,
     dif,
     dea,
     histogram,
@@ -236,6 +238,21 @@
       span.append(value);
       target.append(span);
     }
+    if (volumeToggle.checked) {
+      const reading = document.createElement("span");
+      const unit = selected?.result?.chart?.volume_unit;
+      reading.textContent = unit && Number.isFinite(row.volume) ?
+        `VOL ${number(row.volume)} ${unit}${selected.result.is_provisional && row.time === selected.result.bar_date ? "（截至当前累计）" : ""}` :
+        "暂无成交量";
+      target.append(reading);
+    }
+  }
+  function setVolume() {
+    if (!volumeBars) return;
+    const show = volumeToggle.checked && selected?.result?.chart?.volume_unit;
+    volumeBars.setData(show ? displayedBars.map(({ time, volume }) =>
+      Number.isFinite(volume) ? { time, value: volume } : { time },
+    ) : []);
   }
   function setRange() {
     if (!chart || !selected?.result?.chart) return;
@@ -249,7 +266,7 @@
         to: count + 3,
       });
   }
-  function displayCandles(daily) {
+  function displayCandles(daily, completeVolumeWeeks = []) {
     displayedDay = new Map();
     if (period === "day") {
       for (const bar of daily) displayedDay.set(bar.time, bar.time);
@@ -260,18 +277,21 @@
       const monday = new Date(`${bar.time}T00:00:00Z`);
       monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
       const key = monday.toISOString().slice(0, 10);
-      if (!weeks.has(key)) weeks.set(key, { candle: { ...bar }, dates: [] });
+      if (!weeks.has(key)) weeks.set(key, { candle: { ...bar, volume: 0 }, dates: [] });
       const { candle, dates } = weeks.get(key);
       dates.push(bar.time);
       Object.assign(candle, {
         time: bar.time,
+        volume: candle.volume + (bar.volume ?? NaN),
         close: bar.close,
         high: Math.max(candle.high, bar.high),
         low: Math.min(candle.low, bar.low),
       });
     }
-    for (const { candle, dates } of weeks.values())
+    for (const { candle, dates } of weeks.values()) {
+      if (!completeVolumeWeeks.includes(candle.time)) delete candle.volume;
       for (const date of dates) displayedDay.set(date, candle.time);
+    }
     return [...weeks.values()].map(({ candle }) => candle);
   }
   function displayedPoints(points) {
@@ -849,6 +869,14 @@
       localization: { locale: "zh-CN" },
     });
     chart.applyOptions(chartColors());
+    volumeBars = chart.addSeries(library.HistogramSeries, {
+      priceScaleId: "volume",
+      color: "rgba(127, 146, 158, 0.25)",
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceFormat: { type: "volume" },
+    });
+    volumeBars.priceScale().applyOptions({ scaleMargins: { top: 0.90, bottom: 0 } });
     candles = chart.addSeries(library.CandlestickSeries, {
       ...candleColors(),
       borderVisible: false,
@@ -914,6 +942,8 @@
       const hit = marks.hitTest(event.point.x, event.point.y);
       if (!hit) {
         if (eventSelection) clearEventSelection();
+        const row = displayedBars.find((bar) => bar.time === dayKey(event.time));
+        if (row) syncCrosshair(row);
         return;
       }
       const [, date, offset] = hit.externalId.split(":");
@@ -1016,7 +1046,7 @@
       : "历史报告 · 基金净值";
     showSparkline(selected);
     const content = selected.result?.chart;
-    displayedBars = displayCandles(content?.candles ?? []);
+    displayedBars = displayCandles(content?.candles ?? [], content?.complete_volume_weeks);
     document.getElementById("chart-period-label").textContent =
       `K 线 ${period === "week" ? "周线" : "日线"} · 信号 日线`;
     syncEventNavigation();
@@ -1072,6 +1102,7 @@
     try {
       if (!chart) initialize();
       candles.setData(displayedBars.map((bar) => ({ ...bar })));
+      setVolume();
       for (const entry of overlaySeries) chart.removeSeries(entry.series);
       overlaySeries = [];
       const layerControls = document.getElementById("chart-layers");
@@ -1278,6 +1309,10 @@
     }),
   );
   markerToggle.addEventListener("change", setMarkers);
+  volumeToggle.addEventListener("change", () => {
+    setVolume();
+    syncCrosshair(displayedBars.at(-1));
+  });
   window.ChanceChart = {
     select,
     focusEvent: (date) => {

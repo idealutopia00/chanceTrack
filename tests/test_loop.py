@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chance_track import storage
-from chance_track.analysis import RULE, analyze
+from chance_track.analysis import RULE, analyze, chart_volumes
 from chance_track.data import TZ, parse_eastmoney, parse_yahoo, validate_rows
 from chance_track.runner import due, run
 from chance_track.web import create_app
@@ -144,6 +144,25 @@ def test_failure_isolation_and_late_report(tmp_path):
     report = storage.report(path, rid)
     assert report["late"]
     assert [x["status"] for x in report["items"]] == ["ok", "error", "disabled"]
+
+
+def test_chart_volume_keeps_zero_and_requires_a_complete_week():
+    snapshot = {
+        "volume_unit": "千克",
+        "volume_multiplier": 0.01,
+        "rows": [
+            {"date": f"2026-11-{day:02}", "volume": volume}
+            for day, volume in zip(range(16, 21), (0, 200, 300, 400, 500))
+        ],
+    }
+    volumes, complete = chart_volumes(snapshot)
+    assert volumes["2026-11-16"] == 0
+    assert volumes["2026-11-17"] == 2
+    assert complete == ["2026-11-20"]
+    snapshot["rows"][1]["volume"] = None
+    volumes, complete = chart_volumes(snapshot)
+    assert "2026-11-17" not in volumes
+    assert complete == []
 
 
 def test_eastmoney_identity_real_ohlc_and_unfinished_bar_inclusion():

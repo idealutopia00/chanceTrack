@@ -23,7 +23,7 @@ def validate_rows(rows):
     for row in rows:
         date.fromisoformat(row["date"])
         dates.append(row["date"])
-        for key in ("open", "high", "low", "close", "volume"):
+        for key in ("open", "high", "low", "close"):
             row[key] = float(row[key])
         prices = [row[key] for key in ("open", "high", "low", "close")]
         if not all(math.isfinite(x) and x > 0 for x in prices):
@@ -34,7 +34,9 @@ def validate_rows(rows):
             or row["high"] < row["low"]
         ):
             raise ValueError("OHLC 高低价关系无效")
-        if not math.isfinite(row["volume"]) or row["volume"] < 0:
+        volume = row.get("volume")
+        row["volume"] = None if volume in (None, "", "-") else float(volume)
+        if row["volume"] is not None and (not math.isfinite(row["volume"]) or row["volume"] < 0):
             raise ValueError("成交量无效")
     if dates != sorted(set(dates)):
         raise ValueError("行情日期重复或未按时间升序")
@@ -55,7 +57,8 @@ def parse_eastmoney(payload, asset, as_of, now=None):
     rows = []
     for line in data["klines"]:
         parts = line.split(",")
-        opening, close, high, low, volume = parts[1:6]
+        opening, close, high, low = parts[1:5]
+        volume = parts[5] if len(parts) > 5 else None
         rows.append(
             {
                 "date": parts[0],
@@ -74,6 +77,9 @@ def parse_eastmoney(payload, asset, as_of, now=None):
         "name": data["name"],
         "basis": "market_ohlc",
         "provider": "eastmoney",
+        **({"volume_unit": "千克", "volume_multiplier": 0.01}
+           if asset["secid"] == "118.AU9999" and asset.get("session_profile") == "sge_gold"
+           else {}),
     }
 
 
@@ -88,9 +94,12 @@ def parse_yahoo(payload, asset, as_of, now=None):
     exchange_tz = ZoneInfo(meta["exchangeTimezoneName"])
     quotes = data["indicators"]["quote"][0]
     timestamps = data["timestamp"]
-    for key in ("open", "high", "low", "close", "volume"):
+    volumes = quotes.get("volume")
+    for key in ("open", "high", "low", "close"):
         if len(quotes[key]) != len(timestamps):
             raise ValueError("OHLC 序列长度不匹配")
+    if volumes is not None and len(volumes) != len(timestamps):
+        raise ValueError("成交量序列长度不匹配")
     rows = []
     now = now or datetime.now(TZ)
     for i, stamp in enumerate(timestamps):
@@ -101,8 +110,9 @@ def parse_yahoo(payload, asset, as_of, now=None):
                 "date": day,
                 **{
                     key: quotes[key][i]
-                    for key in ("open", "high", "low", "close", "volume")
+                    for key in ("open", "high", "low", "close")
                 },
+                "volume": volumes[i] if volumes is not None else None,
             }
         )
     period = meta.get("currentTradingPeriod", {}).get("regular")

@@ -305,10 +305,29 @@ def test_primary_disconnect_triggers_isolated_per_asset_fallbacks_and_status(
     assert g_summary["label"] == "备用源成功" and "请求断连" in g_summary["detail"]
     assert s_summary["label"] == "备用源成功" and "同源冷却未请求" in s_summary["detail"]
 
-    html = TestClient(create_app(db_path)).get(f"/reports/{rid}").text
+    client = TestClient(create_app(db_path))
+    page = client.get(f"/reports/{rid}")
+    html = page.text
     assert "备用源成功" in html
     assert "上海证券交易所" in html and "深圳证券交易所" in html
     assert "请求断连" in html and "同源冷却未请求" in html
+
+    import re
+
+    csrf = re.search(r'name="csrf" value="([^"]+)"', html)[1]
+    preview_res = client.post(
+        "/api/workspace/preview",
+        json={
+            "csrf": csrf,
+            "source": {"report_id": rid},
+            "asset_id": "gold_etf_518800",
+            "strategies": [],
+        },
+    )
+    assert preview_res.status_code == 200
+    preview_json = preview_res.json()
+    assert preview_json["fetch_summary"]["code"] == "fallback_ok"
+    assert preview_json["fetch_summary"]["label"] == "备用源成功"
 
 
 def test_stale_1435_and_bad_identity_fallbacks_are_rejected(tmp_path, monkeypatch):

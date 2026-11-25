@@ -651,6 +651,7 @@ def fetch(asset, as_of, now=None):
 
 
 async def fetch_market_snapshot(asset, as_of, now=None):
+    explicit_now = now is not None
     now = (now or datetime.now(TZ)).astimezone(TZ)
     specs = source_specs(asset)
     per_source_timeout = (
@@ -703,7 +704,7 @@ async def fetch_market_snapshot(asset, as_of, now=None):
                 )
                 snapshot.update(
                     source=url_str,
-                    fetched_at=datetime.now(TZ).isoformat(),
+                    fetched_at=now.isoformat() if explicit_now else datetime.now(TZ).isoformat(),
                     primary_provider=primary_provider,
                     fallback_used=spec["role"] == "fallback",
                     fetch_status="fallback_ok"

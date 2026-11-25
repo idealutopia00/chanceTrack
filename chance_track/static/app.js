@@ -244,7 +244,7 @@
       const reading = document.createElement("span");
       const unit = selected?.result?.chart?.volume_unit;
       reading.textContent = unit && Number.isFinite(row.volume) ?
-        `VOL ${number(row.volume, 0)} ${unit}${selected.result.is_provisional && row.time === selected.result.bar_date ? "（截至当前累计）" : ""}` :
+        `VOL ${number(row.volume, unit === "手" ? 0 : 2)} ${unit}${selected.result.is_provisional && row.time === selected.result.bar_date ? "（截至当前累计）" : ""}` :
         "暂无成交量";
       target.append(reading);
     }

@@ -17,6 +17,7 @@ from .configuration import (
     validate_configuration,
 )
 from .data import TZ, fetch
+from .presentation import fetch_state_summary
 from .runner import next_regular_check
 from .strategies import benchmark_context, chart_events, evaluate
 
@@ -124,6 +125,7 @@ def preview(path, source, asset_id, strategies):
         "mode": "exploration",
         "status": item.get("status"),
         "carried_forward": item.get("carried_forward", False),
+        "fetch_summary": fetch_state_summary(item),
         "source": source,
         "checked_at": checked_at,
         "fetched_at": snapshot.get("fetched_at"),

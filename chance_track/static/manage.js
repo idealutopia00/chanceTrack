@@ -165,12 +165,17 @@
         ["ticker", "简称"],
         ["market", "市场说明"],
         ["currency", "单位"],
+        ["symbol", "市场代码 symbol"],
         ["secid", "东方财富 secid"],
-        ["expected_name", "东方财富精确名称"],
+        ["expected_name", "数据源精确名称"],
       ])
         field(card, label, a, key);
       field(card, "数据源", a, "provider", [
         ["yahoo", "Yahoo 指数"],
+        ["tencent", "腾讯财经"],
+        ["sse", "上海证券交易所"],
+        ["szse", "深圳证券交易所"],
+        ["sina", "新浪财经"],
         ["eastmoney", "东方财富指数 / 黄金"],
       ]);
       field(card, "市场时段", a, "session_profile", [

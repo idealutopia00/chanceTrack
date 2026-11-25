@@ -1200,17 +1200,25 @@
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget));
     const [provider, session_profile] = data.profile.split(":");
+    const isEtf =
+      session_profile === "cn_equity" &&
+      provider !== "eastmoney" &&
+      /^(51|56|58|15|16)/.test(data.code || "");
     const asset = {
       ...data,
       provider,
       session_profile,
+      kind: session_profile === "sge_gold" ? "spot" : isEtf ? "etf" : "index",
       market:
         session_profile === "us_equity"
           ? "美国指数"
           : session_profile === "sge_gold"
             ? "上海黄金交易所"
-            : "中国指数",
-      currency: session_profile === "sge_gold" ? "元/克" : "点",
+            : isEtf
+              ? "中国 · 场内 ETF"
+              : "中国指数",
+      currency:
+        session_profile === "sge_gold" ? "元/克" : isEtf ? "元" : "点",
     };
     try {
       const result = await mutate(

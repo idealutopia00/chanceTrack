@@ -1,5 +1,6 @@
 import fcntl
 import hashlib
+import inspect
 import subprocess
 from contextlib import contextmanager
 from copy import deepcopy
@@ -11,7 +12,7 @@ from chinese_calendar import is_workday
 from . import storage
 from .analysis import RULE, analyze
 from .configuration import load_configuration, relative_benchmarks
-from .data import TZ, fetch
+from .data import TZ, MarketFetchError, fetch, provider_label
 from .notifications import NOTIFICATION_TITLE, build_message, notify
 from .strategies import benchmark_context, chart_events, evaluate
 
@@ -146,6 +147,42 @@ def run(
         return _run(db_path, watchlist, scheduled, send, now, fetcher, sender)
 
 
+def _call_fetcher(fetcher, asset, day, now):
+    try:
+        params = inspect.signature(fetcher).parameters
+    except (TypeError, ValueError):
+        return fetcher(asset, day)
+    if "now" in params or any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+    ):
+        return fetcher(asset, day, now=now)
+    return fetcher(asset, day)
+
+
+def _plan_probe_order(db_path, assets, previous_items, previous_report):
+    by_provider = {}
+    for asset in assets:
+        old = previous_items.get(asset["id"])
+        if old and old["status"] != "error" and not failed_benchmark(old):
+            continue
+        if not asset.get("enabled") or not asset.get("provider"):
+            continue
+        by_provider.setdefault(asset["provider"], []).append(asset["id"])
+    prior_report = previous_report or storage.report(db_path) or {}
+    prior_order = prior_report.get("probe_order") or {}
+    probe_order = {}
+    for provider, ids in by_provider.items():
+        if len(ids) < 2:
+            continue
+        previous_ids = prior_order.get(provider) or []
+        if previous_ids and previous_ids[0] in ids:
+            start = (ids.index(previous_ids[0]) + 1) % len(ids)
+            probe_order[provider] = ids[start:] + ids[:start]
+        else:
+            probe_order[provider] = list(ids)
+    return probe_order
+
+
 def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
     now = (now or datetime.now(TZ)).astimezone(TZ)
     if scheduled and not due(now):
@@ -164,6 +201,13 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
     if previous and previous.get("configuration"):
         config = previous["configuration"]
     attempt = previous.get("attempt", 1) + 1 if previous else 1
+    previous_items = (
+        {item["asset"]["id"]: item for item in previous["items"]} if previous else {}
+    )
+    if previous:
+        # A retry completes the original watchlist, even if configuration changed meanwhile.
+        assets = [item["asset"] for item in previous["items"]]
+    probe_order = _plan_probe_order(db_path, assets, previous_items, previous)
     report = {
         "created_at": now.isoformat(),
         "day": day,
@@ -173,17 +217,13 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
         "late": now.time() >= time(15),
         "rule": RULE.copy(),
         "configuration": config,
+        "probe_order": probe_order,
         "code_revision": revision(),
         "code_sha256": code_hash(),
         "items": [],
     }
-    previous_items = (
-        {item["asset"]["id"]: item for item in previous["items"]} if previous else {}
-    )
-    if previous:
-        # A retry completes the original watchlist, even if configuration changed meanwhile.
-        assets = [item["asset"] for item in previous["items"]]
     assets_by_id = {asset["id"]: asset for asset in config["assets"]}
+    active_by_id = {asset["id"]: asset for asset in assets}
     market_cache = {}
 
     def market_snapshot(asset):
@@ -194,7 +234,7 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                 if carried and carried["status"] in ("ok", "warning"):
                     market_cache[asset_id] = carried["snapshot"]
                 else:
-                    snapshot = fetcher(asset, day)
+                    snapshot = _call_fetcher(fetcher, asset, day, now)
                     snapshot.setdefault("fetched_at", now.isoformat())
                     market_cache[asset_id] = snapshot
             except Exception as exc:
@@ -203,6 +243,13 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
         if isinstance(result, Exception):
             raise result
         return result
+
+    for ids in probe_order.values():
+        for asset_id in ids:
+            try:
+                market_snapshot(active_by_id[asset_id])
+            except Exception:
+                pass
 
     for asset in assets:
         old = previous_items.get(asset["id"])
@@ -270,12 +317,54 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                         snapshot, strategies, calculated
                     )
                 item["status"] = "warning" if item["result"]["warnings"] else "ok"
+                actual_provider = snapshot.get("provider") or asset.get("provider")
+                item["provider"] = actual_provider
+                item["provider_label"] = provider_label(actual_provider)
+                item["fetch_status"] = snapshot.get("fetch_status") or (
+                    "fallback_ok" if snapshot.get("fallback_used") else "primary_ok"
+                )
+                if snapshot.get("attempts"):
+                    item["attempts"] = snapshot["attempts"]
             except Exception as exc:
                 item.pop("result", None)
+                last_quote = storage.last_market_quote(db_path, asset["id"])
+                if isinstance(exc, MarketFetchError):
+                    fetch_status = exc.fetch_status
+                    attempts = exc.attempts
+                else:
+                    exc_name = type(exc).__name__
+                    if "SourceCoolingDown" in exc_name:
+                        fetch_status = "cooling_down"
+                    elif any(
+                        token in exc_name
+                        for token in ("RemoteProtocolError", "Connect", "Timeout")
+                    ):
+                        fetch_status = "disconnected"
+                    elif "StaleMarketSnapshot" in exc_name:
+                        fetch_status = "stale"
+                    else:
+                        fetch_status = "error"
+                    provider = asset.get("provider")
+                    attempts = (
+                        [
+                            {
+                                "provider": provider,
+                                "provider_label": provider_label(provider),
+                                "role": "primary",
+                                "status": fetch_status,
+                                "detail": f"{exc_name}: {exc}",
+                            }
+                        ]
+                        if provider
+                        else []
+                    )
                 item.update(
                     status="error",
                     error=f"{type(exc).__name__}: {exc}",
-                    last_quote=storage.last_market_quote(db_path, asset["id"]),
+                    fetch_status=fetch_status,
+                    attempts=attempts,
+                    has_historical_snapshot=bool(last_quote),
+                    last_quote=last_quote,
                 )
         report["items"].append(item)
     report_id, _ = storage.save_report(db_path, report)

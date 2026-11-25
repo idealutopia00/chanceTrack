@@ -24,7 +24,7 @@ from .configuration import (
 )
 from .data import TZ
 from .notifications import NOTIFICATION_TITLE, build_message
-from .presentation import signal_rows
+from .presentation import fetch_state_summary, signal_rows
 from .runner import CheckInProgress, is_running, revision, run
 from .workspace import preview, register_routes
 
@@ -64,6 +64,7 @@ def create_app(db_path):
     templates.env.filters["investment_markdown"] = lambda raw: Markup(
         markdown.render(raw)
     )
+    templates.env.globals["fetch_state_summary"] = fetch_state_summary
     token = secrets.token_urlsafe(32)
     register_routes(app, db_path, token)
 
@@ -88,6 +89,7 @@ def create_app(db_path):
                 "status": item["status"],
                 "last_quote": item.get("last_quote"),
                 "carried_forward": item.get("carried_forward", False),
+                "fetch_summary": fetch_state_summary(item),
             }
             for item in items
         ]

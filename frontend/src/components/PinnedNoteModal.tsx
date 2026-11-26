@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { ArrowUpRight, Pin, X } from "lucide-react";
 import { MarkdownView } from "./MarkdownView";
 import type { NoteRecord } from "../types";
@@ -16,13 +16,20 @@ export function PinnedNoteModal({
   onClose,
   onOpenNotes,
 }: PinnedNoteModalProps) {
+  const closeBtnRef = useRef<HTMLButtonElement | null>(null);
+
   useEffect(() => {
     if (!open) return;
+    const previous = document.activeElement as HTMLElement | null;
+    requestAnimationFrame(() => closeBtnRef.current?.focus());
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      previous?.focus?.();
+    };
   }, [open, onClose]);
 
   if (!open || !note) return null;
@@ -55,6 +62,7 @@ export function PinnedNoteModal({
             </h2>
           </div>
           <button
+            ref={closeBtnRef}
             type="button"
             onClick={onClose}
             className="p-1.5 rounded-lg cursor-pointer"

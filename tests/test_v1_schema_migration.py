@@ -201,3 +201,167 @@ def test_v5_migration_deduplicates_bars_and_hydrates_decisions_with_evidence(tmp
     tpls = storage.list_templates(db_path)
     assert len(tpls) == 1 and tpls[0]["name"] == "趋势模板"
     assert load_configuration(db_path)["version"] == 3
+
+
+def test_migration_report_only_eastmoney_asset_does_not_lock_config_writes(tmp_path):
+    """Regression for Blocker B1: report-only eastmoney stub must not break later config saves."""
+    from chance_track import workspace
+    from chance_track.configuration import validate_configuration
+
+    db_path = tmp_path / "v08_stub.sqlite3"
+    sql = gzip.decompress(FIXTURE.read_bytes()).decode("utf-8")
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(sql)
+        stub_payload = {
+            "rule": {"version": "macd-v3"},
+            "configuration": {"version": 1},
+            "items": [
+                {
+                    "asset": {
+                        "id": "legacy_em_fund",
+                        "label": "旧版东财标的",
+                        "code": "510300",
+                        "provider": "eastmoney",
+                        "session_profile": "cn_equity",
+                        # Deliberately omit secid/expected_name as older reports might
+                    },
+                    "status": "ok",
+                    "snapshot": {
+                        "basis": "market_ohlc",
+                        "provider": "eastmoney",
+                        "fetched_at": "2026-10-01T15:00:00+08:00",
+                        "rows": [
+                            {"date": "2026-10-01", "open": 4.0, "high": 4.1, "low": 3.9, "close": 4.05}
+                        ],
+                    },
+                    "result": {"bar_date": "2026-10-01", "close": 4.05},
+                }
+            ],
+        }
+        conn.execute(
+            "INSERT INTO reports(id, created_at, day, kind, payload) VALUES (999, '2026-10-01T15:00:00+08:00', '2026-10-01', 'manual', ?)",
+            (json.dumps(stub_payload),),
+        )
+
+    storage.initialize(db_path, upgrade_configuration=True)
+    cfg = load_configuration(db_path)
+    validate_configuration(cfg)
+    active_asset = next(a for a in cfg["assets"] if not a.get("archived"))
+    res = workspace.update_asset(
+        db_path,
+        active_asset["id"],
+        {"version": cfg["version"], "priority": not active_asset.get("priority", False)},
+    )
+    assert res["version"] == cfg["version"] + 1
+
+
+def test_migration_handles_nan_bars_null_activation_colon_keys_and_quote_order(tmp_path):
+    """Regressions for M6 (colon dedup_key), M7 (NaN guard), M8 (NULL activated), and quote replay order."""
+    db_path = tmp_path / "edge.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE current_configuration (singleton INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+            CREATE TABLE current_assets (id TEXT PRIMARY KEY, position INTEGER NOT NULL, metadata TEXT NOT NULL);
+            CREATE TABLE current_strategies (id TEXT PRIMARY KEY, position INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, revision INTEGER, parameters TEXT, metadata TEXT NOT NULL);
+            CREATE TABLE monitoring_bindings (asset_id TEXT NOT NULL, strategy_id TEXT NOT NULL, position INTEGER NOT NULL, activated TEXT);
+            CREATE TABLE combination_references (owner_id TEXT NOT NULL, role TEXT NOT NULL, target_id TEXT NOT NULL);
+            CREATE TABLE workspace_quotes (id INTEGER PRIMARY KEY, asset TEXT NOT NULL, snapshot TEXT NOT NULL);
+            CREATE TABLE reports (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE events (key TEXT PRIMARY KEY, report_id INTEGER NOT NULL);
+            CREATE TABLE notification_events (key TEXT PRIMARY KEY, report_id INTEGER NOT NULL);
+            CREATE TABLE notifications (report_id INTEGER PRIMARY KEY, sent_at TEXT, error TEXT, message TEXT);
+            """
+        )
+        asset_meta = {
+            "label": "标普500",
+            "ticker": "SPX",
+            "code": "^GSPC",
+            "provider": "yahoo",
+            "kind": "index",
+            "session_profile": "us_equity",
+            "market": "美国 · S&P",
+            "currency": "点",
+            "group": "美国指数",
+            "enabled": True,
+            "archived": False,
+            "watchlisted": True,
+        }
+        conn.execute("INSERT INTO current_configuration VALUES (1, 2)")
+        conn.execute("INSERT INTO current_assets VALUES ('sp500', 0, ?)", (json.dumps(asset_meta),))
+        conn.execute(
+            "INSERT INTO current_strategies VALUES ('macd', 0, 'macd', 'MACD 默认', 1, '{\"fast\":12,\"slow\":26,\"signal\":9}', '{\"group\":\"趋势\"}')"
+        )
+        # Legacy NULL activated means no boundary
+        conn.execute("INSERT INTO monitoring_bindings VALUES ('sp500', 'macd', 0, NULL)")
+        # Older confirmed bar in workspace_quotes should NOT overwrite newer report bar
+        conn.execute(
+            "INSERT INTO workspace_quotes VALUES (1, ?, ?)",
+            (
+                json.dumps({"id": "sp500", **asset_meta}),
+                json.dumps(
+                    {
+                        "provider": "yahoo",
+                        "fetched_at": "2026-11-20T10:00:00+08:00",
+                        "rows": [
+                            {"date": "2026-11-20", "open": 5000, "high": 5010, "low": 4990, "close": 5005}
+                        ],
+                    }
+                ),
+            ),
+        )
+        # Report includes a NaN row (must be skipped safely) and a newer confirmed close 5950.5
+        report_payload = {
+            "rule": {"version": "macd-v3"},
+            "configuration": {"version": 2},
+            "items": [
+                {
+                    "asset": {"id": "sp500", **asset_meta},
+                    "status": "ok",
+                    "snapshot": {
+                        "basis": "market_ohlc",
+                        "provider": "yahoo",
+                        "quote_currency": "USD",
+                        "fetched_at": "2026-11-20T15:00:00+08:00",
+                        "rows": [
+                            {"date": "2026-11-19", "open": 5900, "high": 5910, "low": 5890, "close": float("nan")},
+                            {"date": "2026-11-20", "open": 5900, "high": 5960, "low": 5895, "close": 5950.5},
+                        ],
+                    },
+                    "result": {"bar_date": "2026-11-20", "close": 5950.5},
+                }
+            ],
+        }
+        conn.execute(
+            "INSERT INTO reports VALUES (1, '2026-11-20T15:00:00+08:00', '2026-11-20', 'manual', ?)",
+            (json.dumps(report_payload, allow_nan=True),),
+        )
+        # Orphaned event key with colons inside strategy_version
+        conn.execute("INSERT INTO events VALUES ('sp500:2026-11-18:macd:v1:金叉', 1)")
+        conn.execute("PRAGMA user_version=5")
+
+    storage.initialize(db_path, upgrade_configuration=True)
+
+    cfg = load_configuration(db_path)
+    assert cfg["assets"][0]["activated"] == {}
+
+    bars = storage.get_bars(db_path, "sp500")
+    assert len(bars) == 1
+    assert bars[0]["close"] == 5950.5
+    assert bars[0]["quote_currency"] == "USD"
+
+    sigs = storage.list_signals(db_path, asset_id="sp500")
+    assert len(sigs) == 1
+    assert sigs[0]["strategy_version"] == "macd:v1"
+    assert sigs[0]["event_kind"] == "金叉"
+
+
+def test_refused_legacy_db_does_not_mutate_journal_mode_to_wal(tmp_path):
+    db_path = tmp_path / "no_wal_on_refuse.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE reports (id INTEGER PRIMARY KEY)")
+        conn.execute("PRAGMA user_version=4")
+    with pytest.raises(ValueError, match="Schema v6"):
+        storage.initialize(db_path, upgrade_configuration=False)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal"

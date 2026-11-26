@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Activity,
   Bell,
@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Sliders,
   Sun,
+  X,
 } from "lucide-react";
 import { api } from "./api";
 import { AddAssetModal } from "./components/AddAssetModal";
@@ -57,11 +58,16 @@ export function App() {
 
   const [watchlistOpen, setWatchlistOpen] = useState(() => window.innerWidth >= 960);
   const [drawerOpen, setDrawerOpen] = useState(() => window.innerWidth >= 1180);
+  const lastWidthRef = useRef(window.innerWidth);
 
   useEffect(() => {
     const onResize = () => {
-      if (window.innerWidth < 960) setWatchlistOpen(false);
-      if (window.innerWidth < 1180) setDrawerOpen(false);
+      const nextWidth = window.innerWidth;
+      if (nextWidth === lastWidthRef.current) return;
+      const prevWidth = lastWidthRef.current;
+      lastWidthRef.current = nextWidth;
+      if (prevWidth >= 960 && nextWidth < 960) setWatchlistOpen(false);
+      if (prevWidth >= 1180 && nextWidth < 1180) setDrawerOpen(false);
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -69,6 +75,7 @@ export function App() {
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [pinnedModalOpen, setPinnedModalOpen] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const [themePref, setThemePref] = useState<ThemePref>(() => {
     try {
@@ -144,8 +151,13 @@ export function App() {
   // Global keyboard shortcuts: / search, [ toggle watchlist, ] toggle drawer
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (document.querySelector('[role="dialog"]')) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
+        return;
+      }
       if (e.key === "/") {
         e.preventDefault();
         setAddModalOpen(true);
@@ -161,11 +173,12 @@ export function App() {
 
   async function handleRunCheck() {
     setChecking(true);
+    setActionError(null);
     try {
       await api.triggerRun(false);
       await refreshBootstrap();
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : String(e));
+      setActionError(e instanceof Error ? e.message : String(e));
     } finally {
       setChecking(false);
     }
@@ -305,6 +318,28 @@ export function App() {
         </div>
       </header>
 
+      {actionError && (
+        <div
+          role="alert"
+          className="px-4 py-1.5 text-xs border-b flex items-center justify-between gap-2 shrink-0"
+          style={{
+            background: "var(--app-warn-soft)",
+            color: "var(--app-warn)",
+            borderColor: "var(--app-border)",
+          }}
+        >
+          <span>{actionError}</span>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            aria-label="关闭错误提示"
+            className="p-0.5 rounded cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* BODY: Left Nav Rail + Active View */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         <nav
@@ -401,7 +436,7 @@ export function App() {
               />
             )}
             {view === "strategies" && (
-              <StrategiesView onConfigChanged={refreshBootstrap} />
+              <StrategiesView assets={bootstrap.assets} onConfigChanged={refreshBootstrap} />
             )}
             {view === "notes" && (
               <NotesView

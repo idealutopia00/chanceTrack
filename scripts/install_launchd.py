@@ -16,7 +16,7 @@ from urllib.request import urlopen
 
 from check_project import validate_source
 
-from chance_track import storage
+from chance_track import configuration, storage
 from chance_track.runner import check_lock
 from chance_track.schema import SCHEMA_VERSION
 
@@ -64,6 +64,9 @@ def prepare_schema_upgrade(target_db, *, adopting=False):
                 or db.execute("PRAGMA foreign_key_check").fetchall()
             ):
                 raise RuntimeError(f"Schema v6 升级预演校验失败：{bundle}")
+        rehearsed_cfg = configuration.load_configuration(trial)
+        configuration.validate_configuration(rehearsed_cfg)
+        configuration.save_configuration(trial, rehearsed_cfg, rehearsed_cfg["version"])
     print(f"已验证 Schema v{version} -> v{SCHEMA_VERSION} 升级预演并保存恢复备份：{bundle}")
     return backup
 

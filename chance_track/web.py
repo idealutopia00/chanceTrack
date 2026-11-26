@@ -1,6 +1,8 @@
 """FastAPI v1.0 JSON API + static SPA host for Chance Track."""
 
 from datetime import datetime
+import logging
+import os
 from pathlib import Path
 import re
 import secrets
@@ -17,17 +19,19 @@ from .configuration import ConfigurationConflict, DuplicateStrategy, load_config
 from .data import TZ, fetch
 from .runner import CheckInProgress, is_running, next_regular_check, revision, run
 
+logger = logging.getLogger(__name__)
 DIST_DIR = Path(__file__).parent / "static" / "dist"
 
 
-def create_app(db_path):
+def create_app(db_path, *, allow_testserver=None):
     storage.initialize(db_path)
     load_configuration(db_path)
 
     app = FastAPI(title="Chance Track v1.0", docs_url=None, redoc_url=None)
-    app.add_middleware(
-        TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"]
-    )
+    if allow_testserver is None:
+        allow_testserver = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    allowed_hosts = ["127.0.0.1", "localhost"] + (["testserver"] if allow_testserver else [])
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
     if (DIST_DIR / "assets").is_dir():
         app.mount(
             "/assets",
@@ -48,7 +52,9 @@ def create_app(db_path):
     def guarded(call):
         try:
             return call()
-        except ConfigurationConflict as exc:
+        except LookupError as exc:
+            raise HTTPException(404, str(exc) or "资源不存在") from exc
+        except (ConfigurationConflict, storage.NoteConflict, CheckInProgress) as exc:
             raise HTTPException(409, str(exc)) from exc
         except DuplicateStrategy as exc:
             raise HTTPException(
@@ -60,16 +66,7 @@ def create_app(db_path):
                     "match_ids": exc.match_ids,
                 },
             ) from exc
-        except CheckInProgress as exc:
-            raise HTTPException(409, str(exc)) from exc
-        except (
-            ValueError,
-            KeyError,
-            TypeError,
-            StopIteration,
-            IndexError,
-            httpx.HTTPError,
-        ) as exc:
+        except (ValueError, httpx.HTTPError) as exc:
             raise HTTPException(400, str(exc) or "请求参数无效") from exc
 
     # ------------------------------------------------------------------
@@ -128,6 +125,8 @@ def create_app(db_path):
     @app.put("/api/v1/assets/order")
     def api_reorder_assets(request: Request, payload: dict = Body()):
         require_csrf(request, payload)
+        if not isinstance(payload.get("ids"), list) or "version" not in payload:
+            raise HTTPException(400, "缺少排序列表或版本号")
         return guarded(
             lambda: workspace.reorder_assets(db_path, payload["ids"], payload["version"])
         )
@@ -147,7 +146,7 @@ def create_app(db_path):
             cfg = load_configuration(db_path)
             asset = next((a for a in cfg["assets"] if a["id"] == asset_id), None)
             if not asset:
-                raise ValueError("标的不存在")
+                raise LookupError("标的不存在")
             snap = fetch(asset, datetime.now(TZ).date().isoformat())
             storage.save_bars(db_path, asset_id, snap)
             return workspace.compute_asset_chart(db_path, asset_id)
@@ -157,6 +156,8 @@ def create_app(db_path):
     @app.post("/api/v1/assets/{asset_id}/preview")
     def api_preview_asset(asset_id: str, request: Request, payload: dict = Body()):
         require_csrf(request, payload)
+        if "strategies" not in payload:
+            raise HTTPException(400, "缺少探索策略配置")
         return guarded(
             lambda: workspace.compute_asset_chart(
                 db_path, asset_id, strategies_override=payload["strategies"]
@@ -166,6 +167,8 @@ def create_app(db_path):
     @app.put("/api/v1/assets/{asset_id}/monitoring")
     def api_update_monitoring(asset_id: str, request: Request, payload: dict = Body()):
         require_csrf(request, payload)
+        if "version" not in payload or "action" not in payload:
+            raise HTTPException(400, "缺少版本号或操作类型")
         return guarded(lambda: workspace.update_asset_monitoring(db_path, asset_id, payload))
 
     @app.get("/api/v1/assets/{asset_id}/decisions")
@@ -175,8 +178,13 @@ def create_app(db_path):
     @app.post("/api/v1/assets/{asset_id}/decisions")
     def api_add_decision(asset_id: str, request: Request, payload: dict = Body()):
         require_csrf(request, payload)
+        if not payload.get("action"):
+            raise HTTPException(400, "缺少决策动作")
 
         def _save():
+            cfg = load_configuration(db_path)
+            if not any(a["id"] == asset_id for a in cfg["assets"]):
+                raise LookupError("标的不存在")
             evidence = None
             if payload.get("exploration_strategies"):
                 computed = workspace.compute_asset_chart(
@@ -199,7 +207,7 @@ def create_app(db_path):
                 bar_date,
                 payload["action"],
                 payload.get("execution", "未执行"),
-                payload.get("note", ""),
+                str(payload.get("note", "")),
                 datetime.now(TZ).isoformat(),
                 price_at_decision=payload.get("price_at_decision"),
                 run_id=latest_run["id"] if latest_run else None,
@@ -222,9 +230,10 @@ def create_app(db_path):
     @app.get("/api/v1/signals")
     def api_signals(asset_id: str | None = None, strategy_id: str | None = None, limit: int = 200):
         return {
+            "total": storage.count_signals(db_path, asset_id=asset_id, strategy_id=strategy_id),
             "signals": storage.list_signals(
                 db_path, asset_id=asset_id, strategy_id=strategy_id, limit=min(max(limit, 1), 500)
-            )
+            ),
         }
 
     @app.get("/api/v1/runs")
@@ -247,9 +256,13 @@ def create_app(db_path):
         if is_running(db_path):
             raise HTTPException(409, "已有检查正在运行，请稍后查看结果")
         if payload.get("async"):
-            threading.Thread(
-                target=lambda: run(db_path, send=False), daemon=True
-            ).start()
+            def _bg():
+                try:
+                    run(db_path, send=False)
+                except Exception:
+                    logger.exception("Background manual check failed")
+
+            threading.Thread(target=_bg, daemon=True).start()
             return {"started": True, "running": True}
         run_id = guarded(lambda: run(db_path, send=False))
         return {"run_id": run_id, "run": storage.get_check_run(db_path, run_id)}
@@ -338,15 +351,19 @@ def create_app(db_path):
         def _update():
             existing = storage.get_note(db_path, note_id)
             if not existing:
-                raise HTTPException(404, "备忘不存在")
+                raise LookupError("备忘不存在")
             raw = str(payload.get("markdown", existing["markdown"]))
             if not raw.strip() or len(raw) > 20000:
                 raise ValueError("请输入 1–20,000 字的 Markdown。")
-            title = str(payload.get("title") or "").strip()
-            if not title:
-                first_line = raw.strip().splitlines()[0].strip()
-                heading = re.fullmatch(r"#\s+(.+?)(?:\s+#+)?", first_line)
-                title = heading[1] if heading else first_line[:60]
+            if "title" in payload and payload["title"] is not None:
+                title = str(payload["title"]).strip()
+                if not title:
+                    first_line = raw.strip().splitlines()[0].strip()
+                    heading = re.fullmatch(r"#\s+(.+?)(?:\s+#+)?", first_line)
+                    title = heading[1] if heading else first_line[:60]
+            else:
+                title = None  # preserve existing title unless caller explicitly supplied one
+            expected_updated_at = payload.get("updated_at") or payload.get("expected_updated_at")
             saved = storage.save_note(
                 db_path,
                 note_id,
@@ -354,9 +371,10 @@ def create_app(db_path):
                 raw,
                 datetime.now(TZ).isoformat(),
                 asset_ids=payload.get("asset_ids"),
+                expected_updated_at=expected_updated_at,
             )
             if saved is None:
-                raise HTTPException(404, "备忘不存在")
+                raise LookupError("备忘不存在")
             return storage.get_note(db_path, saved)
 
         return guarded(_update)
@@ -369,11 +387,16 @@ def create_app(db_path):
         return storage.get_note(db_path, note_id)
 
     @app.delete("/api/v1/notes/{note_id}")
-    def api_delete_note(note_id: int, request: Request):
+    def api_delete_note(note_id: int, request: Request, updated_at: str | None = None):
         require_csrf(request)
-        if not storage.delete_note(db_path, note_id):
-            raise HTTPException(404, "备忘不存在")
-        return {"deleted": True, "id": note_id}
+        expected = updated_at or request.headers.get("x-expected-updated-at")
+
+        def _delete():
+            if not storage.delete_note(db_path, note_id, updated_at=expected):
+                raise LookupError("备忘不存在")
+            return {"deleted": True, "id": note_id}
+
+        return guarded(_delete)
 
     # ------------------------------------------------------------------
     # SPA fallback (serves compiled Vite dist/index.html)

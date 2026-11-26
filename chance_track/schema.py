@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import json
+import math
 
 from .catalog import catalog_by_id
 from .data import TZ, resolve_asset_kind
@@ -55,7 +56,7 @@ SCHEMA_STATEMENTS = (
       asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
       strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE RESTRICT,
       position INTEGER NOT NULL,
-      activated_at TEXT NOT NULL,
+      activated_at TEXT,
       PRIMARY KEY (asset_id, strategy_id),
       UNIQUE (asset_id, position)
     )""",
@@ -105,6 +106,7 @@ SCHEMA_STATEMENTS = (
       volume REAL,
       volume_unit TEXT,
       volume_multiplier REAL,
+      quote_currency TEXT,
       is_provisional INTEGER NOT NULL DEFAULT 0,
       provider TEXT NOT NULL,
       fetched_at TEXT NOT NULL,
@@ -201,6 +203,7 @@ def _upsert_snapshot_bars(db, asset_id, snapshot, *, run_id=None, default_provid
     provisional_date = snapshot.get("provisional_date")
     volume_unit = snapshot.get("volume_unit")
     volume_multiplier = snapshot.get("volume_multiplier")
+    quote_currency = snapshot.get("quote_currency")
     values = []
     for row in rows:
         bar_date = row.get("date")
@@ -213,8 +216,25 @@ def _upsert_snapshot_bars(db, asset_id, snapshot, *, run_id=None, default_provid
             c = float(row["close"])
         except (KeyError, TypeError, ValueError):
             continue
+        if not all(math.isfinite(v) for v in (o, h, lo, c)):
+            continue
         vol = row.get("volume")
-        vol_val = float(vol) if vol is not None else None
+        vol_val = None
+        if vol is not None:
+            try:
+                parsed_vol = float(vol)
+                if math.isfinite(parsed_vol):
+                    vol_val = parsed_vol
+            except (TypeError, ValueError):
+                vol_val = None
+        vm_val = None
+        if volume_multiplier is not None:
+            try:
+                parsed_vm = float(volume_multiplier)
+                if math.isfinite(parsed_vm):
+                    vm_val = parsed_vm
+            except (TypeError, ValueError):
+                vm_val = None
         is_prov = 1 if (provisional_date and bar_date == provisional_date) else 0
         values.append(
             (
@@ -226,7 +246,8 @@ def _upsert_snapshot_bars(db, asset_id, snapshot, *, run_id=None, default_provid
                 c,
                 vol_val,
                 volume_unit if vol_val is not None or volume_unit else None,
-                float(volume_multiplier) if volume_multiplier is not None else None,
+                vm_val,
+                str(quote_currency) if quote_currency else None,
                 is_prov,
                 provider,
                 fetched_at,
@@ -238,9 +259,9 @@ def _upsert_snapshot_bars(db, asset_id, snapshot, *, run_id=None, default_provid
     db.executemany(
         """INSERT INTO market_bars (
              asset_id, bar_date, open, high, low, close,
-             volume, volume_unit, volume_multiplier,
+             volume, volume_unit, volume_multiplier, quote_currency,
              is_provisional, provider, fetched_at, source_run_id
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(asset_id, bar_date) DO UPDATE SET
              open = CASE
                WHEN market_bars.is_provisional = 0 AND excluded.is_provisional = 1 THEN market_bars.open
@@ -269,6 +290,10 @@ def _upsert_snapshot_bars(db, asset_id, snapshot, *, run_id=None, default_provid
              volume_multiplier = CASE
                WHEN market_bars.is_provisional = 0 AND excluded.is_provisional = 1 THEN market_bars.volume_multiplier
                ELSE COALESCE(excluded.volume_multiplier, market_bars.volume_multiplier)
+             END,
+             quote_currency = CASE
+               WHEN market_bars.is_provisional = 0 AND excluded.is_provisional = 1 THEN COALESCE(market_bars.quote_currency, excluded.quote_currency)
+               ELSE COALESCE(excluded.quote_currency, market_bars.quote_currency)
              END,
              is_provisional = CASE
                WHEN market_bars.is_provisional = 0 AND excluded.is_provisional = 1 THEN 0
@@ -450,7 +475,7 @@ def migrate_to_v6(db):
                     seen_sids.add(sid)
                     db.execute(
                         "INSERT INTO asset_strategies(asset_id, strategy_id, position, activated_at) VALUES (?, ?, ?, ?)",
-                        (asset["id"], sid, pos, activated.get(sid) or now_iso),
+                        (asset["id"], sid, pos, activated.get(sid)),
                     )
                     pos += 1
 
@@ -459,27 +484,37 @@ def migrate_to_v6(db):
         if asset_id in asset_ids:
             return
         blob = asset_blob or {}
-        kind = resolve_asset_kind(blob) if blob else "index"
+        preset = known_catalog.get(asset_id, {})
+        kind = resolve_asset_kind(blob) if blob else preset.get("kind") or "index"
         if kind not in ("index", "etf", "spot"):
             kind = "index"
+        aliases = blob.get("aliases") or preset.get("aliases") or []
+        fallbacks = blob.get("fallbacks") or []
         db.execute(
             """INSERT INTO assets (
                  id, label, ticker, code, provider, kind, session_profile,
-                 market, currency, group_name, enabled, archived, watchlisted,
-                 priority, position, aliases_json, fallbacks_json, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, '[]', '[]', ?, ?)""",
+                 market, currency, group_name, secid, expected_name,
+                 enabled, archived, watchlisted, priority, position,
+                 aliases_json, fallbacks_json, validated_at, reason, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 asset_id,
-                blob.get("label") or asset_id,
-                blob.get("ticker") or blob.get("code") or "",
-                blob.get("code") or blob.get("ticker") or asset_id,
-                blob.get("provider") or "yahoo",
+                blob.get("label") or preset.get("label") or asset_id,
+                blob.get("ticker") or blob.get("code") or preset.get("ticker") or "",
+                blob.get("code") or blob.get("ticker") or preset.get("code") or asset_id,
+                blob.get("provider") or preset.get("provider") or "yahoo",
                 kind,
-                blob.get("session_profile") or "us_equity",
-                blob.get("market") or "",
-                blob.get("currency") or "",
-                blob.get("group") or "已归档",
+                blob.get("session_profile") or preset.get("session_profile") or "us_equity",
+                blob.get("market") or preset.get("market") or "",
+                blob.get("currency") or preset.get("currency") or "",
+                blob.get("group") or blob.get("group_name") or "已归档",
+                blob.get("secid") or preset.get("secid"),
+                blob.get("expected_name") or preset.get("expected_name"),
                 next_asset_pos,
+                json.dumps(list(aliases), ensure_ascii=False),
+                json.dumps(list(fallbacks), ensure_ascii=False),
+                blob.get("validated_at"),
+                blob.get("reason"),
                 now_iso,
                 now_iso,
             ),
@@ -487,7 +522,22 @@ def migrate_to_v6(db):
         asset_ids.add(asset_id)
         next_asset_pos += 1
 
-    # 2. Replay legacy reports (id ASC) -> market_bars + check_runs + check_run_items + signal metadata map
+    # 2a. Fold workspace_quotes BEFORE reports so newer confirmed bars from reports win
+    if _table_exists(db, "workspace_quotes"):
+        for qrow in db.execute("SELECT id, asset, snapshot FROM workspace_quotes ORDER BY id ASC"):
+            try:
+                ablob = json.loads(qrow["asset"])
+                snap = json.loads(qrow["snapshot"])
+            except Exception:
+                continue
+            aid = ablob.get("id")
+            if aid:
+                ensure_asset_exists(aid, ablob)
+                _upsert_snapshot_bars(
+                    db, aid, snap, run_id=None, default_provider=ablob.get("provider") or "unknown"
+                )
+
+    # 2b. Replay legacy reports (id ASC) -> market_bars + check_runs + check_run_items + signal metadata map
     report_item_lookup = {}  # (report_id, asset_id) -> {bar_date, close}
     report_created_at = {}
     event_detail_map = {}  # dedup_key -> dict
@@ -623,21 +673,6 @@ def migrate_to_v6(db):
                         },
                     )
 
-    # 2b. Also fold any workspace_quotes OHLC rows into market_bars
-    if _table_exists(db, "workspace_quotes"):
-        for qrow in db.execute("SELECT id, asset, snapshot FROM workspace_quotes ORDER BY id ASC"):
-            try:
-                ablob = json.loads(qrow["asset"])
-                snap = json.loads(qrow["snapshot"])
-            except Exception:
-                continue
-            aid = ablob.get("id")
-            if aid:
-                ensure_asset_exists(aid, ablob)
-                _upsert_snapshot_bars(
-                    db, aid, snap, run_id=None, default_provider=ablob.get("provider") or "unknown"
-                )
-
     # 3. Migrate notifications
     notif_sent_by_run = {}
     if "notifications" in renamed:
@@ -674,9 +709,10 @@ def migrate_to_v6(db):
     for key, rid in all_event_keys.items():
         meta = event_detail_map.get(key)
         if not meta:
-            parts = key.split(":", 3)
-            if len(parts) == 4:
-                aid, edate, sver, ekind = parts
+            head = key.split(":", 2)
+            if len(head) == 3 and ":" in head[2]:
+                aid, edate, rest = head
+                sver, ekind = rest.rsplit(":", 1)
             else:
                 continue
             ensure_asset_exists(aid)

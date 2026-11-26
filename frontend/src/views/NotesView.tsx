@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Edit3, Pin, Plus, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { MarkdownView } from "../components/MarkdownView";
@@ -14,38 +14,73 @@ export function NotesView({ assets, initialNoteId, onNotesChanged }: NotesViewPr
   const [notes, setNotes] = useState<NoteRecord[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(initialNoteId);
   const [editing, setEditing] = useState(false);
+  const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
+  const [editingUpdatedAt, setEditingUpdatedAt] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
   const [draftMarkdown, setDraftMarkdown] = useState("");
   const [draftAssetIds, setDraftAssetIds] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [assetFilter, setAssetFilter] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const activeAssets = assets.filter((a) => !a.archived);
+  const activeAssets = useMemo(() => assets.filter((a) => !a.archived), [assets]);
 
-  async function load(selectId?: number | null) {
-    const res = await api.notes();
-    setNotes(res.notes);
-    if (selectId !== undefined) {
-      setSelectedId(selectId);
-    } else if (!selectedId && res.notes.length) {
-      setSelectedId(res.notes[0].id);
+  const load = useCallback(async (selectId?: number | null) => {
+    try {
+      const res = await api.notes();
+      setNotes(res.notes);
+      setError(null);
+      if (selectId !== undefined) {
+        setSelectedId(selectId ?? res.notes[0]?.id ?? null);
+      } else {
+        setSelectedId((prev) => {
+          if (prev && res.notes.some((n) => n.id === prev)) return prev;
+          return res.notes[0]?.id ?? null;
+        });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
-  }
+  }, []);
 
   useEffect(() => {
     load(initialNoteId ?? undefined);
-  }, [initialNoteId]);
+  }, [initialNoteId, load]);
 
-  const current = notes.find((n) => n.id === selectedId) ?? notes[0] ?? null;
+  const filteredNotes = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return notes.filter((n) => {
+      if (assetFilter && !(n.asset_ids || []).includes(assetFilter)) return false;
+      if (q) {
+        const hay = `${n.title} ${n.markdown}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [notes, searchQuery, assetFilter]);
+
+  const current =
+    filteredNotes.find((n) => n.id === selectedId) ??
+    notes.find((n) => n.id === selectedId) ??
+    filteredNotes[0] ??
+    null;
 
   function startNew() {
-    setSelectedId(null);
+    setEditingNoteId(null);
+    setEditingUpdatedAt(null);
+    setDraftTitle("");
     setDraftMarkdown("# 新投资备忘\n\n");
-    setDraftAssetIds([]);
+    setDraftAssetIds(assetFilter ? [assetFilter] : []);
     setEditing(true);
     setError(null);
   }
 
   function startEdit(note: NoteRecord) {
+    setSelectedId(note.id);
+    setEditingNoteId(note.id);
+    setEditingUpdatedAt(note.updated_at);
+    setDraftTitle(note.title);
     setDraftMarkdown(note.markdown);
     setDraftAssetIds(note.asset_ids || []);
     setEditing(true);
@@ -57,16 +92,22 @@ export function NotesView({ assets, initialNoteId, onNotesChanged }: NotesViewPr
     setBusy(true);
     setError(null);
     try {
-      const saved = current && selectedId !== null
-        ? await api.updateNote(current.id, {
-            markdown: draftMarkdown,
-            asset_ids: draftAssetIds,
-          })
-        : await api.createNote({
-            markdown: draftMarkdown,
-            asset_ids: draftAssetIds,
-          });
+      const saved =
+        editingNoteId !== null
+          ? await api.updateNote(editingNoteId, {
+              title: draftTitle.trim() || undefined,
+              markdown: draftMarkdown,
+              asset_ids: draftAssetIds,
+              updated_at: editingUpdatedAt ?? undefined,
+            })
+          : await api.createNote({
+              title: draftTitle.trim() || undefined,
+              markdown: draftMarkdown,
+              asset_ids: draftAssetIds,
+            });
       setEditing(false);
+      setEditingNoteId(null);
+      setEditingUpdatedAt(null);
       await load(saved.id);
       await onNotesChanged();
     } catch (err) {
@@ -78,43 +119,51 @@ export function NotesView({ assets, initialNoteId, onNotesChanged }: NotesViewPr
 
   async function handlePin(noteId: number) {
     setBusy(true);
+    setError(null);
     try {
       await api.pinNote(noteId);
       await load(noteId);
       await onNotesChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   }
 
-  async function handleDelete(noteId: number) {
+  async function handleDelete(note: NoteRecord) {
     if (!window.confirm("确定删除这篇备忘录吗？")) return;
     setBusy(true);
+    setError(null);
     try {
-      await api.deleteNote(noteId);
+      await api.deleteNote(note.id, note.updated_at);
+      setEditing(false);
+      setEditingNoteId(null);
       await load(null);
       await onNotesChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="flex-1 min-h-0 flex overflow-hidden">
-      {/* Left Note List */}
+    <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
+      {/* Left Note List (stacks cleanly on narrow <768px screens) */}
       <aside
-        className="w-64 shrink-0 border-r flex flex-col overflow-hidden"
+        className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r flex flex-col max-h-52 md:max-h-none overflow-hidden"
         style={{ background: "var(--app-panel)", borderColor: "var(--app-border)" }}
       >
         <div
-          className="px-3 py-2.5 border-b flex items-center justify-between"
+          className="px-3 py-2.5 border-b flex items-center justify-between gap-2"
           style={{ borderColor: "var(--app-border)" }}
         >
           <span className="text-xs font-bold">投资备忘录 ({notes.length})</span>
           <button
             type="button"
             onClick={startNew}
-            className="px-2 py-1 rounded-md text-xs font-medium inline-flex items-center gap-1 cursor-pointer"
+            className="px-2 py-1 rounded-md text-xs font-medium inline-flex items-center gap-1 cursor-pointer shrink-0"
             style={{ background: "var(--app-btn)", color: "var(--app-btn-text)" }}
           >
             <Plus className="w-3 h-3" />
@@ -122,9 +171,36 @@ export function NotesView({ assets, initialNoteId, onNotesChanged }: NotesViewPr
           </button>
         </div>
 
+        <div
+          className="px-2.5 py-2 border-b flex items-center gap-1.5"
+          style={{ borderColor: "var(--app-border)" }}
+        >
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="检索备忘…"
+            className="flex-1 min-w-0 h-7 px-2 rounded-md border text-xs bg-transparent outline-none"
+            style={{ background: "var(--app-bg)", borderColor: "var(--app-border)" }}
+          />
+          <select
+            value={assetFilter}
+            onChange={(e) => setAssetFilter(e.target.value)}
+            aria-label="按标的筛选备忘"
+            className="h-7 max-w-[96px] px-1.5 rounded-md border text-[11px]"
+            style={{ background: "var(--app-bg)", borderColor: "var(--app-border)" }}
+          >
+            <option value="">全部标的</option>
+            {activeAssets.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1">
-          {notes.map((n) => {
-            const active = current?.id === n.id && selectedId !== null;
+          {filteredNotes.map((n) => {
+            const active = current?.id === n.id && !editing;
             return (
               <button
                 key={n.id}
@@ -132,6 +208,8 @@ export function NotesView({ assets, initialNoteId, onNotesChanged }: NotesViewPr
                 onClick={() => {
                   setSelectedId(n.id);
                   setEditing(false);
+                  setEditingNoteId(null);
+                  setError(null);
                 }}
                 className="text-left p-2.5 rounded-lg border flex flex-col gap-1 cursor-pointer"
                 style={{
@@ -145,7 +223,10 @@ export function NotesView({ assets, initialNoteId, onNotesChanged }: NotesViewPr
                   )}
                   <span className="text-xs font-semibold truncate">{n.title}</span>
                 </div>
-                <div className="flex items-center justify-between text-[10.5px]" style={{ color: "var(--app-faint)" }}>
+                <div
+                  className="flex items-center justify-between text-[10.5px]"
+                  style={{ color: "var(--app-faint)" }}
+                >
                   <span className="truncate">
                     {n.assets?.length
                       ? `关联：${n.assets.map((a) => a.label).join("、")}`
@@ -158,30 +239,44 @@ export function NotesView({ assets, initialNoteId, onNotesChanged }: NotesViewPr
               </button>
             );
           })}
-          {!notes.length && (
-            <div className="text-center py-8 text-xs" style={{ color: "var(--app-muted)" }}>
-              暂无备忘录，点击右上角新建。
+          {!filteredNotes.length && (
+            <div className="text-center py-6 text-xs" style={{ color: "var(--app-muted)" }}>
+              {notes.length ? "无匹配备忘录" : "暂无备忘录，点击右上角新建。"}
             </div>
           )}
         </div>
       </aside>
 
       {/* Right Reading / Editing Canvas */}
-      <main className="flex-1 overflow-y-auto p-6">
+      <main className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6">
         <div
-          className="max-w-3xl mx-auto rounded-2xl border p-6"
+          className="max-w-3xl mx-auto rounded-2xl border p-4 sm:p-6"
           style={{ background: "var(--app-panel)", borderColor: "var(--app-border)" }}
         >
+          {error && !editing && (
+            <div
+              role="alert"
+              className="mb-4 p-2.5 rounded-lg text-xs"
+              style={{ background: "var(--app-warn-soft)", color: "var(--app-warn)" }}
+            >
+              {error}
+            </div>
+          )}
+
           {editing ? (
             <form onSubmit={handleSave} className="flex flex-col gap-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
                 <h2 className="text-base font-bold">
-                  {selectedId !== null ? "编辑备忘录" : "新建备忘录"}
+                  {editingNoteId !== null ? "编辑备忘录" : "新建备忘录"}
                 </h2>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setEditing(false)}
+                    onClick={() => {
+                      setEditing(false);
+                      setEditingNoteId(null);
+                      setError(null);
+                    }}
                     className="px-3 py-1.5 rounded-lg border text-xs cursor-pointer"
                     style={{ borderColor: "var(--app-border)", color: "var(--app-muted)" }}
                   >
@@ -200,12 +295,24 @@ export function NotesView({ assets, initialNoteId, onNotesChanged }: NotesViewPr
 
               {error && (
                 <div
+                  role="alert"
                   className="p-2.5 rounded-lg text-xs"
                   style={{ background: "var(--app-warn-soft)", color: "var(--app-warn)" }}
                 >
                   {error}
                 </div>
               )}
+
+              <label className="flex flex-col gap-1 text-xs">
+                <span style={{ color: "var(--app-muted)" }}>标题（留空则沿用首行标题）</span>
+                <input
+                  value={draftTitle}
+                  onChange={(e) => setDraftTitle(e.target.value)}
+                  placeholder="可选自定义标题…"
+                  className="px-3 py-2 rounded-lg border bg-transparent text-sm outline-none"
+                  style={{ borderColor: "var(--app-border-strong)" }}
+                />
+              </label>
 
               <div>
                 <div className="text-xs mb-1.5" style={{ color: "var(--app-muted)" }}>
@@ -315,7 +422,7 @@ export function NotesView({ assets, initialNoteId, onNotesChanged }: NotesViewPr
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => handleDelete(current.id)}
+                    onClick={() => handleDelete(current)}
                     className="px-2.5 py-1 rounded-md border text-xs inline-flex items-center gap-1 cursor-pointer"
                     style={{ borderColor: "var(--app-border)", color: "var(--app-up)" }}
                   >

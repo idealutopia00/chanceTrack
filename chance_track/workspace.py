@@ -71,7 +71,7 @@ def compute_asset_chart(path, asset_id, *, strategies_override=None):
     assets_by_id = {a["id"]: a for a in config["assets"]}
     asset = assets_by_id.get(asset_id)
     if not asset:
-        raise ValueError("标的不存在")
+        raise LookupError("标的不存在")
 
     snapshot = storage.snapshot_from_bars(path, asset)
     latest_run_items = storage.latest_run_items_by_asset(path)
@@ -296,7 +296,7 @@ def update_asset(path, asset_id, payload, *, fetcher=None):
         raise ConfigurationConflict("配置已修改，请重新加载后重试")
     asset = next((a for a in config["assets"] if a["id"] == asset_id), None)
     if not asset:
-        raise ValueError("标的不存在")
+        raise LookupError("标的不存在")
     for key in ("priority", "watchlisted", "enabled", "archived"):
         if key in payload:
             if type(payload[key]) is not bool:
@@ -343,7 +343,7 @@ def update_asset_monitoring(path, asset_id, payload):
         raise ConfigurationConflict("配置已修改，请重新加载后重试")
     asset = next((a for a in config["assets"] if a["id"] == asset_id), None)
     if not asset:
-        raise ValueError("标的不存在")
+        raise LookupError("标的不存在")
 
     action = payload["action"]
     saved_strategy_id = None

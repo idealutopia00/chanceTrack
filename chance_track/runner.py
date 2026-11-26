@@ -53,7 +53,10 @@ def is_running(db_path):
 
 def retry_due(previous, now):
     return (
-        any(item["status"] == "error" for item in previous.get("items", []))
+        any(
+            item["status"] == "error" or item.get("failed_benchmark")
+            for item in previous.get("items", [])
+        )
         and previous.get("attempt", 1) < MAX_ATTEMPTS
         and now.time() < RETRY_CUTOFF
         and now >= datetime.fromisoformat(previous["created_at"]) + RETRY_INTERVAL
@@ -201,6 +204,16 @@ def _build_notification_payload(db_path, run_record, config):
         if item["status"] in ("ok", "warning"):
             snap = storage.snapshot_from_bars(db_path, asset)
             if snap:
+                refs = {}
+                for benchmark_id in relative_benchmarks(config["strategies"], asset):
+                    peer = assets_by_id.get(benchmark_id)
+                    if not peer:
+                        continue
+                    peer_snap = storage.snapshot_from_bars(db_path, peer)
+                    if peer_snap:
+                        refs[benchmark_id] = benchmark_context(peer_snap)
+                if refs:
+                    snap = {**snap, "benchmarks": refs}
                 res = analyze(snap, run_record["day"])
                 strats, _, _ = evaluate(snap, config["strategies"], asset, run_record["day"])
                 res["strategies"] = strats
@@ -300,7 +313,7 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
     for asset in assets:
         old = previous_items.get(asset["id"])
         item = {"asset": asset, "checked_at": now.isoformat(), "carried_forward": False}
-        if old and old["status"] in ("ok", "warning"):
+        if old and old["status"] in ("ok", "warning") and not old.get("failed_benchmark"):
             item.update(
                 carried_forward=True,
                 origin_run_id=old.get("origin_run_id") or previous["id"],
@@ -311,6 +324,7 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
             try:
                 snapshot = market_snapshot(asset)
                 references = dict(snapshot.get("benchmarks", {}))
+                benchmark_errors = {}
                 for benchmark_id in relative_benchmarks(config["strategies"], asset):
                     frozen = references.get(benchmark_id)
                     if frozen and not frozen.get("error"):
@@ -320,11 +334,14 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                             market_snapshot(assets_by_id[benchmark_id])
                         )
                     except Exception as exc:
-                        references[benchmark_id] = {
-                            "error": f"基准 {benchmark_id} 采集失败：{exc}"
-                        }
+                        err_msg = f"基准 {benchmark_id} 采集失败：{exc}"
+                        references[benchmark_id] = {"error": err_msg}
+                        benchmark_errors[benchmark_id] = err_msg
                 if references:
                     snapshot = {**snapshot, "benchmarks": references}
+                if benchmark_errors:
+                    item["failed_benchmark"] = True
+                    item["benchmark_errors"] = benchmark_errors
                 item["snapshot"] = snapshot
                 item["result"] = analyze(snapshot, day)
                 strategies_out, layers, calculated = evaluate(

@@ -192,6 +192,8 @@ def validate_configuration(config):
             raise ValueError("未知备用源可用时段模式")
 
     for a in config["assets"]:
+        if a.get("archived"):
+            continue
         if (
             not a.get("label")
             or not a.get("code")

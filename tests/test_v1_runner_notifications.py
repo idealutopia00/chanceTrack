@@ -196,3 +196,111 @@ def test_migrate_etf_targets_on_schema_v6(tmp_path):
     assert "macd" in by_id["gold_etf_518800"]["strategies"]
     # Second run is a clean no-op
     assert migrate_etf_targets(db_path, validate_live=False)["changed"] is False
+
+
+def test_retry_cap_cutoff_late_flag_and_shared_lock(tmp_path):
+    """Ported from v0.9 test_loop: retry cap, 15:00 cutoff, late check flag, and CheckInProgress lock."""
+    from datetime import datetime
+    from chance_track.data import TZ
+    from chance_track.runner import CheckInProgress, check_lock, retry_due
+
+    db_path = tmp_path / "loop.sqlite3"
+    cfg = load_configuration(db_path)
+    pair = [{**a, "activated": {}} for a in cfg["assets"][:2]]
+
+    def fail_second(asset, _day):
+        if asset["id"] == pair[1]["id"]:
+            raise ConnectionError("down")
+        return {**sample(), "code": asset["code"], "provider": asset["provider"]}
+
+    # Attempt 1 at 14:35 -> 1 ok, 1 error
+    r1 = run(db_path, pair, scheduled=True, send=False, now=NOW, fetcher=fail_second)
+    assert storage.get_check_run(db_path, r1)["attempt"] == 1
+    # Too soon (3m later): no retry
+    assert run(db_path, pair, scheduled=True, send=False, now=NOW + timedelta(minutes=3), fetcher=fail_second) == r1
+    # Attempt 2 at 14:41
+    r2 = run(db_path, pair, scheduled=True, send=False, now=NOW + timedelta(minutes=6), fetcher=fail_second)
+    assert storage.get_check_run(db_path, r2)["attempt"] == 2
+    # Attempt 3 at 14:47 (hits MAX_ATTEMPTS=3)
+    r3 = run(db_path, pair, scheduled=True, send=False, now=NOW + timedelta(minutes=12), fetcher=fail_second)
+    assert storage.get_check_run(db_path, r3)["attempt"] == 3
+    # Attempt 4 at 14:53 must NOT run (cap reached)
+    assert run(db_path, pair, scheduled=True, send=False, now=NOW + timedelta(minutes=18), fetcher=fail_second) == r3
+
+    # Cutoff at 15:00 blocks further retries
+    run2 = storage.get_check_run(db_path, r2)
+    assert retry_due(run2, datetime(2026, 11, 17, 15, 0, tzinfo=TZ)) is False
+
+    # Late first scheduled check at 15:05 marks late=True
+    db_late = tmp_path / "late.sqlite3"
+    load_configuration(db_late)
+    r_late = run(
+        db_late,
+        [pair[0]],
+        scheduled=True,
+        send=False,
+        now=datetime(2026, 11, 17, 15, 5, tzinfo=TZ),
+        fetcher=lambda *_: sample(),
+    )
+    assert storage.get_check_run(db_late, r_late)["late"] is True
+
+    # Shared lock prevents concurrent run
+    with check_lock(db_path):
+        with pytest.raises(CheckInProgress):
+            run(db_path, [pair[0]], send=False, now=NOW, fetcher=lambda *_: sample())
+
+
+def test_failed_benchmark_triggers_retry_and_recovers(tmp_path):
+    """Regression for H1 + Gemini High #2: failed relative_strength benchmark triggers retry."""
+    db_path = tmp_path / "bench_retry.sqlite3"
+    cfg = load_configuration(db_path)
+    rs_rule = {
+        "id": "rs_ndx",
+        "name": "纳指相对标普",
+        "kind": "relative_strength",
+        "group": "相对强弱",
+        "params": {"trend": 20, "relative_period": 10, "benchmark": "sp500"},
+    }
+    cfg["strategies"].append(rs_rule)
+    for a in cfg["assets"]:
+        if a["id"] == "nasdaq100":
+            a["strategies"] = ["rs_ndx"]
+            a["activated"] = {}
+        elif a["id"] == "sp500":
+            a["activated"] = {}
+    save_configuration(db_path, cfg, cfg["version"], validate_new=False)
+    cfg = load_configuration(db_path)
+    pair = [a for a in cfg["assets"] if a["id"] in ("sp500", "nasdaq100")]
+
+    calls = []
+
+    def flaky_bench(asset, _day):
+        calls.append(asset["id"])
+        if asset["id"] == "sp500" and calls.count("sp500") == 1:
+            raise ConnectionError("benchmark down")
+        snap = sample()
+        snap["code"] = asset["code"]
+        snap["provider"] = "yahoo"
+        snap["quote_currency"] = "USD"
+        return snap
+
+    r1 = run(db_path, pair, scheduled=True, send=False, now=NOW, fetcher=flaky_bench)
+    run1 = storage.get_check_run(db_path, r1)
+    by_id1 = {i["asset_id"]: i for i in run1["items"]}
+    assert by_id1["nasdaq100"]["status"] == "ok"
+    assert by_id1["nasdaq100"].get("failed_benchmark") is True
+
+    # Retry 6 minutes later must recover sp500 and re-evaluate nasdaq100 without failed_benchmark
+    r2 = run(
+        db_path,
+        pair,
+        scheduled=True,
+        send=False,
+        now=NOW + timedelta(minutes=6),
+        fetcher=flaky_bench,
+    )
+    assert r2 > r1
+    run2 = storage.get_check_run(db_path, r2)
+    by_id2 = {i["asset_id"]: i for i in run2["items"]}
+    assert by_id2["sp500"]["status"] == "ok"
+    assert not by_id2["nasdaq100"].get("failed_benchmark")

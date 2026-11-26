@@ -22,6 +22,11 @@ export function MarkdownView({ markdown, dialogTitle }: MarkdownViewProps) {
               <table {...props}>{children}</table>
             </div>
           ),
+          a: ({ children, href, ...props }) => (
+            <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+              {children}
+            </a>
+          ),
           img: () => null,
         }}
       >

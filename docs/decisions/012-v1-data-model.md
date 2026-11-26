@@ -76,6 +76,7 @@ CREATE TABLE market_bars (
   volume REAL,
   volume_unit TEXT,
   volume_multiplier REAL,
+  quote_currency TEXT,
   is_provisional INTEGER NOT NULL DEFAULT 0,
   provider TEXT NOT NULL,
   fetched_at TEXT NOT NULL,
@@ -113,7 +114,7 @@ CREATE TABLE asset_strategies (
   asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
   strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE RESTRICT,
   position INTEGER NOT NULL,
-  activated_at TEXT NOT NULL,
+  activated_at TEXT,
   PRIMARY KEY (asset_id, strategy_id),
   UNIQUE (asset_id, position)
 );
@@ -147,7 +148,7 @@ CREATE INDEX idx_check_runs_day_kind ON check_runs(day, kind, id DESC);
 CREATE TABLE check_run_items (
   run_id INTEGER NOT NULL REFERENCES check_runs(id) ON DELETE CASCADE,
   asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-  status TEXT NOT NULL CHECK (status IN ('ok', 'warning', 'error')),
+  status TEXT NOT NULL CHECK (status IN ('ok', 'warning', 'error', 'disabled')),
   bar_date TEXT,
   close REAL,
   is_provisional INTEGER NOT NULL DEFAULT 0,
@@ -258,6 +259,8 @@ CREATE INDEX idx_chart_templates_tid ON chart_templates(template_id, id DESC);
 
 所有前端交互通过统一的 `/api/v1/*` JSON 接口完成，写操作继续使用本机 CSRF Token 保护（`X-CSRF-Token` 请求头），服务端仍只监听 `127.0.0.1:8765`：
 
+- 定时自动重试（14:35 起 5 分钟间隔、最多 3 次、15:00 截止）在出现单标的采集失败（`status = 'error'`）或相对强弱基准失败（`fetch_meta_json.failed_benchmark = true`）时触发；已成功的标的从 `market_bars` 复用当日行情，重试始终基于当前生效配置与未归档观察列表执行。
+
 | 端点 | 方法 | 职责 |
 | --- | --- | --- |
 | `/api/v1/bootstrap` | `GET` | 启动态：CSRF token、配置版本、全量标的列表（含最新价/涨跌幅/状态/事件计数）、策略库、模板、置顶备忘、下次自动检查时间、当前检查运行态 |
@@ -265,15 +268,18 @@ CREATE INDEX idx_chart_templates_tid ON chart_templates(template_id, id DESC);
 | `/api/v1/assets` | `POST` | 从目录加入或手动添加标的（启用前联网校验真实行情并将日线入库 `market_bars`） |
 | `/api/v1/assets/{id}` | `PATCH` | 更新名称、分组、启停、归档、自选、重点关注 |
 | `/api/v1/assets/order` | `PUT` | 批量更新自选标的顺序 |
-| `/api/v1/assets/{id}/bars` | `GET` | 读取规范化日线（支持 `period=day|week`）+ 当前绑定策略的指标图层、策略事件与该标的历史决策标记 |
+| `/api/v1/assets/{id}/bars` | `GET` | 读取规范化日线 + 当前绑定策略的指标图层、带 `date`/`direction` 的策略事件与该标的历史决策标记（周线视图由前端聚合） |
+| `/api/v1/assets/{id}/quote` | `POST` | 单标的即时拉取最新行情并写入 `market_bars` |
 | `/api/v1/assets/{id}/preview` | `POST` | 基于 `market_bars` 纯计算临时探索指标与信号，零写入、零网络请求 |
 | `/api/v1/assets/{id}/monitoring` | `PUT` | 绑定/解绑/新建/共享更新该标的的自动监测策略（携带乐观锁版本，返回受影响标的） |
-| `/api/v1/assets/{id}/decisions` | `GET` / `POST` | 读取该标的跨时间线决策 / 追加保存新决策（含可选探索依据重算存证） |
-| `/api/v1/runs` | `GET` / `POST` | 查询近期检查批次与通知状态 / 触发立即检查（返回异步状态供轮询） |
-| `/api/v1/signals` | `GET` | 跨标的信号流（支持筛选：仅确认/盘中待确认/按标的/按策略/时间范围） |
-| `/api/v1/strategies` | `GET` / `POST` / `PUT` / `DELETE` | 规则库 CRUD、副本、等价合并预览与安全删除 |
+| `/api/v1/assets/{id}/decisions` | `GET` / `POST` | 读取该标的跨时间线决策 / 追加保存新决策（校验 ISO 日期与有限价格，含可选探索依据重算存证） |
+| `/api/v1/decisions/{id}/evidence` | `GET` | 读取某条决策关联的独立探索依据快照 |
+| `/api/v1/runs` | `GET` / `POST` | 查询近期检查批次与通知状态 / 触发立即检查（支持同步或 `async: true`） |
+| `/api/v1/runs/{id}` | `GET` | 查询单次检查批次详情与各标的结果 |
+| `/api/v1/signals` | `GET` | 跨标的信号流与准确总数 `total`（支持按 `asset_id` / `strategy_id` / `limit` 查询） |
+| `/api/v1/strategies` | `GET` / `POST` | 规则库查询与 `op=upsert|delete|merge` 维护（携带乐观锁版本号） |
 | `/api/v1/templates` | `GET` / `POST` | 指标模板列表与版本化保存 |
 | `/api/v1/notes` | `GET` / `POST` | 备忘录列表（支持按 `asset_id` 筛选）与新建 |
-| `/api/v1/notes/{id}` | `GET` / `PATCH` / `DELETE` | 读、改（含更新关联标的）、删 |
+| `/api/v1/notes/{id}` | `GET` / `PATCH` / `DELETE` | 读、改（含更新关联标的、保留未传标题、支持 `updated_at` 乐观锁）、删（支持 `updated_at` 乐观锁） |
 | `/api/v1/notes/{id}/pin` | `POST` | 设为全局置顶备忘 |
 | `/api/runtime-health` | `GET` | 保持兼容，供 `install_launchd.py` 验收运行副本 SHA |

@@ -192,3 +192,99 @@ def test_monitoring_strategies_templates_and_asset_linked_notes(tmp_path):
 
     # Delete linked note
     assert client.delete(f"/api/v1/notes/{n2['id']}", headers=headers).status_code == 200
+
+
+def test_chart_events_include_date_and_direction_and_relative_strength_works_from_bars(tmp_path):
+    _, client, csrf, _ = _setup(tmp_path)
+    headers = {"x-csrf-token": csrf}
+
+    bars = client.get("/api/v1/assets/sp500/bars")
+    assert bars.status_code == 200
+    events = bars.json()["result"]["chart"]["strategy_events"]
+    assert len(events) >= 1
+    assert events[0]["date"] == events[0]["time"]
+    assert events[0]["direction"] in ("bullish", "bearish", "neutral")
+
+    # Unknown asset returns 404 (not 400)
+    assert client.get("/api/v1/assets/does_not_exist/bars").status_code == 404
+
+    # relative_strength evaluated from market_bars must have quote_currency='USD'
+    rs_prev = client.post(
+        "/api/v1/assets/nasdaq100/preview",
+        headers=headers,
+        json={
+            "strategies": [
+                {
+                    "id": "exp_rs",
+                    "name": "纳指相对标普",
+                    "kind": "relative_strength",
+                    "params": {"trend": 20, "relative_period": 10, "benchmark": "sp500"},
+                }
+            ]
+        },
+    )
+    assert rs_prev.status_code == 200
+    strat = rs_prev.json()["result"]["strategies"][0]
+    assert strat["state"] == "ready", strat["detail"]
+
+
+def test_notes_optimistic_lock_title_preservation_decision_validation_and_run_lock(tmp_path):
+    db_path, client, csrf, _ = _setup(tmp_path)
+    headers = {"x-csrf-token": csrf}
+
+    # Note custom title preserved on edit without title, and stale updated_at returns 409
+    created = client.post(
+        "/api/v1/notes",
+        headers=headers,
+        json={"title": "自定义标题", "markdown": "## 副标题\n\n初始正文"},
+    ).json()
+    assert created["title"] == "自定义标题"
+
+    stale_patch = client.patch(
+        f"/api/v1/notes/{created['id']}",
+        headers=headers,
+        json={"markdown": "## 副标题\n\n冲突写入", "updated_at": "2000-01-01T00:00:00+08:00"},
+    )
+    assert stale_patch.status_code == 409
+
+    ok_patch = client.patch(
+        f"/api/v1/notes/{created['id']}",
+        headers=headers,
+        json={"markdown": "## 副标题\n\n更新正文", "updated_at": created["updated_at"]},
+    )
+    assert ok_patch.status_code == 200
+    updated_note = ok_patch.json()
+    assert updated_note["title"] == "自定义标题"
+
+    stale_del = client.delete(
+        f"/api/v1/notes/{created['id']}",
+        params={"updated_at": "2000-01-01T00:00:00+08:00"},
+        headers=headers,
+    )
+    assert stale_del.status_code == 409
+    ok_del = client.delete(
+        f"/api/v1/notes/{created['id']}",
+        params={"updated_at": updated_note["updated_at"]},
+        headers=headers,
+    )
+    assert ok_del.status_code == 200
+
+    # Invalid decision bar_date rejected with 400
+    bad_dec = client.post(
+        "/api/v1/assets/sp500/decisions",
+        headers=headers,
+        json={"action": "观望", "execution": "未执行", "note": "", "bar_date": "not-a-date"},
+    )
+    assert bad_dec.status_code == 400
+
+    # Signals API returns accurate total even with limit=1
+    sig_res = client.get("/api/v1/signals?limit=1").json()
+    assert len(sig_res["signals"]) == 1
+    assert sig_res["total"] >= len(sig_res["signals"])
+
+    # Busy check lock returns 409 on POST /api/v1/runs
+    from chance_track.runner import check_lock
+
+    with check_lock(db_path):
+        busy = client.post("/api/v1/runs", headers=headers, json={"async": False})
+        assert busy.status_code == 409

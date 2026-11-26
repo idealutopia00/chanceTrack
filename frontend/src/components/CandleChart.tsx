@@ -65,6 +65,12 @@ const CHART_PALETTE = {
   },
 } as const;
 
+const EMPTY_CANDLES: CandleBar[] = [];
+const EMPTY_OVERLAYS: NonNullable<NonNullable<AssetChartPayload["result"]>["chart"]["overlays"]> = [];
+const EMPTY_MACD: NonNullable<NonNullable<AssetChartPayload["result"]>["chart"]["macd"]> = [];
+const EMPTY_EVENTS: ChartEvent[] = [];
+const EMPTY_DECISIONS: DecisionRecord[] = [];
+
 export function CandleChart({
   data,
   period,
@@ -79,14 +85,15 @@ export function CandleChart({
   const macdContainerRef = useRef<HTMLDivElement | null>(null);
   const mainChartRef = useRef<IChartApi | null>(null);
   const macdChartRef = useRef<IChartApi | null>(null);
+  const candleSeriesRef = useRef<ReturnType<IChartApi["addSeries"]> | null>(null);
   const [hoverBar, setHoverBar] = useState<CandleBar | null>(null);
 
   const chart = data.result?.chart;
-  const rawCandles = chart?.candles ?? [];
-  const rawOverlays = chart?.overlays ?? [];
-  const rawMacd = chart?.macd ?? [];
-  const rawEvents = chart?.strategy_events ?? [];
-  const decisions = data.decisions ?? [];
+  const rawCandles = chart?.candles ?? EMPTY_CANDLES;
+  const rawOverlays = chart?.overlays ?? EMPTY_OVERLAYS;
+  const rawMacd = chart?.macd ?? EMPTY_MACD;
+  const rawEvents = chart?.strategy_events ?? EMPTY_EVENTS;
+  const decisions = data.decisions ?? EMPTY_DECISIONS;
 
   const computed = useMemo(() => {
     if (period === "week") {
@@ -150,6 +157,7 @@ export function CandleChart({
       wickUpColor: upCol,
       wickDownColor: downCol,
     });
+    candleSeriesRef.current = candleSeries;
     candleSeries.setData(
       computed.candles.map((c) => ({
         time: c.time as Time,
@@ -211,14 +219,30 @@ export function CandleChart({
 
     if (showEvents) {
       for (const ev of rawEvents) {
-        const mapped = computed.dayToWeekTime.get(ev.date) ?? ev.date;
+        const evDate = ev.date || ev.time;
+        if (!evDate) continue;
+        const mapped = computed.dayToWeekTime.get(evDate) ?? evDate;
         if (!barSet.has(mapped)) continue;
-        const isBull = /金叉|突破|上穿|转强|回归/.test(ev.event);
+        const dir =
+          ev.direction ??
+          (/金叉|向上突破|下轨外回归|短线回调|回调修复|释放 · 向上|相对转强/.test(ev.event)
+            ? "bullish"
+            : /死叉|向下突破|上轨外回归|退出|失效|释放 · 向下/.test(ev.event)
+              ? "bearish"
+              : "neutral");
+        const isBull = dir === "bullish";
+        const isBear = dir === "bearish";
         markers.push({
           time: mapped as Time,
           position: isBull ? "belowBar" : "aboveBar",
-          color: ev.provisional ? warnCol : isBull ? upCol : downCol,
-          shape: isBull ? "arrowUp" : "arrowDown",
+          color: ev.provisional
+            ? warnCol
+            : isBull
+              ? upCol
+              : isBear
+                ? downCol
+                : blueCol,
+          shape: isBull ? "arrowUp" : isBear ? "arrowDown" : "circle",
           text: ev.event.slice(0, 6),
         });
       }
@@ -334,6 +358,7 @@ export function CandleChart({
     return () => {
       mainChart.remove();
       mainChartRef.current = null;
+      candleSeriesRef.current = null;
       if (macdChart) {
         macdChart.remove();
         macdChartRef.current = null;
@@ -355,6 +380,14 @@ export function CandleChart({
     };
     mainChartRef.current?.applyOptions(themeOpts);
     macdChartRef.current?.applyOptions(themeOpts);
+    candleSeriesRef.current?.applyOptions({
+      upColor: pal.up,
+      downColor: pal.down,
+      borderUpColor: pal.up,
+      borderDownColor: pal.down,
+      wickUpColor: pal.up,
+      wickDownColor: pal.down,
+    });
   }, [resolvedTheme]);
 
   // Jump viewport to focusDate when user clicks a signal or historical decision

@@ -9,18 +9,25 @@ interface SignalsViewProps {
 
 export function SignalsView({ onJumpToAsset }: SignalsViewProps) {
   const [signals, setSignals] = useState<SignalEventRecord[]>([]);
+  const [totalSignals, setTotalSignals] = useState(0);
   const [runs, setRuns] = useState<CheckRunSummary[]>([]);
   const [filter, setFilter] = useState<"all" | "notified" | "fresh">("all");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setError(null);
     Promise.all([api.signals({ limit: 150 }), api.runs(20)])
       .then(([sRes, rRes]) => {
         if (!cancelled) {
           setSignals(sRes.signals);
+          setTotalSignals(sRes.total ?? sRes.signals.length);
           setRuns(rRes.runs);
         }
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -75,6 +82,16 @@ export function SignalsView({ onJumpToAsset }: SignalsViewProps) {
         </div>
       </div>
 
+      {error && (
+        <div
+          role="alert"
+          className="px-4 py-2.5 rounded-lg text-xs"
+          style={{ background: "var(--app-warn-soft)", color: "var(--app-warn)" }}
+        >
+          加载失败：{error}
+        </div>
+      )}
+
       {/* KPI Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 tabular">
         <div
@@ -84,7 +101,7 @@ export function SignalsView({ onJumpToAsset }: SignalsViewProps) {
           <div className="text-xs" style={{ color: "var(--app-muted)" }}>
             累计记录信号
           </div>
-          <div className="text-xl font-bold mt-1">{signals.length}</div>
+          <div className="text-xl font-bold mt-1">{totalSignals}</div>
         </div>
         <div
           className="p-3.5 rounded-xl border"
@@ -161,7 +178,15 @@ export function SignalsView({ onJumpToAsset }: SignalsViewProps) {
                 filtered.map((s) => (
                   <tr
                     key={s.id}
+                    tabIndex={0}
+                    role="button"
                     onClick={() => onJumpToAsset(s.asset_id, s.event_date)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onJumpToAsset(s.asset_id, s.event_date);
+                      }
+                    }}
                     className="border-b cursor-pointer transition-colors hover:bg-[var(--app-hover)]"
                     style={{ borderColor: "var(--app-border)" }}
                   >

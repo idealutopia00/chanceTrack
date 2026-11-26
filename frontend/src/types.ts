@@ -109,8 +109,11 @@ export interface StrategyResult {
 }
 
 export interface ChartEvent {
-  date: string;
+  date?: string;
+  time?: string;
   event: string;
+  direction?: "bullish" | "bearish" | "neutral";
+  name?: string;
   strategy_id?: string;
   strategy_name?: string;
   kind?: string;

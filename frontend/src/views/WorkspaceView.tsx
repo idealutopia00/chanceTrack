@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BookOpen,
@@ -95,6 +95,19 @@ export function WorkspaceView({
   );
 
   const currentAssetId = selectedAssetId ?? activeAssets[0]?.id ?? null;
+  const activeAssetRef = useRef<string | null>(currentAssetId);
+  activeAssetRef.current = currentAssetId;
+  const requestSeqRef = useRef(0);
+
+  // Close indicator exploration popover on Escape
+  useEffect(() => {
+    if (!showIndicatorMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowIndicatorMenu(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showIndicatorMenu]);
 
   // Load formal chart bars when asset changes
   useEffect(() => {
@@ -102,6 +115,7 @@ export function WorkspaceView({
       setChartData(null);
       return;
     }
+    const seq = ++requestSeqRef.current;
     let cancelled = false;
     setLoadingChart(true);
     setChartError(null);
@@ -110,13 +124,15 @@ export function WorkspaceView({
     api
       .assetBars(currentAssetId)
       .then((res) => {
-        if (!cancelled) setChartData(res);
+        if (!cancelled && seq === requestSeqRef.current) setChartData(res);
       })
       .catch((e) => {
-        if (!cancelled) setChartError(e instanceof Error ? e.message : String(e));
+        if (!cancelled && seq === requestSeqRef.current) {
+          setChartError(e instanceof Error ? e.message : String(e));
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoadingChart(false);
+        if (!cancelled && seq === requestSeqRef.current) setLoadingChart(false);
       });
     return () => {
       cancelled = true;
@@ -153,35 +169,49 @@ export function WorkspaceView({
           : 0
         : Math.max(0, Math.min(strategyEvents.length - 1, eventCursor + delta));
     setEventCursor(nextIdx);
-    onFocusDateChange(strategyEvents[nextIdx].date);
+    const target = strategyEvents[nextIdx];
+    const targetDate = target.date || target.time || null;
+    if (targetDate) onFocusDateChange(targetDate);
   }
 
   async function runExplorationPreview(nextRules: StrategyRule[]) {
     if (!currentAssetId) return;
+    const reqAssetId = currentAssetId;
+    const seq = ++requestSeqRef.current;
     setBusyAction("preview");
     setStatusMessage(null);
     try {
-      const res = await api.previewAsset(currentAssetId, nextRules);
+      const res = await api.previewAsset(reqAssetId, nextRules);
+      if (activeAssetRef.current !== reqAssetId || seq !== requestSeqRef.current) return;
       setExplorationRules(nextRules);
       setChartData(res);
       setStatusMessage("探索预览已更新 · 无正式通知与数据库副作用");
     } catch (e) {
-      setStatusMessage(e instanceof Error ? e.message : String(e));
+      if (activeAssetRef.current === reqAssetId) {
+        setStatusMessage(e instanceof Error ? e.message : String(e));
+      }
     } finally {
-      setBusyAction(null);
+      if (seq === requestSeqRef.current) setBusyAction(null);
     }
   }
 
   async function restoreFormalChart() {
     if (!currentAssetId) return;
+    const reqAssetId = currentAssetId;
+    const seq = ++requestSeqRef.current;
     setBusyAction("restore");
     try {
-      const res = await api.assetBars(currentAssetId);
+      const res = await api.assetBars(reqAssetId);
+      if (activeAssetRef.current !== reqAssetId || seq !== requestSeqRef.current) return;
       setExplorationRules(null);
       setChartData(res);
       setStatusMessage("已还原正式监测图表");
+    } catch (e) {
+      if (activeAssetRef.current === reqAssetId) {
+        setStatusMessage(e instanceof Error ? e.message : String(e));
+      }
     } finally {
-      setBusyAction(null);
+      if (seq === requestSeqRef.current) setBusyAction(null);
     }
   }
 
@@ -197,50 +227,63 @@ export function WorkspaceView({
 
   async function handleToggleMonitor(strategyId: string, bound: boolean) {
     if (!currentAssetId) return;
+    const reqAssetId = currentAssetId;
+    const seq = ++requestSeqRef.current;
     setBusyAction(`mon:${strategyId}`);
     setStatusMessage(null);
     try {
-      await api.updateMonitoring(currentAssetId, {
+      await api.updateMonitoring(reqAssetId, {
         version,
         action: bound ? "unbind" : "bind",
         strategy_id: strategyId,
       });
       await onRefreshBootstrap();
-      const refreshed = await api.assetBars(currentAssetId);
+      const refreshed = await api.assetBars(reqAssetId);
+      if (activeAssetRef.current !== reqAssetId || seq !== requestSeqRef.current) return;
       setChartData(refreshed);
       setExplorationRules(null);
       setStatusMessage(bound ? "已取消该标的自动监测" : "已加入该标的自动监测（下次检查生效）");
     } catch (e) {
-      setStatusMessage(e instanceof Error ? e.message : String(e));
+      if (activeAssetRef.current === reqAssetId) {
+        setStatusMessage(e instanceof Error ? e.message : String(e));
+      }
     } finally {
-      setBusyAction(null);
+      if (seq === requestSeqRef.current) setBusyAction(null);
     }
   }
 
   async function handleRefreshSingleQuote() {
     if (!currentAssetId) return;
+    const reqAssetId = currentAssetId;
+    const seq = ++requestSeqRef.current;
     setBusyAction("quote");
     setStatusMessage(null);
     try {
-      const res = await api.refreshAssetQuote(currentAssetId);
+      const res = await api.refreshAssetQuote(reqAssetId);
+      if (activeAssetRef.current !== reqAssetId || seq !== requestSeqRef.current) return;
       setChartData(res);
       setExplorationRules(null);
       await onRefreshBootstrap();
-      setStatusMessage("已刷新当前标的规范化日线");
+      if (activeAssetRef.current === reqAssetId) {
+        setStatusMessage("已刷新当前标的规范化日线");
+      }
     } catch (e) {
-      setStatusMessage(e instanceof Error ? e.message : String(e));
+      if (activeAssetRef.current === reqAssetId) {
+        setStatusMessage(e instanceof Error ? e.message : String(e));
+      }
     } finally {
-      setBusyAction(null);
+      if (seq === requestSeqRef.current) setBusyAction(null);
     }
   }
 
   async function handleSaveDecision(e: React.FormEvent) {
     e.preventDefault();
     if (!currentAssetId) return;
+    const reqAssetId = currentAssetId;
     setBusyAction("decision");
     setStatusMessage(null);
     try {
-      const res = await api.addDecision(currentAssetId, {
+      const res = await api.addDecision(reqAssetId, {
         action: decAction,
         execution: decExec,
         note: decNote.trim(),
@@ -249,11 +292,16 @@ export function WorkspaceView({
         exploration_strategies:
           attachExploration && explorationRules ? explorationRules : undefined,
       });
+      if (activeAssetRef.current !== reqAssetId) return;
       setDecNote("");
-      setChartData((prev) => (prev ? { ...prev, decisions: res.decisions } : prev));
+      setChartData((prev) =>
+        prev && prev.asset.id === reqAssetId ? { ...prev, decisions: res.decisions } : prev,
+      );
       setStatusMessage("判断已追加保存并标注到 K 线");
     } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : String(err));
+      if (activeAssetRef.current === reqAssetId) {
+        setStatusMessage(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setBusyAction(null);
     }
@@ -356,11 +404,10 @@ export function WorkspaceView({
                   const selected = a.id === currentAssetId;
                   const chgPos = (a.change_pct ?? 0) >= 0;
                   return (
-                    <button
+                    <div
                       key={a.id}
-                      type="button"
-                      onClick={() => onSelectAsset(a.id)}
                       data-asset-card={a.id}
+                      onClick={() => onSelectAsset(a.id)}
                       className="w-full text-left px-2.5 py-2 rounded-lg border mb-0.5 flex flex-col gap-1 cursor-pointer transition-colors"
                       style={{
                         background: selected ? "var(--app-elev)" : "transparent",
@@ -369,23 +416,29 @@ export function WorkspaceView({
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="flex items-center gap-1 min-w-0">
-                          <span
-                            role="button"
-                            tabIndex={0}
+                          <button
+                            type="button"
                             onClick={(e) => handleToggleStar(a, e)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") handleToggleStar(a, e as unknown as React.MouseEvent);
-                            }}
                             title={a.priority ? "取消重点关注" : "标记重点关注"}
-                            className="shrink-0"
+                            aria-label={a.priority ? `取消重点关注 ${a.label}` : `标记重点关注 ${a.label}`}
+                            className="shrink-0 p-0.5 -ml-0.5 rounded cursor-pointer"
                             style={{ color: a.priority ? "var(--app-warn)" : "var(--app-faint)" }}
                           >
                             <Star
                               className="w-3 h-3"
                               fill={a.priority ? "currentColor" : "none"}
                             />
-                          </span>
-                          <span className="text-xs font-semibold truncate">{a.label}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectAsset(a.id);
+                            }}
+                            className="text-xs font-semibold truncate text-left cursor-pointer"
+                          >
+                            {a.label}
+                          </button>
                         </span>
                         <span className="text-xs font-semibold tabular shrink-0">
                           {a.close !== null ? a.close.toFixed(a.close < 10 ? 3 : 2) : "—"}
@@ -457,7 +510,7 @@ export function WorkspaceView({
                           仅观察行情
                         </span>
                       ) : null}
-                    </button>
+                    </div>
                   );
                 })}
               </div>

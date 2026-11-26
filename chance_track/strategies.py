@@ -489,14 +489,49 @@ def evaluate(snapshot, configs, asset, as_of):
     return outputs, layers, calculated
 
 
+BULLISH_EVENTS = frozenset(
+    {
+        "金叉",
+        "向上突破上轨",
+        "下轨外回归轨内",
+        "向上突破",
+        "短线回调",
+        "回调修复",
+        "释放 · 向上",
+        "相对转强",
+    }
+)
+BEARISH_EVENTS = frozenset(
+    {
+        "死叉",
+        "向下突破下轨",
+        "上轨外回归轨内",
+        "通道退出",
+        "趋势失效",
+        "跟踪退出",
+        "释放 · 向下",
+    }
+)
+
+
+def event_direction(event):
+    if event in BULLISH_EVENTS:
+        return "bullish"
+    if event in BEARISH_EVENTS:
+        return "bearish"
+    return "neutral"
+
+
 def chart_events(snapshot, strategies, calculated):
     return [
         {
+            "date": row["date"],
             "time": row["date"],
             "name": strategy["name"],
             "version": strategy["version"],
             "config": strategy["config"],
             "event": event,
+            "direction": event_direction(event),
             "price": row["close"],
             "detail": detail,
             "provisional": snapshot.get("provisional_date") == row["date"],

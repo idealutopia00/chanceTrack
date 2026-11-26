@@ -1,8 +1,9 @@
 """SQLite Schema v6 storage access for Chance Track."""
 
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 import json
+import math
 from pathlib import Path
 import sqlite3
 from uuid import uuid4
@@ -40,15 +41,17 @@ def initialize(path, *, upgrade_configuration=False):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as db:
-        db.execute("PRAGMA journal_mode=WAL")
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if version > SCHEMA_VERSION:
             raise ValueError(f"数据库结构版本 {version} 高于本程序支持的 {SCHEMA_VERSION}")
         if version == SCHEMA_VERSION:
+            db.execute("PRAGMA journal_mode=WAL")
             return
         db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if version == SCHEMA_VERSION:
+            db.commit()
+            db.execute("PRAGMA journal_mode=WAL")
             return
         if version > SCHEMA_VERSION:
             raise ValueError(f"数据库结构版本 {version} 高于本程序支持的 {SCHEMA_VERSION}")
@@ -57,10 +60,12 @@ def initialize(path, *, upgrade_configuration=False):
         ).fetchone()
         if not version and not has_tables:
             create_v6_schema(db)
-            return
-        if not upgrade_configuration:
-            raise ValueError("旧数据库需要使用安装器完成备份与 Schema v6 升级")
-        migrate_to_v6(db)
+        else:
+            if not upgrade_configuration:
+                raise ValueError("旧数据库需要使用安装器完成备份与 Schema v6 升级")
+            migrate_to_v6(db)
+        db.commit()
+        db.execute("PRAGMA journal_mode=WAL")
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +113,8 @@ def read_current_configuration(db):
     for row in db.execute("SELECT * FROM asset_strategies ORDER BY position"):
         if row["asset_id"] in assets:
             assets[row["asset_id"]]["strategies"].append(row["strategy_id"])
-            assets[row["asset_id"]]["activated"][row["strategy_id"]] = row["activated_at"]
+            if row["activated_at"] is not None:
+                assets[row["asset_id"]]["activated"][row["strategy_id"]] = row["activated_at"]
 
     rules = {}
     for row in db.execute("SELECT * FROM strategies ORDER BY position"):
@@ -259,7 +265,7 @@ def write_current_configuration(db, config, version, now_iso=None):
     for asset in config["assets"]:
         activated = asset.get("activated") or {}
         for pos, sid in enumerate(asset.get("strategies") or []):
-            bindings.append((asset["id"], sid, pos, activated.get(sid) or now_iso))
+            bindings.append((asset["id"], sid, pos, activated.get(sid)))
     if bindings:
         db.executemany(
             "INSERT INTO asset_strategies(asset_id, strategy_id, position, activated_at) VALUES (?, ?, ?, ?)",
@@ -348,6 +354,9 @@ def snapshot_from_bars(path, asset):
     provisional_date = latest["bar_date"] if latest["is_provisional"] else None
     confirmed_bars = [b["bar_date"] for b in bars if not b["is_provisional"]]
     profile = PROFILES.get(asset.get("session_profile") or "", {})
+    quote_currency = latest.get("quote_currency")
+    if quote_currency is None and latest["provider"] == "yahoo" and asset.get("session_profile") == "us_equity":
+        quote_currency = "USD"
     snapshot = {
         "basis": "market_ohlc",
         "code": asset.get("code") or "",
@@ -363,6 +372,8 @@ def snapshot_from_bars(path, asset):
             "phase": "intraday" if provisional_date else "closed",
         },
     }
+    if quote_currency:
+        snapshot["quote_currency"] = quote_currency
     if volume_unit:
         snapshot["volume_unit"] = volume_unit
     if volume_multiplier is not None:
@@ -465,7 +476,15 @@ def save_check_run(path, run_record, items):
             close_val = result.get("close") if result.get("close") is not None else last_q.get("close")
             fetch_meta = {
                 k: item[k]
-                for k in ("fetch_status", "attempts", "provider_label", "last_quote", "warnings")
+                for k in (
+                    "fetch_status",
+                    "attempts",
+                    "provider_label",
+                    "last_quote",
+                    "warnings",
+                    "failed_benchmark",
+                    "benchmark_errors",
+                )
                 if k in item and item[k] is not None
             }
             if result.get("warnings"):
@@ -655,6 +674,20 @@ def list_signals(path, *, asset_id=None, strategy_id=None, limit=200):
         return out
 
 
+def count_signals(path, *, asset_id=None, strategy_id=None):
+    where = []
+    params = []
+    if asset_id:
+        where.append("asset_id=?")
+        params.append(asset_id)
+    if strategy_id:
+        where.append("strategy_id=?")
+        params.append(strategy_id)
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    with connect(path) as db:
+        return int(db.execute(f"SELECT count(*) FROM signal_events {clause}", params).fetchone()[0])
+
+
 def get_notification(path, run_id):
     with connect(path) as db:
         row = db.execute("SELECT * FROM notifications WHERE run_id=?", (int(run_id),)).fetchone()
@@ -737,6 +770,17 @@ def add_decision(
 ):
     if action not in ("买入", "卖出", "持有", "观望") or execution not in ("未执行", "已提交"):
         raise ValueError("无效决策或执行状态")
+    try:
+        date.fromisoformat(str(bar_date))
+    except ValueError as exc:
+        raise ValueError("决策日期必须为有效 YYYY-MM-DD 日期") from exc
+    if price_at_decision is not None:
+        try:
+            price_at_decision = float(price_at_decision)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("决策价格必须为有限数值") from exc
+        if not math.isfinite(price_at_decision):
+            raise ValueError("决策价格必须为有限数值")
     if len(note) > 4000:
         raise ValueError("备注不能超过 4000 字")
     with connect(path) as db:
@@ -838,7 +882,11 @@ def get_note(path, note_id=None):
         return _attach_note_assets(db, [dict(row)])[0]
 
 
-def save_note(path, note_id, title, markdown, now, *, asset_ids=None):
+class NoteConflict(Exception):
+    pass
+
+
+def save_note(path, note_id, title, markdown, now, *, asset_ids=None, expected_updated_at=None):
     with connect(path) as db:
         db.execute("BEGIN IMMEDIATE")
         if note_id is None:
@@ -848,9 +896,17 @@ def save_note(path, note_id, title, markdown, now, *, asset_ids=None):
             )
             saved_id = int(cursor.lastrowid)
         else:
+            existing = db.execute(
+                "SELECT title, updated_at FROM notes WHERE id=?", (int(note_id),)
+            ).fetchone()
+            if not existing:
+                return None
+            if expected_updated_at is not None and existing["updated_at"] != expected_updated_at:
+                raise NoteConflict("该备忘已被其他页面修改，请刷新后重试")
+            final_title = title if title is not None else existing["title"]
             cursor = db.execute(
                 "UPDATE notes SET title=?, markdown=?, updated_at=? WHERE id=?",
-                (title, markdown, now, int(note_id)),
+                (final_title, markdown, now, int(note_id)),
             )
             if not cursor.rowcount:
                 return None
@@ -884,14 +940,14 @@ def pin_note(path, note_id):
 
 def delete_note(path, note_id, updated_at=None):
     with connect(path) as db:
-        if updated_at is not None:
-            return (
-                db.execute(
-                    "DELETE FROM notes WHERE id=? AND updated_at=?",
-                    (int(note_id), updated_at),
-                ).rowcount
-                == 1
-            )
+        db.execute("BEGIN IMMEDIATE")
+        existing = db.execute(
+            "SELECT updated_at FROM notes WHERE id=?", (int(note_id),)
+        ).fetchone()
+        if not existing:
+            return False
+        if updated_at is not None and existing["updated_at"] != updated_at:
+            raise NoteConflict("该备忘已被其他页面修改，请刷新后重试")
         return db.execute("DELETE FROM notes WHERE id=?", (int(note_id),)).rowcount == 1
 
 

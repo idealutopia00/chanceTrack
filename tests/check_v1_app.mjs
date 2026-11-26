@@ -59,7 +59,14 @@ try {
   await page.click('button[aria-label="切换主题"]');
   await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
 
-  // 4. Indicator exploration preview & restore
+  // 4. Event stepper navigates strategy events cleanly
+  const prevEventBtn = page.locator('button[title="上一策略事件"]');
+  if (await prevEventBtn.count()) {
+    await prevEventBtn.click();
+    await page.getByText(/^\d+\/\d+$/).waitFor();
+  }
+
+  // 5. Indicator exploration preview & restore
   await page.getByRole("button", { name: /指标探索/ }).click();
   await page.getByRole("button", { name: /\+ 布林突破 20\/2/ }).click();
   await page.getByText(/探索预览已更新/).waitFor();
@@ -67,14 +74,14 @@ try {
   await page.getByRole("button", { name: /还原正式/ }).click();
   await page.getByText(/已还原正式监测图表/).waitFor();
 
-  // 5. Record decision without page reload
+  // 6. Record decision without page reload
   await page.getByRole("button", { name: /^决策 \(/ }).click();
   await page.getByRole("button", { name: "买入", exact: true }).click();
   await page.locator("textarea").fill("Playwright v1 合成决策验证");
   await page.getByRole("button", { name: "保存本次判断" }).click();
   await page.getByText("Playwright v1 合成决策验证").waitFor();
 
-  // 6. Pinned note modal opens cleanly without duplicate H1
+  // 7. Pinned note modal opens cleanly without duplicate H1
   await page.getByRole("button", { name: /合成观察备忘/ }).click();
   await page.waitForSelector("#pinned-note-modal-title");
   const firstH1Visible = await page.evaluate(() => {
@@ -85,13 +92,13 @@ try {
   await saveShot("03_desktop_dark_pinned_note.png");
   await page.keyboard.press("Escape");
 
-  // 7. Catalog search finds 515450 by alias
+  // 8. Catalog search finds 515450 by alias
   await page.click('button[aria-label="添加标的"]');
   await page.locator('[role="dialog"] input').first().fill("红利低波");
   await page.getByText("红利低波50ETF南方").waitFor();
   await page.keyboard.press("Escape");
 
-  // 8. Signals view
+  // 9. Signals view
   await page.getByRole("button", { name: /信号流/ }).click();
   await page.getByText("信号流与检查批次").waitFor();
   await page.getByText("加载中…").waitFor({ state: "detached" });
@@ -99,25 +106,37 @@ try {
   assert.ok(signalRows >= 1, "Signals view should render populated signal events");
   await saveShot("04_desktop_dark_signals.png");
 
-  // 9. Strategies library view + slide-over focus restore
+  // 10. Strategies library view + slide-over Escape close
   await page.getByRole("button", { name: /规则库/ }).click();
   await page.getByText("策略规则库").waitFor();
   await page.getByRole("button", { name: "编辑" }).first().waitFor();
   await saveShot("05_desktop_dark_strategies.png");
   await page.getByRole("button", { name: "编辑" }).first().click();
   await page.waitForSelector('[role="dialog"]');
-  await page.click('button[aria-label="关闭编辑"]');
+  await page.keyboard.press("Escape");
+  await page.locator('[role="dialog"]').waitFor({ state: "detached" });
 
-  // 10. Notes view (light mode reading check)
+  // 11. Notes view (light mode reading check + edit does not duplicate)
   await page.getByRole("button", { name: /备忘录/ }).click();
+  await page.getByText(/投资备忘录 \(1\)/).waitFor();
+  await page.getByRole("button", { name: "新建" }).click();
+  await page.getByRole("button", { name: "取消" }).click();
+  await page.getByRole("button", { name: "编辑" }).click();
+  await page.getByText("编辑备忘录").waitFor();
+  await page.getByRole("button", { name: "保存备忘" }).click();
   await page.getByText(/投资备忘录 \(1\)/).waitFor();
   await page.click('button[aria-label="切换主题"]');
   await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
   await page.waitForTimeout(220);
   await saveShot("06_desktop_light_notes.png");
 
-  // 11. Narrow viewport (390x844) check: zero horizontal overflow & no header overlap
+  // 12. Narrow viewport (390x844) check: NotesView & WorkspaceView zero horizontal overflow
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(100);
+  const overflowNotesMobile = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  assert.equal(overflowNotesMobile, 0, "Mobile notes view must have zero horizontal overflow");
   await page.getByRole("button", { name: /工作台/ }).click();
   await page.waitForSelector('[data-testid="main-chart"] canvas');
   await page.waitForTimeout(120);

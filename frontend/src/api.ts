@@ -114,7 +114,7 @@ export const api = {
     if (params?.asset_id) qs.set("asset_id", params.asset_id);
     if (params?.limit) qs.set("limit", String(params.limit));
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return request<{ signals: SignalEventRecord[] }>(`/api/v1/signals${suffix}`);
+    return request<{ total?: number; signals: SignalEventRecord[] }>(`/api/v1/signals${suffix}`);
   },
   runs: (limit = 30) =>
     request<{ running: boolean; runs: CheckRunSummary[] }>(`/api/v1/runs?limit=${limit}`),
@@ -151,7 +151,7 @@ export const api = {
     }),
   updateNote: (
     noteId: number,
-    payload: { title?: string; markdown?: string; asset_ids?: string[] },
+    payload: { title?: string; markdown?: string; asset_ids?: string[]; updated_at?: string },
   ) =>
     request<NoteRecord>(`/api/v1/notes/${noteId}`, {
       method: "PATCH",
@@ -162,8 +162,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({}),
     }),
-  deleteNote: (noteId: number) =>
-    request<{ deleted: boolean; id: number }>(`/api/v1/notes/${noteId}`, {
-      method: "DELETE",
-    }),
+  deleteNote: (noteId: number, updatedAt?: string) =>
+    request<{ deleted: boolean; id: number }>(
+      updatedAt
+        ? `/api/v1/notes/${noteId}?updated_at=${encodeURIComponent(updatedAt)}`
+        : `/api/v1/notes/${noteId}`,
+      {
+        method: "DELETE",
+      },
+    ),
 };

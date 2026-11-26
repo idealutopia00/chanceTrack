@@ -1,11 +1,12 @@
-import fcntl
-import hashlib
-import inspect
-import subprocess
+"""Scheduled and manual check orchestration writing to Schema v6 normalized tables."""
+
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, time, timedelta
+import fcntl
+import inspect
 from pathlib import Path
+import subprocess
 
 from chinese_calendar import is_workday
 
@@ -50,19 +51,9 @@ def is_running(db_path):
         return True
 
 
-def failed_benchmark(item):
-    return any(
-        ref.get("error")
-        for ref in (item.get("snapshot") or {}).get("benchmarks", {}).values()
-    )
-
-
 def retry_due(previous, now):
     return (
-        any(
-            item["status"] == "error" or failed_benchmark(item)
-            for item in previous["items"]
-        )
+        any(item["status"] == "error" for item in previous.get("items", []))
         and previous.get("attempt", 1) < MAX_ATTEMPTS
         and now.time() < RETRY_CUTOFF
         and now >= datetime.fromisoformat(previous["created_at"]) + RETRY_INTERVAL
@@ -83,18 +74,6 @@ def revision():
         return deployment.read_text().strip() if deployment.exists() else "uncommitted"
 
 
-def code_hash():
-    digest = hashlib.sha256()
-    for file in sorted((ROOT / "chance_track").rglob("*")):
-        if file.suffix in (".py", ".html", ".js", ".css", ".txt"):
-            digest.update(str(file.relative_to(ROOT)).encode())
-            digest.update(file.read_bytes())
-    digest.update(
-        (ROOT / "uv.lock").read_bytes() if (ROOT / "uv.lock").exists() else b""
-    )
-    return digest.hexdigest()
-
-
 def due(now):
     # Chinese weekends remain excluded even when designated administrative workdays.
     return now.weekday() < 5 and is_workday(now.date()) and now.time() >= CHECK_START
@@ -112,20 +91,21 @@ def next_regular_check(now):
     return candidate
 
 
-def deliver(db_path, report_id, sender):
-    previous = storage.notification(db_path, report_id)
+def deliver(db_path, run_id, report_payload, sender):
+    previous = storage.get_notification(db_path, run_id)
     if previous and previous["sent_at"]:
         return
-    report = storage.report(db_path, report_id)
-    message, pending_keys = build_message(report, storage.notified_event_keys(db_path))
+    message, pending_keys = build_message(
+        report_payload, storage.notified_event_keys(db_path)
+    )
     try:
         sender(NOTIFICATION_TITLE, message)
     except Exception as exc:
-        storage.record_notification(db_path, report_id, message, error=str(exc))
+        storage.record_notification(db_path, run_id, message, error=str(exc))
         raise
     storage.record_notification(
         db_path,
-        report_id,
+        run_id,
         message,
         sent_at=datetime.now(TZ).isoformat(),
         event_keys=pending_keys,
@@ -141,7 +121,6 @@ def run(
     fetcher=fetch,
     sender=notify,
 ):
-    # CLI, scheduler and HTTP updates share the same cross-process lock.
     with check_lock(db_path):
         storage.initialize(db_path)
         return _run(db_path, watchlist, scheduled, send, now, fetcher, sender)
@@ -178,17 +157,17 @@ def _actually_probed(cache_entry, provider):
     return type(cache_entry).__name__ != "SourceCoolingDown"
 
 
-def _plan_probe_order(db_path, assets, previous_items, previous_report):
+def _plan_probe_order(db_path, assets, previous_items, previous_run):
     by_provider = {}
     for asset in assets:
         old = previous_items.get(asset["id"])
-        if old and old["status"] != "error" and not failed_benchmark(old):
+        if old and old["status"] != "error":
             continue
         if not asset.get("enabled") or not asset.get("provider"):
             continue
         by_provider.setdefault(asset["provider"], []).append(asset["id"])
-    prior_report = previous_report or storage.report(db_path) or {}
-    prior_order = prior_report.get("probe_order") or {}
+    prior_run = previous_run or storage.get_check_run(db_path) or {}
+    prior_order = prior_run.get("probe_order") or {}
     probe_order = {}
     for provider, ids in by_provider.items():
         if len(ids) < 2:
@@ -202,6 +181,42 @@ def _plan_probe_order(db_path, assets, previous_items, previous_report):
     return probe_order
 
 
+def _build_notification_payload(db_path, run_record, config):
+    """Reconstruct lightweight report payload for notification rendering on retries/redeliveries."""
+    assets_by_id = {a["id"]: a for a in config["assets"]}
+    items = []
+    for item in run_record.get("items", []):
+        asset = assets_by_id.get(item["asset_id"])
+        if not asset:
+            continue
+        entry = {
+            "asset": asset,
+            "status": item["status"],
+            "error": item.get("error"),
+            "provider": item.get("provider"),
+            "fetch_status": item.get("fetch_status"),
+            "attempts": item.get("attempts"),
+            "last_quote": item.get("last_quote"),
+        }
+        if item["status"] in ("ok", "warning"):
+            snap = storage.snapshot_from_bars(db_path, asset)
+            if snap:
+                res = analyze(snap, run_record["day"])
+                strats, _, _ = evaluate(snap, config["strategies"], asset, run_record["day"])
+                res["strategies"] = strats
+                entry["snapshot"] = snap
+                entry["result"] = res
+        items.append(entry)
+    return {
+        "created_at": run_record["created_at"],
+        "day": run_record["day"],
+        "attempt": run_record.get("attempt", 1),
+        "late": run_record.get("late", False),
+        "rule": RULE.copy(),
+        "items": items,
+    }
+
+
 def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
     now = (now or datetime.now(TZ)).astimezone(TZ)
     if scheduled and not due(now):
@@ -211,38 +226,26 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
     assets = watchlist if watchlist is not None else config["assets"]
     assets = [a for a in assets if not a.get("archived")]
     previous = (
-        storage.latest_scheduled(db_path, day, RULE["version"]) if scheduled else None
+        storage.latest_scheduled_run(db_path, day, RULE["version"]) if scheduled else None
     )
     if previous and not retry_due(previous, now):
         if send:
-            deliver(db_path, previous["id"], sender)
+            deliver(
+                db_path,
+                previous["id"],
+                _build_notification_payload(db_path, previous, config),
+                sender,
+            )
         return previous["id"]
-    if previous and previous.get("configuration"):
-        config = previous["configuration"]
+
     attempt = previous.get("attempt", 1) + 1 if previous else 1
     previous_items = (
-        {item["asset"]["id"]: item for item in previous["items"]} if previous else {}
+        {item["asset_id"]: item for item in previous.get("items", [])} if previous else {}
     )
-    if previous:
-        # A retry completes the original watchlist, even if configuration changed meanwhile.
-        assets = [item["asset"] for item in previous["items"]]
-    prior_report = previous or storage.report(db_path) or {}
-    prior_order = prior_report.get("probe_order") or {}
+    prior_run = previous or storage.get_check_run(db_path) or {}
+    prior_order = prior_run.get("probe_order") or {}
     probe_order = _plan_probe_order(db_path, assets, previous_items, previous)
-    report = {
-        "created_at": now.isoformat(),
-        "day": day,
-        "kind": "scheduled" if scheduled else "manual",
-        "attempt": attempt,
-        "parent_report_id": previous["id"] if previous else None,
-        "late": now.time() >= time(15),
-        "rule": RULE.copy(),
-        "configuration": config,
-        "probe_order": probe_order,
-        "code_revision": revision(),
-        "code_sha256": code_hash(),
-        "items": [],
-    }
+
     assets_by_id = {asset["id"]: asset for asset in config["assets"]}
     active_by_id = {asset["id"]: asset for asset in assets}
     market_cache = {}
@@ -253,17 +256,23 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
             carried = previous_items.get(asset_id)
             try:
                 if carried and carried["status"] in ("ok", "warning"):
-                    market_cache[asset_id] = carried["snapshot"]
+                    snap = storage.snapshot_from_bars(db_path, asset)
+                    if snap:
+                        market_cache[asset_id] = snap
+                    else:
+                        snap = _call_fetcher(fetcher, asset, day, now)
+                        snap.setdefault("fetched_at", now.isoformat())
+                        market_cache[asset_id] = snap
                 else:
-                    snapshot = _call_fetcher(fetcher, asset, day, now)
-                    snapshot.setdefault("fetched_at", now.isoformat())
-                    market_cache[asset_id] = snapshot
+                    snap = _call_fetcher(fetcher, asset, day, now)
+                    snap.setdefault("fetched_at", now.isoformat())
+                    market_cache[asset_id] = snap
             except Exception as exc:
                 market_cache[asset_id] = exc
-        result = market_cache[asset_id]
-        if isinstance(result, Exception):
-            raise result
-        return result
+        res = market_cache[asset_id]
+        if isinstance(res, Exception):
+            raise res
+        return res
 
     for ids in probe_order.values():
         for asset_id in ids:
@@ -271,6 +280,7 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                 market_snapshot(active_by_id[asset_id])
             except Exception:
                 pass
+
     recorded_probe_order = {
         provider: list(ids) for provider, ids in prior_order.items() if ids
     }
@@ -285,27 +295,17 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
             ]
         elif prior_order.get(provider):
             recorded_probe_order[provider] = list(prior_order[provider])
-    if recorded_probe_order:
-        report["probe_order"] = recorded_probe_order
-    else:
-        report.pop("probe_order", None)
 
+    items = []
     for asset in assets:
         old = previous_items.get(asset["id"])
-        if old and old["status"] != "error" and not failed_benchmark(old):
-            item = deepcopy(old)
-            item["carried_forward"] = True
-            item.setdefault("origin_report_id", previous["id"])
-            report["items"].append(item)
-            continue
         item = {"asset": asset, "checked_at": now.isoformat(), "carried_forward": False}
         if old and old["status"] in ("ok", "warning"):
             item.update(
-                checked_at=old["checked_at"],
                 carried_forward=True,
-                origin_report_id=old.get("origin_report_id", previous["id"]),
+                origin_run_id=old.get("origin_run_id") or previous["id"],
             )
-        if not asset["enabled"]:
+        if not asset.get("enabled", True):
             item.update(status="disabled", error=asset.get("reason", "未启用"))
         else:
             try:
@@ -327,34 +327,14 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                     snapshot = {**snapshot, "benchmarks": references}
                 item["snapshot"] = snapshot
                 item["result"] = analyze(snapshot, day)
-                if "strategies" in asset:
-                    strategies, layers, calculated = evaluate(
-                        snapshot, config["strategies"], asset, day
-                    )
-                    item["result"]["strategies"] = strategies
-                    item["result"]["chart"]["overlays"] = layers
-                    item["result"]["chart"]["macd_configs"] = [
-                        {
-                            "id": s["id"],
-                            "name": s["name"],
-                            "points": calculated[s["id"]]["macd"],
-                        }
-                        for s in config["strategies"]
-                        if s["kind"] == "macd" and s["id"] in calculated
-                    ]
-                    selected_macd = next(
-                        (
-                            calculated[s["id"]]["macd"]
-                            for s in strategies
-                            if s["kind"] == "macd"
-                        ),
-                        None,
-                    )
-                    if selected_macd:
-                        item["result"]["chart"]["macd"] = selected_macd
-                    item["result"]["chart"]["strategy_events"] = chart_events(
-                        snapshot, strategies, calculated
-                    )
+                strategies_out, layers, calculated = evaluate(
+                    snapshot, config["strategies"], asset, day
+                )
+                item["result"]["strategies"] = strategies_out
+                item["result"]["chart"]["overlays"] = layers
+                item["result"]["chart"]["strategy_events"] = chart_events(
+                    snapshot, strategies_out, calculated
+                )
                 item["status"] = "warning" if item["result"]["warnings"] else "ok"
                 actual_provider = snapshot.get("provider") or asset.get("provider")
                 item["provider"] = actual_provider
@@ -407,11 +387,12 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                     has_historical_snapshot=bool(last_quote),
                     last_quote=last_quote,
                 )
-        report["items"].append(item)
+        items.append(item)
+
     for asset in assets:
         provider = asset.get("provider")
         aid = asset["id"]
-        if not provider or provider in probe_order or not asset.get("enabled"):
+        if not provider or provider in probe_order or not asset.get("enabled", True):
             continue
         old = previous_items.get(aid)
         if old and old["status"] in ("ok", "warning"):
@@ -422,9 +403,25 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                 aid,
                 *(other for other in existing if other != aid),
             ]
-    if recorded_probe_order:
-        report["probe_order"] = recorded_probe_order
-    report_id, _ = storage.save_report(db_path, report)
+
+    run_record = {
+        "created_at": now.isoformat(),
+        "day": day,
+        "kind": "scheduled" if scheduled else "manual",
+        "attempt": attempt,
+        "parent_run_id": previous["id"] if previous else None,
+        "rule_version": RULE["version"],
+        "config_version": config["version"],
+        "code_revision": revision(),
+        "late": now.time() >= time(15),
+        "probe_order": recorded_probe_order,
+    }
+    run_id, _ = storage.save_check_run(db_path, run_record, items)
     if send:
-        deliver(db_path, report_id, sender)
-    return report_id
+        notif_payload = {
+            **run_record,
+            "rule": RULE.copy(),
+            "items": items,
+        }
+        deliver(db_path, run_id, notif_payload, sender)
+    return run_id

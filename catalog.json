@@ -6,10 +6,13 @@
     "code": "^GSPC",
     "provider": "yahoo",
     "kind": "index",
+    "group_name": "美国指数",
     "market": "美国 · S&P Dow Jones",
     "currency": "点",
-    "enabled": true,
-    "session_profile": "us_equity"
+    "session_profile": "us_equity",
+    "default_in_watchlist": true,
+    "aliases": ["标普", "标普500", "SP500", "SPX", "^GSPC"],
+    "fallbacks": []
   },
   {
     "id": "nasdaq100",
@@ -18,10 +21,13 @@
     "code": "^NDX",
     "provider": "yahoo",
     "kind": "index",
+    "group_name": "美国指数",
     "market": "美国 · Nasdaq",
     "currency": "点",
-    "enabled": true,
-    "session_profile": "us_equity"
+    "session_profile": "us_equity",
+    "default_in_watchlist": true,
+    "aliases": ["纳指", "纳指100", "纳斯达克", "纳斯达克100", "NDX", "^NDX"],
+    "fallbacks": []
   },
   {
     "id": "gold_etf_518800",
@@ -31,11 +37,11 @@
     "provider": "sse",
     "expected_name": "黄金基金",
     "kind": "etf",
-    "group": "黄金",
+    "group_name": "黄金",
     "market": "中国 · 上交所 ETF",
     "currency": "元",
-    "enabled": true,
     "session_profile": "cn_equity",
+    "default_in_watchlist": true,
     "aliases": ["黄金", "黄金ETF", "黄金基金", "518800", "sh518800"],
     "fallbacks": []
   },
@@ -47,11 +53,11 @@
     "provider": "szse",
     "expected_name": "科创创业ETF天弘",
     "kind": "etf",
-    "group": "国内指数",
+    "group_name": "国内指数",
     "market": "中国 · 深交所 ETF",
     "currency": "元",
-    "enabled": true,
     "session_profile": "cn_equity",
+    "default_in_watchlist": true,
     "aliases": [
       "科创创业",
       "科创创业50",
@@ -69,9 +75,37 @@
     "code": "^SOX",
     "provider": "yahoo",
     "kind": "index",
+    "group_name": "美国指数",
     "market": "美国 · Nasdaq PHLX",
     "currency": "点",
-    "enabled": true,
-    "session_profile": "us_equity"
+    "session_profile": "us_equity",
+    "default_in_watchlist": true,
+    "aliases": ["费半", "半导体", "费城半导体", "SOX", "^SOX"],
+    "fallbacks": []
+  },
+  {
+    "id": "dividend_low_vol_etf_515450",
+    "label": "红利低波50ETF南方",
+    "ticker": "515450",
+    "code": "515450",
+    "provider": "sse",
+    "expected_name": "红利50",
+    "kind": "etf",
+    "group_name": "国内指数",
+    "market": "中国 · 上交所 ETF",
+    "currency": "元",
+    "session_profile": "cn_equity",
+    "default_in_watchlist": false,
+    "aliases": [
+      "红利低波",
+      "低波红利",
+      "红利低波50",
+      "红利50",
+      "红利低波50ETF",
+      "红利低波50ETF南方",
+      "515450",
+      "sh515450"
+    ],
+    "fallbacks": []
   }
 ]

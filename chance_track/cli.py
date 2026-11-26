@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 
+from .configuration import migrate_etf_targets
 from .runner import CheckInProgress, run
 
 
@@ -22,6 +23,8 @@ def main():
     check.add_argument("--no-notify", action="store_true")
     serve = commands.add_parser("serve")
     serve.add_argument("--port", type=int, default=8765)
+    migrate_etf = commands.add_parser("migrate-etf-targets")
+    migrate_etf.add_argument("--validate-live", action="store_true")
     args = parser.parse_args()
     if args.command == "check":
         try:
@@ -30,6 +33,15 @@ def main():
             print(exc)
             return
         print(f"报告 #{report_id}" if report_id else "当前不在检查时段")
+    elif args.command == "migrate-etf-targets":
+        result = migrate_etf_targets(args.db, validate_live=args.validate_live)
+        if not result["changed"]:
+            print(f"无需切换：未发现待替换的旧标的（版本 {result['version']}）")
+        else:
+            pairs = "，".join(
+                f"{item['from_code']}->{item['to_code']}" for item in result["migrated"]
+            )
+            print(f"已切换标的：{pairs}（版本 {result['version']}）")
     else:
         import uvicorn
 

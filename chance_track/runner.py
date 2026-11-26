@@ -159,6 +159,25 @@ def _call_fetcher(fetcher, asset, day, now):
     return fetcher(asset, day)
 
 
+def _actually_probed(cache_entry, provider):
+    if cache_entry is None:
+        return False
+    if isinstance(cache_entry, dict):
+        attempts = cache_entry.get("attempts")
+        if not attempts:
+            return True
+        return any(
+            entry.get("provider") == provider and entry.get("status") != "cooling_down"
+            for entry in attempts
+        )
+    if isinstance(cache_entry, MarketFetchError):
+        return any(
+            entry.get("provider") == provider and entry.get("status") != "cooling_down"
+            for entry in cache_entry.attempts
+        )
+    return type(cache_entry).__name__ != "SourceCoolingDown"
+
+
 def _plan_probe_order(db_path, assets, previous_items, previous_report):
     by_provider = {}
     for asset in assets:
@@ -207,6 +226,8 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
     if previous:
         # A retry completes the original watchlist, even if configuration changed meanwhile.
         assets = [item["asset"] for item in previous["items"]]
+    prior_report = previous or storage.report(db_path) or {}
+    prior_order = prior_report.get("probe_order") or {}
     probe_order = _plan_probe_order(db_path, assets, previous_items, previous)
     report = {
         "created_at": now.isoformat(),
@@ -250,6 +271,22 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                 market_snapshot(active_by_id[asset_id])
             except Exception:
                 pass
+    recorded_probe_order = {}
+    for provider, planned_ids in probe_order.items():
+        probed = [
+            aid for aid in planned_ids if _actually_probed(market_cache.get(aid), provider)
+        ]
+        if probed:
+            recorded_probe_order[provider] = [
+                probed[0],
+                *(aid for aid in planned_ids if aid != probed[0]),
+            ]
+        elif prior_order.get(provider):
+            recorded_probe_order[provider] = list(prior_order[provider])
+    if recorded_probe_order:
+        report["probe_order"] = recorded_probe_order
+    else:
+        report.pop("probe_order", None)
 
     for asset in assets:
         old = previous_items.get(asset["id"])
@@ -342,6 +379,8 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                         fetch_status = "disconnected"
                     elif "StaleMarketSnapshot" in exc_name:
                         fetch_status = "stale"
+                    elif "InsufficientMarketHistory" in exc_name:
+                        fetch_status = "insufficient_history"
                     else:
                         fetch_status = "error"
                     provider = asset.get("provider")

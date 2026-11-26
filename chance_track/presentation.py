@@ -10,6 +10,7 @@ ATTEMPT_STATUS_LABELS = {
     "cooling_down": "同源冷却未请求",
     "disconnected": "请求断连",
     "stale": "行情未更新",
+    "insufficient_history": "历史样本不足",
     "identity_mismatch": "身份不符",
     "error": "失败",
 }
@@ -45,7 +46,13 @@ def fetch_state_summary(item):
         }
     if item.get("status") == "error":
         code = item.get("fetch_status")
-        if code not in ("cooling_down", "disconnected", "stale", "error"):
+        if code not in (
+            "cooling_down",
+            "disconnected",
+            "stale",
+            "insufficient_history",
+            "error",
+        ):
             err = item.get("error", "")
             if "SourceCoolingDown" in err:
                 code = "cooling_down"
@@ -53,12 +60,15 @@ def fetch_state_summary(item):
                 code = "disconnected"
             elif "StaleMarketSnapshot" in err:
                 code = "stale"
+            elif "InsufficientMarketHistory" in err:
+                code = "insufficient_history"
             else:
                 code = "error"
         reason_label = {
             "cooling_down": "同源冷却未请求",
             "disconnected": "请求断连",
             "stale": "行情未更新",
+            "insufficient_history": "历史样本不足",
             "error": "采集失败",
         }[code]
         snapshot_label = (
@@ -69,12 +79,20 @@ def fetch_state_summary(item):
             if last_quote and last_quote.get("is_provisional") == 1
             else ("已收盘快照" if last_quote else "暂无行情")
         )
+        if last_quote:
+            error_source_label = (
+                provider_label(last_quote["provider"])
+                if last_quote.get("provider")
+                else "历史未记录"
+            )
+        else:
+            error_source_label = "暂无行情"
         return {
             "code": code,
             "label": f"{reason_label} · {snapshot_label}",
             "reason_label": reason_label,
             "snapshot_label": snapshot_label,
-            "provider_label": source_label,
+            "provider_label": error_source_label,
             "bar_date": last_quote["bar_date"] if last_quote else "—",
             "confirmation": confirmation,
             "fetched_at": last_quote.get("fetched_at") if last_quote else None,

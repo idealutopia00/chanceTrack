@@ -1,577 +1,883 @@
-from copy import deepcopy
-from datetime import datetime, timedelta
+import asyncio
+import json
+import re
+import sqlite3
+import sys
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from test_loop import NOW
 
-from chance_track import data, storage
-from chance_track.configuration import load_configuration, save_configuration, validate_configuration
+from chance_track import cli, data, storage
+from chance_track.analysis import analyze
+from chance_track.configuration import (
+    legacy_etf_targets,
+    load_configuration,
+    migrate_etf_targets,
+    save_configuration,
+    validate_configuration,
+)
 from chance_track.data import (
-    TZ,
     IdentityMismatch,
+    InsufficientMarketHistory,
     MarketFetchError,
-    parse_sina,
+    TZ,
+    parse_eastmoney,
     parse_sse,
     parse_szse,
-    parse_tencent,
 )
-from chance_track.notifications import build_message
-from chance_track.presentation import fetch_state_summary, signal_rows
+from chance_track.market_sessions import cn_trading_day
+from chance_track.presentation import fetch_state_summary
 from chance_track.runner import run
+from chance_track.strategies import evaluate as evaluate_strategies
 from chance_track.web import create_app
 
-DAY = "2026-11-26"
-INTRADAY_NOW = datetime(2026, 11, 26, 14, 35, tzinfo=TZ)
-CLOSED_NOW = datetime(2026, 11, 26, 15, 6, tzinfo=TZ)
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
 
 
-def _dates(count=150, end_day=DAY):
-    end = datetime.fromisoformat(end_day).date()
+def _reset_cooldowns():
+    with data._cooldown_lock:
+        data._cooldowns.clear()
+
+
+def _trading_days(count=140, end_day="2026-11-25"):
     days = []
-    cur = end
+    cursor = date.fromisoformat(end_day)
     while len(days) < count:
-        if cur.weekday() < 5:
-            days.append(cur.isoformat())
-        cur -= timedelta(days=1)
-    return list(reversed(days))
+        if cn_trading_day(cursor):
+            days.append(cursor.isoformat())
+        cursor -= timedelta(days=1)
+    days.reverse()
+    return days
 
 
-def _closes(count=150):
-    return [1.0 + i * 0.002 for i in range(count - 20)] + [
-        1.26 - i * 0.01 for i in range(18)
-    ] + [1.22, 1.35]
+def _sample_series(count=140, end_day="2026-11-25", cross_on_last=False):
+    days = _trading_days(count, end_day)
+    bars = []
+    for index, day in enumerate(days):
+        if cross_on_last:
+            if index < count - 36:
+                close = round(1.0 + index * 0.002, 4)
+            elif index < count - 1:
+                close = round(1.0 + (count - 36) * 0.002 - (index - (count - 36)) * 0.005, 4)
+            else:
+                close = round(1.45, 4)
+        else:
+            close = round(7.4 + (index % 7) * 0.03 + index * 0.001, 4)
+        opening = round(close - 0.01, 4)
+        high = round(close + 0.03, 4)
+        low = round(close - 0.03, 4)
+        bars.append((day, opening, high, low, close, 125000))
+    return bars
 
 
-def _tencent_payload(symbol, code, name, *, market="1", dates=None, include_last=True):
-    days = dates or _dates()
-    prices = _closes(len(days))
-    if not include_last:
-        days, prices = days[:-1], prices[:-1]
-    qt_day = days[-1].replace("-", "") + "143500"
-    qt = [""] * 35
-    qt[0], qt[1], qt[2] = market, name, code
-    qt[3], qt[5], qt[6] = f"{prices[-1]:.3f}", f"{prices[-1] - 0.01:.3f}", "12000"
-    qt[30], qt[33], qt[34] = qt_day, f"{prices[-1] + 0.02:.3f}", f"{prices[-1] - 0.02:.3f}"
+def _etf_asset(
+    asset_id="gold_etf_518800",
+    *,
+    code="518800",
+    secid="1.518800",
+    expected_name="黄金ETF国泰",
+    fallback_provider="sse",
+    fallback_name="黄金基金",
+    fallbacks=None,
+    strategies=None,
+):
+    return {
+        "id": asset_id,
+        "label": expected_name,
+        "ticker": code,
+        "code": code,
+        "secid": secid,
+        "provider": "eastmoney",
+        "expected_name": expected_name,
+        "kind": "etf",
+        "group": "黄金",
+        "market": "中国 ETF",
+        "currency": "元",
+        "enabled": True,
+        "archived": False,
+        "session_profile": "cn_equity",
+        "strategies": list(strategies if strategies is not None else ["macd"]),
+        "fallbacks": (
+            list(fallbacks)
+            if fallbacks is not None
+            else [
+                {
+                    "provider": fallback_provider,
+                    "code": code,
+                    "expected_name": fallback_name,
+                }
+            ]
+        ),
+    }
+
+
+def _eastmoney_payload(code, name, market, bars):
     return {
         "data": {
-            symbol: {
-                "day": [
-                    [
-                        day,
-                        f"{p - 0.005:.3f}",
-                        f"{p:.3f}",
-                        f"{p + 0.01:.3f}",
-                        f"{p - 0.01:.3f}",
-                        str(10000 + i * 10),
-                    ]
-                    for i, (day, p) in enumerate(zip(days, prices))
-                ],
-                "qt": {symbol: qt},
-            }
+            "code": code,
+            "market": market,
+            "name": name,
+            "klines": [
+                f"{day},{op},{close},{high},{low},{vol}"
+                for day, op, high, low, close, vol in bars
+            ],
         }
     }
 
 
-def _sse_payloads(code, name, *, dates=None, include_last=True):
-    days = dates or _dates()
-    prices = _closes(len(days))
-    if not include_last:
-        days, prices = days[:-1], prices[:-1]
-    last_p = prices[-1]
+def _sse_payloads(code, name, dayk_bars, snap_bar=None, snap_time="162900"):
     dayk = {
         "code": code,
         "kline": [
-            [
-                int(day.replace("-", "")),
-                round(p - 0.005, 3),
-                round(p + 0.01, 3),
-                round(p - 0.01, 3),
-                round(p, 3),
-                (10000 + i * 10) * 100,
-                1000000,
-            ]
-            for i, (day, p) in enumerate(zip(days, prices))
+            [int(day.replace("-", "")), op, high, low, close, vol * 100]
+            for day, op, high, low, close, vol in dayk_bars
         ],
     }
+    ref = snap_bar or dayk_bars[-1]
     snap = {
         "code": code,
-        "date": int(days[-1].replace("-", "")),
-        "time": 143500,
-        "snap": [
-            name,
-            round(prices[-2], 3),
-            round(last_p - 0.005, 3),
-            round(last_p + 0.01, 3),
-            round(last_p - 0.01, 3),
-            round(last_p, 3),
-            0.01,
-            1.0,
-            1200000,
-        ],
+        "date": int(ref[0].replace("-", "")),
+        "time": snap_time,
+        "snap": [name, 0, ref[1], ref[2], ref[3], ref[4], 0, 0, ref[5] * 100],
     }
     return dayk, snap
 
 
-def _szse_payloads(code, name, *, dates=None, include_last=True, split_intraday=False):
-    days = dates or _dates()
-    prices = _closes(len(days))
-    if not include_last:
-        days, prices = days[:-1], prices[:-1]
-    hist_days = days[:-1] if split_intraday else days
-    hist_prices = prices[:-1] if split_intraday else prices
+def _szse_payloads(code, name, hist_bars, time_bar=None, market_time="15:30:00"):
     hist = {
         "data": {
             "code": code,
             "name": name,
             "picupdata": [
-                [
-                    day,
-                    f"{p - 0.005:.3f}",
-                    f"{p:.3f}",
-                    f"{p - 0.01:.3f}",
-                    f"{p + 0.01:.3f}",
-                    "0.010",
-                    "1.00",
-                    10000 + i * 10,
-                    1000000.0,
-                ]
-                for i, (day, p) in enumerate(zip(hist_days, hist_prices))
+                [day, str(op), str(close), str(low), str(high), "0", "0", vol, 0]
+                for day, op, high, low, close, vol in hist_bars
             ],
         }
     }
-    time_data = {
-        "data": {
-            "code": code,
-            "name": name,
-            "open": f"{prices[-1] - 0.005:.3f}",
-            "now": f"{prices[-1]:.3f}",
-            "high": f"{prices[-1] + 0.01:.3f}",
-            "low": f"{prices[-1] - 0.01:.3f}",
-            "volume": 10000 + (len(days) - 1) * 10,
-            "marketTime": f"{days[-1]} 14:35:00",
+    time_payload = None
+    if time_bar is not None:
+        time_payload = {
+            "data": {
+                "code": code,
+                "name": name,
+                "marketTime": f"{time_bar[0]} {market_time}",
+                "open": time_bar[1],
+                "high": time_bar[2],
+                "low": time_bar[3],
+                "now": time_bar[4],
+                "volume": time_bar[5],
+            }
         }
-    }
-    return hist, time_data
-
-
-def _sina_payloads(symbol, name, *, dates=None, include_last=True):
-    days = dates or _dates()
-    prices = _closes(len(days))
-    if not include_last:
-        days, prices = days[:-1], prices[:-1]
-    kline = [
-        {
-            "day": day,
-            "open": f"{p - 0.005:.3f}",
-            "high": f"{p + 0.01:.3f}",
-            "low": f"{p - 0.01:.3f}",
-            "close": f"{p:.3f}",
-            "volume": str((10000 + i * 10) * 100),
-        }
-        for i, (day, p) in enumerate(zip(days, prices))
-    ]
-    last = prices[-1]
-    fields = [""] * 32
-    fields[0] = name
-    fields[1] = f"{last - 0.005:.3f}"
-    fields[2] = f"{prices[-2]:.3f}"
-    fields[3] = f"{last:.3f}"
-    fields[4] = f"{last + 0.01:.3f}"
-    fields[5] = f"{last - 0.01:.3f}"
-    fields[8] = str((10000 + (len(days) - 1) * 10) * 100)
-    fields[30] = days[-1]
-    fields[31] = "14:35:00"
-    hq = f'var hq_str_{symbol}="{",".join(fields)}";'
-    return kline, hq
-
-
-_REAL_ASYNC_CLIENT = httpx.AsyncClient
+    return hist, time_payload
 
 
 def _patch_http(monkeypatch, handler):
-    monkeypatch.setattr(
-        data.httpx,
-        "AsyncClient",
-        lambda **kw: _REAL_ASYNC_CLIENT(transport=httpx.MockTransport(handler), **kw),
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            result = handler(url, params or {}, headers or {}, self.kwargs)
+            if asyncio.iscoroutine(result):
+                return await result
+            return result
+
+    monkeypatch.setattr(data.httpx, "AsyncClient", FakeAsyncClient)
+
+
+def test_watchlist_etf_targets_and_validation_rules():
+    watchlist = json.loads(
+        (Path(__file__).resolve().parent.parent / "watchlist.json").read_text()
     )
+    by_id = {entry["id"]: entry for entry in watchlist}
+    assert {"gold_etf_518800", "star_chinext50_etf_159603"}.issubset(by_id)
+    assert by_id["gold_etf_518800"]["provider"] == "eastmoney"
+    assert by_id["gold_etf_518800"]["fallbacks"] == [
+        {"provider": "sse", "code": "518800", "expected_name": "黄金基金"}
+    ]
+    assert by_id["star_chinext50_etf_159603"]["provider"] == "eastmoney"
+    assert by_id["star_chinext50_etf_159603"]["fallbacks"] == [
+        {"provider": "szse", "code": "159603", "expected_name": "科创创业ETF天弘"}
+    ]
+    assert "symbol" not in json.dumps(watchlist)
+    for bad_provider, extra in (
+        ("tencent", {"symbol": "sh518800"}),
+        ("sina", {"symbol": "sh518800"}),
+    ):
+        with pytest.raises(ValueError, match="未知数据源"):
+            validate_configuration(
+                {
+                    "assets": [
+                        _etf_asset(
+                            fallbacks=[
+                                {
+                                    "provider": bad_provider,
+                                    "code": "518800",
+                                    "expected_name": "黄金ETF国泰",
+                                    **extra,
+                                }
+                            ]
+                        )
+                    ],
+                    "strategies": [],
+                }
+            )
 
 
-def _etf_assets(tmp_path):
-    config = load_configuration(tmp_path / "etfs.sqlite")
-    gold = next(a for a in config["assets"] if a["id"] == "gold_etf_518800")
-    star = next(a for a in config["assets"] if a["id"] == "star_chinext50_etf_159603")
-    return gold, star
+def test_b1_fallback_cannot_override_code_or_exchange(monkeypatch):
+    _reset_cooldowns()
+    with pytest.raises(ValueError, match="标的代码"):
+        validate_configuration(
+            {
+                "assets": [
+                    _etf_asset(
+                        fallbacks=[
+                            {
+                                "provider": "sse",
+                                "code": "515450",
+                                "expected_name": "红利50",
+                            }
+                        ]
+                    )
+                ],
+                "strategies": [],
+            }
+        )
+    with pytest.raises(ValueError, match="交易所"):
+        validate_configuration(
+            {
+                "assets": [
+                    _etf_asset(
+                        fallbacks=[
+                            {
+                                "provider": "szse",
+                                "code": "518800",
+                                "expected_name": "黄金基金",
+                            }
+                        ]
+                    )
+                ],
+                "strategies": [],
+            }
+        )
 
-
-def test_parsers_verify_identity_volume_units_and_intraday_merge(tmp_path):
-    gold, star = _etf_assets(tmp_path)
-
-    tx = parse_tencent(
-        _tencent_payload("sh518800", "518800", "黄金ETF国泰"),
-        gold,
-        DAY,
-        now=INTRADAY_NOW,
+    asset = _etf_asset(
+        fallbacks=[
+            {"provider": "sse", "code": "515450", "expected_name": "红利50"}
+        ]
     )
-    assert tx["provider"] == "tencent"
-    assert tx["volume_unit"] == "手" and tx["volume_multiplier"] == 1
-    assert tx["provisional_date"] == DAY
+    requested_urls = []
 
-    # Tencent qt appends intraday bar if day array has not added today yet.
-    tx_lag = _tencent_payload("sh518800", "518800", "黄金ETF国泰", include_last=False)
-    tx_lag["data"]["sh518800"]["qt"]["sh518800"][30] = "20261126143500"
-    merged_tx = parse_tencent(tx_lag, gold, DAY, now=INTRADAY_NOW)
-    assert merged_tx["rows"][-1]["date"] == DAY and merged_tx["provisional_date"] == DAY
-
-    bad_tx = _tencent_payload("sh518800", "518800", "错误名称")
-    with pytest.raises(IdentityMismatch):
-        parse_tencent(bad_tx, gold, DAY, now=INTRADAY_NOW)
-
-    dayk, snap = _sse_payloads("518800", "黄金基金")
-    sse = parse_sse(dayk, snap, {**gold, **gold["fallbacks"][0]}, DAY, now=INTRADAY_NOW)
-    assert sse["provider"] == "sse"
-    assert sse["volume_unit"] == "手" and sse["volume_multiplier"] == 0.01
-    assert sse["rows"][-1]["date"] == DAY
-    with pytest.raises(IdentityMismatch):
-        parse_sse(dayk, {**snap, "snap": ["错误名称", *snap["snap"][1:]]}, {**gold, **gold["fallbacks"][0]}, DAY)
-
-    hist, time_data = _szse_payloads("159603", "科创创业ETF天弘", split_intraday=True)
-    szse = parse_szse(
-        hist,
-        {**star, **star["fallbacks"][0]},
-        DAY,
-        now=INTRADAY_NOW,
-        time_payload=time_data,
-    )
-    assert szse["provider"] == "szse"
-    assert szse["volume_unit"] == "手" and szse["volume_multiplier"] == 1
-    assert szse["rows"][-1]["date"] == DAY and szse["provisional_date"] == DAY
-    with pytest.raises(IdentityMismatch):
-        parse_szse({"data": {"code": "159603", "name": "不对"}}, {**star, **star["fallbacks"][0]}, DAY)
-
-    kline, hq = _sina_payloads("sz159603", "双创天弘")
-    sina = parse_sina(kline, hq, {**star, **star["fallbacks"][1]}, DAY, now=INTRADAY_NOW)
-    assert sina["provider"] == "sina"
-    assert sina["volume_unit"] == "手" and sina["volume_multiplier"] == 0.01
-    with pytest.raises(IdentityMismatch):
-        parse_sina(kline, 'var hq_str_sz159603="错误名字,1,1,1,1,1";', {**star, **star["fallbacks"][1]}, DAY)
-
-
-def test_primary_disconnect_triggers_isolated_per_asset_fallbacks_and_status(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(data, "_cooldowns", {})
-    monkeypatch.setattr(data, "REQUEST_RETRY_DELAYS", (0, 0))
-    monkeypatch.setattr(data, "uniform", lambda *_: 0)
-
-    gold, star = _etf_assets(tmp_path)
-    dayk_518800, snap_518800 = _sse_payloads("518800", "黄金基金")
-    hist_159603, time_159603 = _szse_payloads("159603", "科创创业ETF天弘")
-    tencent_calls = []
-
-    def handler(request):
-        host = request.url.host
-        if host == "proxy.finance.qq.com":
-            tencent_calls.append(request.url.params["param"])
-            raise httpx.RemoteProtocolError("Server disconnected")
-        if host == "yunhq.sse.com.cn":
-            if "/dayk/" in request.url.path:
-                return httpx.Response(200, json=dayk_518800)
-            return httpx.Response(200, json=snap_518800)
-        if host == "www.szse.cn":
-            if "getTimeData" in request.url.path:
-                return httpx.Response(200, json=time_159603)
-            return httpx.Response(200, json=hist_159603)
-        raise AssertionError(f"Unexpected host: {request.url}")
+    def handler(url, params, headers, kwargs):
+        requested_urls.append(url)
+        return httpx.Response(503, request=httpx.Request("GET", url))
 
     _patch_http(monkeypatch, handler)
-    db_path = tmp_path / "fallbacks.sqlite"
-    rid = run(db_path, [gold, star], send=False, now=INTRADAY_NOW, fetcher=data.fetch)
-    report = storage.report(db_path, rid)
-    g_item, s_item = report["items"]
+    now = datetime(2026, 11, 25, 16, 0, tzinfo=TZ)
+    with pytest.raises(MarketFetchError) as exc_info:
+        data.fetch(asset, "2026-11-25", now=now)
+    assert len(requested_urls) == 1 and "push2his.eastmoney.com" in requested_urls[0]
+    assert [attempt["status"] for attempt in exc_info.value.attempts] == [
+        "error",
+        "identity_mismatch",
+    ]
 
-    # Primary failed with 3 attempts on 518800, then 159603 skipped tencent due to cooldown.
-    assert len(tencent_calls) == 3
-    assert all("sh518800" in call for call in tencent_calls)
-    assert g_item["status"] == s_item["status"] == "ok"
-    assert g_item["provider"] == "sse" and g_item["fetch_status"] == "fallback_ok"
-    assert s_item["provider"] == "szse" and s_item["fetch_status"] == "fallback_ok"
-    assert [a["status"] for a in g_item["attempts"]] == ["disconnected", "ok"]
-    assert [a["status"] for a in s_item["attempts"]] == ["cooling_down", "ok"]
 
-    g_summary = fetch_state_summary(g_item)
-    s_summary = fetch_state_summary(s_item)
-    assert g_summary["label"] == "备用源成功" and "请求断连" in g_summary["detail"]
-    assert s_summary["label"] == "备用源成功" and "同源冷却未请求" in s_summary["detail"]
+def test_b2_intraday_snapshot_quote_time_blocks_false_close_event(monkeypatch):
+    _reset_cooldowns()
+    bars = _sample_series(140, "2026-11-25", cross_on_last=True)
+    hist_bars = bars[:-1]
+    today_bar = bars[-1]
+
+    sse_dayk, sse_snap_1435 = _sse_payloads(
+        "518800", "黄金基金", hist_bars, snap_bar=today_bar, snap_time="143500"
+    )
+    asset_518800 = _etf_asset()
+    sse_spec = {**asset_518800, "provider": "sse", "expected_name": "黄金基金"}
+    at_1436 = datetime(2026, 11, 25, 14, 36, tzinfo=TZ)
+    at_1506 = datetime(2026, 11, 25, 15, 6, tzinfo=TZ)
+
+    direct_1436 = parse_sse(sse_dayk, sse_snap_1435, sse_spec, "2026-11-25", now=at_1436)
+    assert direct_1436["provisional_date"] == "2026-11-25"
+
+    direct_at_1506 = parse_sse(sse_dayk, sse_snap_1435, sse_spec, "2026-11-25", now=at_1506)
+    assert direct_at_1506["provisional_date"] == "2026-11-25"
+    analyzed = analyze(direct_at_1506, "2026-11-25")
+    assert analyzed["is_provisional"] is True
+    assert analyzed["event"] is None
+
+    szse_hist, szse_time_1435 = _szse_payloads(
+        "159603",
+        "科创创业ETF天弘",
+        hist_bars,
+        time_bar=today_bar,
+        market_time="14:35:00",
+    )
+    asset_159603 = _etf_asset(
+        asset_id="star_chinext50_etf_159603",
+        code="159603",
+        secid="0.159603",
+        expected_name="科创创业ETF天弘",
+        fallback_provider="szse",
+        fallback_name="科创创业ETF天弘",
+    )
+    direct_szse_1506 = parse_szse(
+        szse_hist, asset_159603, "2026-11-25", now=at_1506, time_payload=szse_time_1435
+    )
+    assert direct_szse_1506["provisional_date"] == "2026-11-25"
+
+    # Missing/date-only timestamp must not append snap bar for today
+    _, szse_time_notime = _szse_payloads(
+        "159603", "科创创业ETF天弘", hist_bars, time_bar=today_bar
+    )
+    szse_time_notime["data"]["marketTime"] = "2026-11-25"
+    no_time_parsed = parse_szse(
+        szse_hist, asset_159603, "2026-11-25", now=at_1506, time_payload=szse_time_notime
+    )
+    assert no_time_parsed["rows"][-1]["date"] == hist_bars[-1][0]
+
+    # End-to-end fetch at 15:06 rejects 14:35 fallback snap as stale; at 14:36 allows provisional
+    def handler(url, params, headers, kwargs):
+        req = httpx.Request("GET", url, params=params)
+        if "push2his.eastmoney.com" in url:
+            return httpx.Response(503, request=req)
+        if "dayk" in url:
+            return httpx.Response(200, request=req, json=sse_dayk)
+        if "snap" in url:
+            return httpx.Response(200, request=req, json=sse_snap_1435)
+        raise AssertionError(url)
+
+    _patch_http(monkeypatch, handler)
+    provisional_snap = data.fetch(asset_518800, "2026-11-25", now=at_1436)
+    assert provisional_snap["provisional_date"] == "2026-11-25"
+
+    with pytest.raises(MarketFetchError) as stale_exc:
+        data.fetch(asset_518800, "2026-11-25", now=at_1506)
+    assert stale_exc.value.fetch_status == "stale"
+
+
+def test_b3_existing_install_migration_is_repeatable_and_preserves_history(tmp_path, monkeypatch):
+    db_path = tmp_path / "existing.sqlite3"
+    storage.initialize(db_path)
+    now = datetime(2026, 11, 25, 15, 6, tzinfo=TZ)
+    legacy_config = {
+        "assets": [
+            {
+                "id": "sp500",
+                "label": "标普500",
+                "ticker": "SPX",
+                "code": "^GSPC",
+                "provider": "yahoo",
+                "kind": "index",
+                "market": "美国",
+                "currency": "点",
+                "enabled": True,
+                "archived": False,
+                "session_profile": "us_equity",
+                "strategies": ["macd"],
+            },
+            {
+                "id": "gold",
+                "label": "黄金",
+                "ticker": "Au99.99",
+                "code": "AU9999",
+                "secid": "118.AU9999",
+                "expected_name": "Au9999",
+                "provider": "eastmoney",
+                "kind": "spot",
+                "market": "上金所",
+                "currency": "元/克",
+                "enabled": True,
+                "archived": False,
+                "watchlisted": True,
+                "priority": 3,
+                "session_profile": "sge_gold",
+                "strategies": ["macd", "ma"],
+            },
+            {
+                "id": "star_chinext50",
+                "label": "科创创业50",
+                "ticker": "931643",
+                "code": "931643",
+                "secid": "2.931643",
+                "expected_name": "科创创业50",
+                "provider": "eastmoney",
+                "kind": "index",
+                "market": "中证",
+                "currency": "点",
+                "enabled": True,
+                "archived": False,
+                "watchlisted": False,
+                "priority": 7,
+                "session_profile": "cn_equity",
+                "strategies": ["boll_break"],
+            },
+        ],
+        "strategies": [
+            {"id": "macd", "name": "MACD 默认", "kind": "macd", "group": "趋势", "params": {"fast": 12, "slow": 26, "signal": 9}},
+            {"id": "ma", "name": "双均线 20/60", "kind": "ma", "group": "趋势", "params": {"fast": 20, "slow": 60}},
+            {"id": "boll_break", "name": "布林突破", "kind": "boll_break", "group": "布林带", "params": {"period": 20, "stddev": 2}},
+        ],
+    }
+    with storage.connect(db_path) as db:
+        db.execute("BEGIN IMMEDIATE")
+        from chance_track import configuration_store
+
+        cursor = db.execute(
+            "INSERT INTO configuration_versions(created_at, payload) VALUES(?, ?)",
+            (now.isoformat(), json.dumps(legacy_config, ensure_ascii=False)),
+        )
+        configuration_store.write_current(db, legacy_config, cursor.lastrowid)
+
+    legacy_bars = _sample_series(140, "2026-11-25", cross_on_last=True)
+
+    def legacy_fetcher(asset, day):
+        return {
+            "rows": [
+                {"date": d, "open": o, "high": h, "low": l, "close": c, "volume": v}
+                for d, o, h, l, c, v in legacy_bars
+            ],
+            "source": "fixture",
+            "name": asset["label"],
+            "code": asset["code"],
+            "basis": "market_ohlc",
+            "provider": asset["provider"],
+        }
+
+    report_id = run(
+        db_path,
+        [legacy_config["assets"][1]],
+        send=False,
+        now=now,
+        fetcher=legacy_fetcher,
+    )
+    storage.add_decision(
+        db_path,
+        report_id,
+        "gold",
+        "买入",
+        "未执行",
+        "历史黄金记录",
+        now.isoformat(),
+    )
+
+    loaded = load_configuration(db_path)
+    assert [a["code"] for a in loaded["assets"]] == ["^GSPC", "AU9999", "931643"]
+    assert len(legacy_etf_targets(loaded)) == 2
 
     client = TestClient(create_app(db_path))
-    page = client.get(f"/reports/{rid}")
-    html = page.text
-    assert "备用源成功" in html
-    assert "上海证券交易所" in html and "深圳证券交易所" in html
-    assert "请求断连" in html and "同源冷却未请求" in html
+    manage_html = client.get("/manage").text
+    assert "migrate-etf-targets-button" in manage_html
+    assert "AU9999" in manage_html
 
-    import re
-
-    csrf = re.search(r'name="csrf" value="([^"]+)"', html)[1]
-    preview_res = client.post(
-        "/api/workspace/preview",
-        json={
-            "csrf": csrf,
-            "source": {"report_id": rid},
-            "asset_id": "gold_etf_518800",
-            "strategies": [],
-        },
-    )
-    assert preview_res.status_code == 200
-    preview_json = preview_res.json()
-    assert preview_json["fetch_summary"]["code"] == "fallback_ok"
-    assert preview_json["fetch_summary"]["label"] == "备用源成功"
-
-
-def test_stale_1435_and_bad_identity_fallbacks_are_rejected(tmp_path, monkeypatch):
-    monkeypatch.setattr(data, "_cooldowns", {})
-    monkeypatch.setattr(data, "REQUEST_RETRY_DELAYS", (0, 0))
-    monkeypatch.setattr(data, "uniform", lambda *_: 0)
-
-    gold, _ = _etf_assets(tmp_path)
-    stale_dayk, stale_snap = _sse_payloads("518800", "黄金基金", include_last=False)
-    fresh_kline, fresh_hq = _sina_payloads("sh518800", "黄金ETF国泰")
-
-    def handler_fallback_to_sina(request):
-        if request.url.host == "proxy.finance.qq.com":
-            # Tencent returns only yesterday's close at 14:35 -> must NOT be counted as today's success.
-            return httpx.Response(
-                200,
-                json=_tencent_payload("sh518800", "518800", "黄金ETF国泰", include_last=False),
-            )
-        if request.url.host == "yunhq.sse.com.cn":
-            # SSE returns yesterday's close too -> rejected as stale at 14:35.
-            return httpx.Response(200, json=stale_dayk if "/dayk/" in request.url.path else stale_snap)
-        if request.url.host == "money.finance.sina.com.cn":
-            return httpx.Response(200, json=fresh_kline)
-        if request.url.host == "hq.sinajs.cn":
-            return httpx.Response(200, content=fresh_hq.encode("gbk"))
-        raise AssertionError(f"Unexpected URL: {request.url}")
-
-    _patch_http(monkeypatch, handler_fallback_to_sina)
-    snapshot = data.fetch(gold, DAY, now=INTRADAY_NOW)
-    assert snapshot["provider"] == "sina" and snapshot["fetch_status"] == "fallback_ok"
-    assert [a["status"] for a in snapshot["attempts"]] == ["stale", "stale", "ok"]
-
-    # close_only fallback is rejected before confirmation time (14:35), accepted after close (15:06).
-    gold_close_only = deepcopy(gold)
-    gold_close_only["fallbacks"] = [
-        {"provider": "sse", "code": "518800", "expected_name": "黄金基金", "mode": "close_only"}
+    result = migrate_etf_targets(db_path)
+    assert result["changed"] is True
+    assert [(m["from_code"], m["to_code"]) for m in result["migrated"]] == [
+        ("AU9999", "518800"),
+        ("931643", "159603"),
     ]
-    fresh_dayk, fresh_snap = _sse_payloads("518800", "黄金基金")
+    after = load_configuration(db_path)
+    by_id = {a["id"]: a for a in after["assets"]}
+    assert by_id["gold"]["archived"] is True and by_id["gold"]["enabled"] is False
+    assert by_id["star_chinext50"]["archived"] is True
+    assert by_id["gold_etf_518800"]["strategies"] == ["macd", "ma"]
+    assert by_id["gold_etf_518800"]["priority"] == 3
+    assert set(by_id["gold_etf_518800"]["activated"]) == {"macd", "ma"}
+    assert by_id["star_chinext50_etf_159603"]["strategies"] == ["boll_break"]
+    assert by_id["star_chinext50_etf_159603"]["watchlisted"] is False
 
-    def handler_close_only(request):
-        if request.url.host == "proxy.finance.qq.com":
+    # Backfill safety + preserved legacy reports & decisions
+    etf_snapshot = {
+        "rows": [
+            {"date": d, "open": o, "high": h, "low": l, "close": c, "volume": v}
+            for d, o, h, l, c, v in legacy_bars
+        ],
+        "source": "sse",
+        "name": "黄金基金",
+        "code": "518800",
+        "basis": "market_ohlc",
+        "provider": "sse",
+        "fetched_at": now.isoformat(),
+    }
+    evaluated, _, _ = evaluate_strategies(
+        etf_snapshot,
+        [rule for rule in after["strategies"] if rule["id"] in ("macd", "ma")],
+        by_id["gold_etf_518800"],
+        "2026-11-25",
+    )
+    assert all(
+        entry["historical_reference"] is True or not entry.get("event")
+        for entry in evaluated
+    )
+    migrated_run_id = run(
+        db_path,
+        [by_id["gold_etf_518800"]],
+        send=False,
+        now=now,
+        fetcher=lambda a, d: etf_snapshot,
+    )
+    from chance_track.notifications import build_message
+
+    msg_text, pending_keys = build_message(storage.report(db_path, migrated_run_id), set())
+    assert not pending_keys and "新增确认提醒 0 项" in msg_text
+    assert client.get(f"/reports/{report_id}").status_code == 200
+    assert storage.report(db_path, report_id)["items"][0]["asset"]["code"] == "AU9999"
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT note FROM decisions").fetchone()[0] == "历史黄金记录"
+
+    # Idempotent second run & CLI/POST checks
+    assert migrate_etf_targets(db_path)["changed"] is False
+    monkeypatch.setattr(sys, "argv", ["chance-track", "--db", str(db_path), "migrate-etf-targets"])
+    cli.main()
+    assert "migrate-etf-targets-button" not in client.get("/manage").text
+
+
+def test_manage_migrate_etf_targets_post_route(tmp_path):
+    db_path = tmp_path / "web-migrate.sqlite3"
+    storage.initialize(db_path)
+    now = datetime(2026, 11, 25, 16, 0, tzinfo=TZ)
+    legacy = {
+        "assets": [
+            {
+                "id": "gold",
+                "label": "黄金",
+                "ticker": "Au99.99",
+                "code": "AU9999",
+                "secid": "118.AU9999",
+                "expected_name": "Au9999",
+                "provider": "eastmoney",
+                "kind": "spot",
+                "market": "上金所",
+                "currency": "元/克",
+                "enabled": True,
+                "archived": False,
+                "session_profile": "sge_gold",
+                "strategies": ["macd"],
+            }
+        ],
+        "strategies": [
+            {"id": "macd", "name": "MACD 默认", "kind": "macd", "group": "趋势", "params": {"fast": 12, "slow": 26, "signal": 9}}
+        ],
+    }
+    with storage.connect(db_path) as db:
+        db.execute("BEGIN IMMEDIATE")
+        from chance_track import configuration_store
+
+        cur = db.execute(
+            "INSERT INTO configuration_versions(created_at, payload) VALUES(?, ?)",
+            (now.isoformat(), json.dumps(legacy, ensure_ascii=False)),
+        )
+        configuration_store.write_current(db, legacy, cur.lastrowid)
+    client = TestClient(create_app(db_path))
+    manage_html = client.get("/manage").text
+    csrf_match = re.search(r'name="csrf"\s+value="([^"]+)"', manage_html)
+    assert csrf_match is not None
+    token = csrf_match.group(1)
+    resp = client.post("/manage/migrate-etf-targets", data={"csrf": token}, follow_redirects=False)
+    assert resp.status_code == 303
+    by_id = {a["id"]: a for a in load_configuration(db_path)["assets"]}
+    assert by_id["gold"]["archived"] is True
+    assert by_id["gold_etf_518800"]["enabled"] is True
+
+
+def test_b4_short_primary_and_empty_szse_picupdata_do_not_abort_chain(monkeypatch):
+    _reset_cooldowns()
+    short_bars = _sample_series(2, "2026-11-25")
+    full_bars = _sample_series(140, "2026-11-25")
+    sse_dayk, sse_snap = _sse_payloads("518800", "黄金基金", full_bars)
+
+    def handler_short(url, params, headers, kwargs):
+        req = httpx.Request("GET", url, params=params)
+        if "push2his.eastmoney.com" in url:
+            return httpx.Response(
+                200, request=req, json=_eastmoney_payload("518800", "黄金ETF国泰", 1, short_bars)
+            )
+        if "dayk" in url:
+            return httpx.Response(200, request=req, json=sse_dayk)
+        if "snap" in url:
+            return httpx.Response(200, request=req, json=sse_snap)
+        raise AssertionError(url)
+
+    _patch_http(monkeypatch, handler_short)
+    snap = data.fetch(_etf_asset(), "2026-11-25", now=datetime(2026, 11, 25, 16, 0, tzinfo=TZ))
+    assert snap["provider"] == "sse" and snap["fetch_status"] == "fallback_ok"
+    assert [a["status"] for a in snap["attempts"]] == ["insufficient_history", "ok"]
+
+    # SZSE malformed picupdata=[[]] must not crash with IndexError
+    def handler_empty_szse(url, params, headers, kwargs):
+        req = httpx.Request("GET", url, params=params)
+        if "push2his.eastmoney.com" in url:
+            return httpx.Response(503, request=req)
+        if "getHistoryData" in url:
             return httpx.Response(
                 200,
-                json=_tencent_payload("sh518800", "518800", "WRONG_NAME"),
+                request=req,
+                json={"data": {"code": "159603", "name": "科创创业ETF天弘", "picupdata": [[]]}},
             )
-        if request.url.host == "yunhq.sse.com.cn":
-            return httpx.Response(200, json=fresh_dayk if "/dayk/" in request.url.path else fresh_snap)
-        raise AssertionError(f"Unexpected URL: {request.url}")
+        if "getTimeData" in url:
+            return httpx.Response(200, request=req, json={"data": {}})
+        raise AssertionError(url)
 
-    _patch_http(monkeypatch, handler_close_only)
+    _patch_http(monkeypatch, handler_empty_szse)
+    asset_159603 = _etf_asset(
+        asset_id="star_chinext50_etf_159603",
+        code="159603",
+        secid="0.159603",
+        expected_name="科创创业ETF天弘",
+        fallback_provider="szse",
+        fallback_name="科创创业ETF天弘",
+    )
     with pytest.raises(MarketFetchError) as exc_info:
-        data.fetch(gold_close_only, DAY, now=INTRADAY_NOW)
-    assert [a["status"] for a in exc_info.value.attempts] == ["identity_mismatch", "stale"]
-
-    closed_snap = data.fetch(gold_close_only, DAY, now=CLOSED_NOW)
-    assert closed_snap["provider"] == "sse" and closed_snap["provisional_date"] is None
+        data.fetch(asset_159603, "2026-11-25", now=datetime(2026, 11, 25, 16, 0, tzinfo=TZ))
+    assert len(exc_info.value.attempts) == 2
 
 
-def test_total_failure_distinguishes_historical_snapshot_vs_no_quote(tmp_path, monkeypatch):
-    monkeypatch.setattr(data, "_cooldowns", {})
-    monkeypatch.setattr(data, "REQUEST_RETRY_DELAYS", (0, 0))
-    monkeypatch.setattr(data, "uniform", lambda *_: 0)
-
-    gold, star = _etf_assets(tmp_path)
-    db_path = tmp_path / "total_fail.sqlite"
-
-    def ok_only_gold(request):
-        if request.url.host == "proxy.finance.qq.com" and "sh518800" in request.url.params["param"]:
-            return httpx.Response(200, json=_tencent_payload("sh518800", "518800", "黄金ETF国泰"))
-        raise httpx.RemoteProtocolError("offline")
-
-    _patch_http(monkeypatch, ok_only_gold)
-    first_id = run(db_path, [gold, star], send=False, now=INTRADAY_NOW, fetcher=data.fetch)
-    first_report = storage.report(db_path, first_id)
-    assert first_report["items"][0]["status"] == "ok"
-    assert first_report["items"][1]["status"] == "error"
-    assert first_report["items"][1]["has_historical_snapshot"] is False
-
-    # Now both fail; gold has prior snapshot, star has none.
-    monkeypatch.setattr(data, "_cooldowns", {})
-
-    def all_fail(request):
-        raise httpx.RemoteProtocolError("offline")
-
-    _patch_http(monkeypatch, all_fail)
-    second_id = run(
-        db_path,
-        [gold, star],
-        send=False,
-        now=INTRADAY_NOW + timedelta(minutes=1),
-        fetcher=data.fetch,
-    )
-    second_report = storage.report(db_path, second_id)
-    g_err, s_err = second_report["items"]
-    assert g_err["status"] == s_err["status"] == "error"
-    assert g_err["has_historical_snapshot"] is True and g_err["last_quote"]["bar_date"] == DAY
-    assert s_err["has_historical_snapshot"] is False and s_err["last_quote"] is None
-
-    g_summary = fetch_state_summary(g_err)
-    s_summary = fetch_state_summary(s_err)
-    assert g_err["attempts"][0]["status"] == "cooling_down"
-    assert s_err["attempts"][0]["status"] == "disconnected"
-    assert f"仅有历史快照（{DAY}）" in g_summary["label"]
-    assert "同源冷却未请求" in g_summary["detail"]
-    assert "暂无行情" in s_summary["label"]
-    assert "请求断连" in s_summary["label"]
-
-    # When an asset has no non-cooled fallback available, top-level reason is 同源冷却未请求.
-    single = {**star, "id": "single_tx", "fallbacks": []}
-    r_cool = run(
-        db_path,
-        [single],
-        send=False,
-        now=INTRADAY_NOW + timedelta(minutes=2),
-        fetcher=data.fetch,
-    )
-    cool_item = storage.report(db_path, r_cool)["items"][0]
-    cool_summary = fetch_state_summary(cool_item)
-    assert cool_item["fetch_status"] == "cooling_down"
-    assert cool_summary["label"] == "同源冷却未请求 · 暂无行情"
-
-    assert not build_message(second_report, set())[1]
-    rows = signal_rows(second_report)
-    assert f"仅有历史快照（{DAY}）" in rows[0]["detail"]
-    assert "暂无行情" in rows[1]["detail"]
-
-    html = TestClient(create_app(db_path)).get(f"/reports/{second_id}").text
-    assert f"仅有历史快照（{DAY}）" in html
-    assert "暂无行情" in html
-    assert "同源冷却未请求" in html
-
-
-def test_post_cooldown_recovery_rotates_probe_order_without_duplicate_notifications(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(data, "_cooldowns", {})
-    monkeypatch.setattr(data, "REQUEST_RETRY_DELAYS", (0, 0))
-    monkeypatch.setattr(data, "uniform", lambda *_: 0)
-
-    gold, star = _etf_assets(tmp_path)
+def test_b5_cooldown_isolation_and_rotation_tracks_real_requests(tmp_path, monkeypatch):
+    _reset_cooldowns()
     clock = [100.0]
     monkeypatch.setattr(data, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(data, "REQUEST_RETRY_DELAYS", (0.0, 0.0))
 
-    dayk_518800, snap_518800 = _sse_payloads("518800", "黄金基金")
-    hist_159603, time_159603 = _szse_payloads("159603", "科创创业ETF天弘")
-    tencent_online = [False]
-    probe_sequence = []
+    bars = _sample_series(140, "2026-11-25")
+    sse_dayk, sse_snap = _sse_payloads("518800", "黄金基金", bars)
+    szse_hist, szse_time = _szse_payloads("159603", "科创创业ETF天弘", bars)
 
-    def handler(request):
-        host = request.url.host
-        if host == "proxy.finance.qq.com":
-            probe_sequence.append(request.url.params["param"].split(",")[0])
-            if not tencent_online[0]:
-                raise httpx.RemoteProtocolError("down")
-            if "sh518800" in request.url.params["param"]:
-                return httpx.Response(200, json=_tencent_payload("sh518800", "518800", "黄金ETF国泰"))
-            return httpx.Response(200, json=_tencent_payload("sz159603", "159603", "科创创业ETF天弘", market="51"))
-        if host == "yunhq.sse.com.cn":
-            return httpx.Response(200, json=dayk_518800 if "/dayk/" in request.url.path else snap_518800)
-        if host == "www.szse.cn":
-            return httpx.Response(200, json=time_159603 if "getTimeData" in request.url.path else hist_159603)
-        raise AssertionError(f"Unexpected URL: {request.url}")
+    a1 = _etf_asset(asset_id="gold_etf_518800", code="518800", secid="1.518800")
+    a2 = _etf_asset(
+        asset_id="star_chinext50_etf_159603",
+        code="159603",
+        secid="0.159603",
+        expected_name="科创创业ETF天弘",
+        fallback_provider="szse",
+        fallback_name="科创创业ETF天弘",
+    )
+
+    eastmoney_probes = []
+
+    def handler(url, params, headers, kwargs):
+        req = httpx.Request("GET", url, params=params)
+        if "push2his.eastmoney.com" in url:
+            eastmoney_probes.append((clock[0], params.get("secid")))
+            raise httpx.RemoteProtocolError("Server disconnected", request=req)
+        if "dayk" in url:
+            return httpx.Response(200, request=req, json=sse_dayk)
+        if "snap" in url:
+            return httpx.Response(200, request=req, json=sse_snap)
+        if "getHistoryData" in url:
+            return httpx.Response(200, request=req, json=szse_hist)
+        if "getTimeData" in url:
+            return httpx.Response(200, request=req, json=szse_time)
+        raise AssertionError(url)
 
     _patch_http(monkeypatch, handler)
-    db_path = tmp_path / "rotate.sqlite"
-    notifications = []
+    db_path = tmp_path / "rotation.sqlite3"
+    now = datetime(2026, 11, 25, 16, 0, tzinfo=TZ)
 
-    # Run 1 (closed session): gold probes tencent first -> disconnects -> SSE succeeds; star skips -> SZSE succeeds.
-    r1 = run(
-        db_path,
-        [gold, star],
-        send=True,
-        now=CLOSED_NOW,
-        fetcher=data.fetch,
-        sender=lambda *args: notifications.append(args),
-    )
-    assert probe_sequence[0] == "sh518800"
-    assert storage.report(db_path, r1)["probe_order"]["tencent"] == [
-        "gold_etf_518800",
+    r1 = run(db_path, [a1, a2], send=False, now=now)
+    r2 = None
+    clock[0] = 115.0
+    r2 = run(db_path, [a1, a2], send=False, now=now + timedelta(seconds=15))
+    clock[0] = 131.0
+    r3 = run(db_path, [a1, a2], send=False, now=now + timedelta(seconds=31))
+
+    probes_by_run = {}
+    for t, secid in eastmoney_probes:
+        probes_by_run.setdefault(t, []).append(secid)
+    assert probes_by_run[100.0] == ["1.518800", "1.518800", "1.518800"]
+    assert 115.0 not in probes_by_run  # both assets skipped Eastmoney via cooldown
+    assert probes_by_run[131.0] == ["0.159603", "0.159603", "0.159603"]
+
+    rep2 = storage.report(db_path, r2)
+    assert rep2["items"][0]["attempts"][0]["status"] == "cooling_down"
+    assert rep2["probe_order"]["eastmoney"] == ["gold_etf_518800", "star_chinext50_etf_159603"]
+    assert storage.report(db_path, r3)["probe_order"]["eastmoney"] == [
         "star_chinext50_etf_159603",
-    ]
-    assert len(notifications) == 1
-
-    # Advance past cooldown and recover tencent. Run 2 must probe star (159603) FIRST.
-    clock[0] += data.SOURCE_COOLDOWN + 1
-    tencent_online[0] = True
-    probe_sequence.clear()
-    r2 = run(
-        db_path,
-        [gold, star],
-        send=True,
-        now=CLOSED_NOW + timedelta(minutes=1),
-        fetcher=data.fetch,
-        sender=lambda *args: notifications.append(args),
-    )
-    assert probe_sequence == ["sz159603", "sh518800"]
-    report2 = storage.report(db_path, r2)
-    assert [item["asset"]["id"] for item in report2["items"]] == [
         "gold_etf_518800",
-        "star_chinext50_etf_159603",
     ]
-    assert all(item["fetch_status"] == "primary_ok" for item in report2["items"])
-    # Source switch from SSE/SZSE to Tencent on the same confirmed bar must NOT create duplicate notification keys.
-    assert "新增确认提醒 0 项" in notifications[1][1]
 
-    # Run 3 rotates back to gold first.
-    probe_sequence.clear()
-    run(
+
+def test_b6_per_candidate_timeout_preserves_attempts_and_lets_next_run(monkeypatch):
+    _reset_cooldowns()
+    monkeypatch.setattr(data, "REQUEST_DEADLINE", 0.3)
+    with data._cooldown_lock:
+        data._cooldowns["eastmoney"] = data.monotonic() + 30
+
+    bars = _sample_series(140, "2026-11-25")
+    asset = _etf_asset(
+        fallbacks=[
+            {"provider": "sse", "code": "518800", "expected_name": "黄金基金"},
+            {"provider": "szse", "code": "518800", "expected_name": "黄金基金"},
+        ]
+    )
+    # Bypass exchange validation to test a 3-source multi-candidate budget cleanly
+    monkeypatch.setattr(data, "_asset_exchange", lambda _spec: None)
+
+    seen_providers = []
+
+    async def slow_handler(url, params, headers, kwargs):
+        req = httpx.Request("GET", url, params=params)
+        if "yunhq.sse.com.cn" in url:
+            seen_providers.append("sse")
+            await asyncio.sleep(2.0)
+            raise AssertionError("should timeout")
+        if "szse.cn" in url:
+            seen_providers.append("szse")
+            if "getHistoryData" in url:
+                return httpx.Response(200, request=req, json=_szse_payloads("518800", "黄金基金", bars)[0])
+            return httpx.Response(200, request=req, json={"data": {}})
+        raise AssertionError(url)
+
+    _patch_http(monkeypatch, slow_handler)
+    snap = data.fetch(asset, "2026-11-25", now=datetime(2026, 11, 25, 16, 0, tzinfo=TZ))
+    assert snap["provider"] == "szse"
+    assert [a["provider"] for a in snap["attempts"]] == ["eastmoney", "sse", "szse"]
+    assert [a["status"] for a in snap["attempts"]] == ["cooling_down", "disconnected", "ok"]
+
+    # If all fail under short budget, MarketFetchError keeps every step attempted
+    with data._cooldown_lock:
+        data._cooldowns["eastmoney"] = data.monotonic() + 30
+
+    async def hang_all(url, params, headers, kwargs):
+        await asyncio.sleep(2.0)
+        raise AssertionError("should timeout")
+
+    _patch_http(monkeypatch, hang_all)
+    with pytest.raises(MarketFetchError) as exc_info:
+        data.fetch(asset, "2026-11-25", now=datetime(2026, 11, 25, 16, 0, tzinfo=TZ))
+    attempts = exc_info.value.attempts
+    assert [a["provider"] for a in attempts] == ["eastmoney", "sse", "szse"]
+    assert attempts[0]["status"] == "cooling_down"
+    assert attempts[1]["status"] == "disconnected"
+    assert "上海证券交易所" in str(exc_info.value)
+
+
+def test_b7_historical_quote_provider_and_no_backfill_notifications(tmp_path, monkeypatch):
+    _reset_cooldowns()
+    bars = _sample_series(140, "2026-11-25", cross_on_last=True)
+    sse_dayk, sse_snap = _sse_payloads("518800", "黄金基金", bars)
+    asset = _etf_asset()
+    missing = _etf_asset(asset_id="no_history", code="518880", secid="1.518880", expected_name="黄金ETF")
+
+    db_path = tmp_path / "provider-history.sqlite3"
+    cfg = load_configuration(db_path)
+    updated_assets = [
+        {**a, "enabled": False, "strategies": []}
+        if a["id"] != "gold_etf_518800"
+        else {**a, "enabled": True, "strategies": ["macd"]}
+        for a in cfg["assets"]
+    ]
+    updated_assets.append(missing)
+    save_configuration(
         db_path,
-        [gold, star],
-        send=False,
-        now=CLOSED_NOW + timedelta(minutes=2),
-        fetcher=data.fetch,
+        {"assets": updated_assets, "strategies": cfg["strategies"]},
+        cfg["version"],
+        validate_new=False,
     )
-    assert probe_sequence == ["sh518800", "sz159603"]
+    asset = next(a for a in updated_assets if a["id"] == "gold_etf_518800")
+    asset["activated"] = {"macd": "2026-11-24T00:00:00+08:00"}
 
+    fail_all = [False]
 
-def test_configuration_validates_independent_etf_fallbacks_and_preserves_kind(tmp_path):
-    config = load_configuration(tmp_path / "cfg.sqlite")
-    assert [a["id"] for a in config["assets"]] == [
-        "sp500",
-        "nasdaq100",
-        "gold_etf_518800",
-        "star_chinext50_etf_159603",
-        "sox",
-    ]
-    bad = deepcopy(config)
-    bad["assets"][2]["fallbacks"].append(
-        {"provider": "tencent", "code": "518800", "symbol": "sh518800", "expected_name": "黄金ETF国泰"}
+    def handler(url, params, headers, kwargs):
+        req = httpx.Request("GET", url, params=params)
+        if fail_all[0] or "push2his.eastmoney.com" in url:
+            return httpx.Response(503, request=req)
+        if params.get("code") == "518880" or "518880" in url:
+            return httpx.Response(503, request=req)
+        if "dayk" in url:
+            return httpx.Response(200, request=req, json=sse_dayk)
+        if "snap" in url:
+            return httpx.Response(200, request=req, json=sse_snap)
+        raise AssertionError(url)
+
+    _patch_http(monkeypatch, handler)
+    now = datetime(2026, 11, 25, 16, 0, tzinfo=TZ)
+    sent = []
+
+    def sender(title, body):
+        sent.append((title, body))
+
+    r1 = run(db_path, [asset], send=True, now=now, sender=sender)
+    rep1 = storage.report(db_path, r1)
+    assert rep1["items"][0]["provider"] == "sse"
+    # fetched_at reflects receipt wall clock rather than explicit historical `now`
+    assert date.fromisoformat(rep1["items"][0]["snapshot"]["fetched_at"][:10]) >= date(
+        2026, 11, 25
     )
-    with pytest.raises(ValueError, match="独立来源"):
-        validate_configuration(bad)
+    assert "新增确认提醒 1 项" in sent[0][1]
+    assert "首次提醒" in sent[0][1]
+    notified_after_r1 = storage.notified_event_keys(db_path)
+    assert len(notified_after_r1) == 1
 
-    bad_yahoo = deepcopy(config)
-    bad_yahoo["assets"][2]["fallbacks"] = [{"provider": "yahoo", "code": "518800.SS"}]
-    with pytest.raises(ValueError, match="不匹配"):
-        validate_configuration(bad_yahoo)
+    # Re-running with Eastmoney back up returns primary_ok without duplicating notification
+    def recover_handler(url, params, headers, kwargs):
+        req = httpx.Request("GET", url, params=params)
+        if "push2his.eastmoney.com" in url:
+            return httpx.Response(
+                200, request=req, json=_eastmoney_payload("518800", "黄金ETF国泰", 1, bars)
+            )
+        raise AssertionError(url)
 
-    # Saving preserves kind == "etf"
-    updated = deepcopy(config)
-    updated["assets"][2]["label"] = "黄金ETF国泰（已更名）"
-    new_ver = save_configuration(tmp_path / "cfg.sqlite", updated, config["version"])
-    assert new_ver == 2
-    saved_gold = next(
-        a for a in load_configuration(tmp_path / "cfg.sqlite")["assets"] if a["id"] == "gold_etf_518800"
+    # First check error state while sse was last successful quote
+    fail_all[0] = True
+    r2 = run(db_path, [asset, missing], send=True, now=now + timedelta(minutes=2), sender=sender)
+    rep2 = storage.report(db_path, r2)
+    err_asset, err_missing = rep2["items"]
+    assert err_asset["last_quote"]["provider"] == "sse"
+    summary = fetch_state_summary(err_asset)
+    assert summary["provider_label"] == "上海证券交易所"
+    assert fetch_state_summary(err_missing)["provider_label"] == "暂无行情"
+
+    client = TestClient(create_app(db_path))
+    html = client.get(f"/reports/{r2}").text
+    assert "上海证券交易所" in html
+
+    # Recover via eastmoney after sse -> same event key is already notified, zero duplicate alert
+    fail_all[0] = False
+    _patch_http(monkeypatch, recover_handler)
+    r3 = run(db_path, [asset], send=True, now=now + timedelta(minutes=5), sender=sender)
+    assert storage.report(db_path, r3)["items"][0]["provider"] == "eastmoney"
+    assert "新增确认提醒 0 项" in sent[-1][1]
+    assert "已确认 · 已提醒" in sent[-1][1]
+    assert storage.notified_event_keys(db_path) == notified_after_r1
+
+
+def test_close_only_fallback_skipped_intraday(monkeypatch):
+    _reset_cooldowns()
+    bars = _sample_series(140, "2026-11-25")
+    sse_dayk, sse_snap = _sse_payloads("518800", "黄金基金", bars, snap_time="143500")
+    asset = _etf_asset(
+        fallbacks=[
+            {
+                "provider": "sse",
+                "code": "518800",
+                "expected_name": "黄金基金",
+                "mode": "close_only",
+            }
+        ]
     )
-    assert saved_gold["kind"] == "etf"
+
+    def handler(url, params, headers, kwargs):
+        req = httpx.Request("GET", url, params=params)
+        if "push2his.eastmoney.com" in url:
+            return httpx.Response(503, request=req)
+        if "dayk" in url:
+            return httpx.Response(200, request=req, json=sse_dayk)
+        if "snap" in url:
+            return httpx.Response(200, request=req, json=sse_snap)
+        raise AssertionError(url)
+
+    _patch_http(monkeypatch, handler)
+    with pytest.raises(MarketFetchError) as exc_info:
+        data.fetch(asset, "2026-11-25", now=datetime(2026, 11, 25, 14, 36, tzinfo=TZ))
+    assert exc_info.value.fetch_status == "stale"
+    assert [a["status"] for a in exc_info.value.attempts] == ["error", "stale"]

@@ -19,7 +19,9 @@ from .configuration import (
     DuplicateStrategy,
     configuration_history,
     configuration_version,
+    legacy_etf_targets,
     load_configuration,
+    migrate_etf_targets,
     save_configuration,
 )
 from .data import TZ
@@ -295,6 +297,7 @@ def create_app(db_path):
                     rule["id"] for rule in saved["strategies"]
                 ],
                 "conflict": status == 409,
+                "legacy_etf_targets": legacy_etf_targets(saved),
                 "versions": configuration_history(db_path),
                 "token": token,
                 "error": error,
@@ -303,6 +306,20 @@ def create_app(db_path):
             },
             status_code=status,
         )
+
+    @app.post("/manage/migrate-etf-targets")
+    def migrate_legacy_etf_targets(request: Request, csrf: str = Form()):
+        if not secrets.compare_digest(csrf, token):
+            raise HTTPException(403, "请刷新页面后重试")
+        try:
+            migrate_etf_targets(db_path)
+        except (ValueError, KeyError, TypeError, httpx.HTTPError) as exc:
+            return management_page(
+                request,
+                exc,
+                409 if isinstance(exc, ConfigurationConflict) else 400,
+            )
+        return RedirectResponse("/manage", status_code=303)
 
     @app.get("/configuration/{version}")
     def historical_configuration(version: int):

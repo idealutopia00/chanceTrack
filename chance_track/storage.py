@@ -257,7 +257,8 @@ def last_market_quote(path, asset_id):
                    json_extract(item.value, '$.snapshot.fetched_at') AS fetched_at,
                    json_extract(item.value, '$.result.bar_date') AS bar_date,
                    json_extract(item.value, '$.result.close') AS close,
-                   json_extract(item.value, '$.result.is_provisional') AS is_provisional
+                   json_extract(item.value, '$.result.is_provisional') AS is_provisional,
+                   json_extract(item.value, '$.snapshot.provider') AS provider
             FROM reports, json_each(reports.payload, '$.items') AS item
             WHERE json_extract(item.value, '$.asset.id') = ?
               AND json_extract(item.value, '$.status') IN ('ok', 'warning')
@@ -268,7 +269,12 @@ def last_market_quote(path, asset_id):
             """,
             (asset_id,),
         ).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        quote = dict(row)
+        if quote.get("provider") is None:
+            quote.pop("provider", None)
+        return quote
 
 
 def decisions(path, report_id):

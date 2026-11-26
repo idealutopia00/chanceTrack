@@ -18,10 +18,8 @@ TZ = ZoneInfo("Asia/Shanghai")
 PROVIDER_LABELS = {
     "yahoo": "Yahoo Finance",
     "eastmoney": "东方财富",
-    "tencent": "腾讯财经",
     "sse": "上海证券交易所",
     "szse": "深圳证券交易所",
-    "sina": "新浪财经",
 }
 
 
@@ -82,11 +80,30 @@ class IdentityMismatch(ValueError):
     pass
 
 
+class InsufficientMarketHistory(ValueError):
+    pass
+
+
 class MarketFetchError(ValueError):
     def __init__(self, message, *, fetch_status="error", attempts=()):
         super().__init__(message)
         self.fetch_status = fetch_status
         self.attempts = list(attempts)
+
+
+def _asset_exchange(spec):
+    provider = spec.get("provider")
+    if provider == "sse":
+        return "sh"
+    if provider == "szse":
+        return "sz"
+    if provider == "eastmoney":
+        secid = str(spec.get("secid") or "")
+        if secid.startswith("1."):
+            return "sh"
+        if secid.startswith("0."):
+            return "sz"
+    return None
 
 
 def parse_eastmoney(payload, asset, as_of, now=None):
@@ -177,67 +194,25 @@ def parse_yahoo(payload, asset, as_of, now=None):
     }
 
 
-def parse_tencent(payload, asset, as_of, now=None):
-    symbol = asset.get("symbol") or ""
-    if not symbol.startswith(("sh", "sz")) or not isinstance(payload, dict):
-        raise IdentityMismatch("腾讯行情标的格式不匹配")
-    data = (payload.get("data") or {}).get(symbol)
-    qt = (data.get("qt") or {}).get(symbol) if isinstance(data, dict) else None
-    if not isinstance(qt, list) or len(qt) <= 34:
-        raise IdentityMismatch("腾讯行情缺少标的身份信息")
-    expected_market = "1" if symbol.startswith("sh") else "51"
-    if str(qt[2]) != asset.get("code") or str(qt[1]) != asset.get("expected_name"):
-        raise IdentityMismatch("腾讯行情标的身份不匹配")
-    if str(qt[0]) != expected_market:
-        raise IdentityMismatch("腾讯行情市场身份不匹配")
-    rows = []
-    for entry in data.get("day") or []:
-        if len(entry) < 5:
-            continue
-        rows.append(
-            {
-                "date": entry[0],
-                "open": entry[1],
-                "high": entry[3],
-                "low": entry[4],
-                "close": entry[2],
-                "volume": entry[5] if len(entry) > 5 else None,
-            }
-        )
-    raw_time = str(qt[30])
-    if len(raw_time) >= 8 and raw_time[:8].isdigit():
-        qt_day = f"{raw_time[:4]}-{raw_time[4:6]}-{raw_time[6:8]}"
-        if (not rows or qt_day > rows[-1]["date"]) and _valid_positive_ohlc(
-            qt[5], qt[33], qt[34], qt[3]
-        ):
-            rows.append(
-                {
-                    "date": qt_day,
-                    "open": qt[5],
-                    "high": qt[33],
-                    "low": qt[34],
-                    "close": qt[3],
-                    "volume": qt[6],
-                }
-            )
-    now = (now or datetime.now(TZ)).astimezone(TZ)
-    session = apply_sessions(rows, asset.get("session_profile", "cn_equity"), now)
-    validate_rows(session["rows"])
-    return {
-        **session,
-        "code": asset["code"],
-        "name": str(qt[1]),
-        "basis": "market_ohlc",
-        "provider": "tencent",
-        **_etf_volume_meta(asset, 1),
-    }
-
-
 def _yyyymmdd_to_iso(value):
     digits = str(value)
     if len(digits) != 8 or not digits.isdigit():
         raise ValueError("上交所行情日期格式无效")
     return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+
+
+def _parse_sse_quote_at(day_iso, raw_time):
+    if raw_time is None:
+        return None
+    digits = str(raw_time).strip()
+    if not digits.isdigit() or not (5 <= len(digits) <= 6):
+        return None
+    digits = digits.zfill(6)
+    hh, mm, ss = int(digits[:2]), int(digits[2:4]), int(digits[4:6])
+    if hh > 23 or mm > 59 or ss > 59:
+        return None
+    day = date.fromisoformat(day_iso)
+    return datetime(day.year, day.month, day.day, hh, mm, ss, tzinfo=TZ)
 
 
 def parse_sse(dayk_payload, snap_payload, asset, as_of, now=None):
@@ -269,10 +244,14 @@ def parse_sse(dayk_payload, snap_payload, asset, as_of, now=None):
                 "volume": entry[5] if len(entry) > 5 else None,
             }
         )
+    latest_quote_at = None
     if snap_payload.get("date") is not None:
         snap_day = _yyyymmdd_to_iso(snap_payload["date"])
-        if (not rows or snap_day > rows[-1]["date"]) and _valid_positive_ohlc(
-            snap[2], snap[3], snap[4], snap[5]
+        snap_quote_at = _parse_sse_quote_at(snap_day, snap_payload.get("time"))
+        if (
+            (not rows or snap_day > rows[-1]["date"])
+            and snap_quote_at is not None
+            and _valid_positive_ohlc(snap[2], snap[3], snap[4], snap[5])
         ):
             rows.append(
                 {
@@ -284,8 +263,16 @@ def parse_sse(dayk_payload, snap_payload, asset, as_of, now=None):
                     "volume": snap[8],
                 }
             )
+            latest_quote_at = snap_quote_at
+        elif rows and snap_day == rows[-1]["date"] and snap_quote_at is not None:
+            latest_quote_at = snap_quote_at
     now = (now or datetime.now(TZ)).astimezone(TZ)
-    session = apply_sessions(rows, asset.get("session_profile", "cn_equity"), now)
+    session = apply_sessions(
+        rows,
+        asset.get("session_profile", "cn_equity"),
+        now,
+        latest_quote_at=latest_quote_at,
+    )
     validate_rows(session["rows"])
     return {
         **session,
@@ -307,7 +294,7 @@ def parse_szse(hist_payload, asset, as_of, now=None, time_payload=None):
         raise IdentityMismatch("深交所行情标的身份不匹配")
     rows = []
     for entry in data.get("picupdata") or []:
-        if len(entry) < 5:
+        if not isinstance(entry, list) or len(entry) < 5:
             continue
         rows.append(
             {
@@ -319,6 +306,7 @@ def parse_szse(hist_payload, asset, as_of, now=None, time_payload=None):
                 "volume": entry[7] if len(entry) > 7 else None,
             }
         )
+    latest_quote_at = None
     if time_payload is not None:
         tdata = time_payload.get("data") if isinstance(time_payload, dict) else None
         if (
@@ -327,10 +315,15 @@ def parse_szse(hist_payload, asset, as_of, now=None, time_payload=None):
             or tdata.get("name") != asset.get("expected_name")
         ):
             raise IdentityMismatch("深交所盘中行情标的身份不匹配")
-        market_time = str(tdata.get("marketTime") or "")
-        if len(market_time) >= 10:
-            tday = market_time[:10]
-            date.fromisoformat(tday)
+        market_time = str(tdata.get("marketTime") or "").strip()
+        try:
+            quote_dt = datetime.strptime(market_time, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=TZ
+            )
+        except ValueError:
+            quote_dt = None
+        if quote_dt is not None:
+            tday = quote_dt.date().isoformat()
             if (not rows or tday > rows[-1]["date"]) and _valid_positive_ohlc(
                 tdata.get("open"), tdata.get("high"), tdata.get("low"), tdata.get("now")
             ):
@@ -344,8 +337,16 @@ def parse_szse(hist_payload, asset, as_of, now=None, time_payload=None):
                         "volume": tdata.get("volume"),
                     }
                 )
+                latest_quote_at = quote_dt
+            elif rows and tday == rows[-1]["date"]:
+                latest_quote_at = quote_dt
     now = (now or datetime.now(TZ)).astimezone(TZ)
-    session = apply_sessions(rows, asset.get("session_profile", "cn_equity"), now)
+    session = apply_sessions(
+        rows,
+        asset.get("session_profile", "cn_equity"),
+        now,
+        latest_quote_at=latest_quote_at,
+    )
     validate_rows(session["rows"])
     return {
         **session,
@@ -354,56 +355,6 @@ def parse_szse(hist_payload, asset, as_of, now=None, time_payload=None):
         "basis": "market_ohlc",
         "provider": "szse",
         **_etf_volume_meta(asset, 1),
-    }
-
-
-def parse_sina(kline_payload, hq_text, asset, as_of, now=None):
-    symbol = asset.get("symbol") or ""
-    marker = f'hq_str_{symbol}="'
-    if not symbol or not isinstance(hq_text, str) or marker not in hq_text:
-        raise IdentityMismatch("新浪行情缺少标的身份响应")
-    quoted = hq_text.split(marker, 1)[1].split('"', 1)[0]
-    fields = quoted.split(",")
-    if len(fields) <= 5 or fields[0] != asset.get("expected_name"):
-        raise IdentityMismatch("新浪行情标的身份不匹配")
-    if not isinstance(kline_payload, list) or not kline_payload:
-        raise ValueError("新浪行情没有可用的日线")
-    rows = [
-        {
-            "date": entry["day"],
-            "open": entry["open"],
-            "high": entry["high"],
-            "low": entry["low"],
-            "close": entry["close"],
-            "volume": entry.get("volume"),
-        }
-        for entry in kline_payload
-    ]
-    if len(fields) > 30 and fields[30]:
-        date.fromisoformat(fields[30])
-        if (not rows or fields[30] > rows[-1]["date"]) and _valid_positive_ohlc(
-            fields[1], fields[4], fields[5], fields[3]
-        ):
-            rows.append(
-                {
-                    "date": fields[30],
-                    "open": fields[1],
-                    "high": fields[4],
-                    "low": fields[5],
-                    "close": fields[3],
-                    "volume": fields[8] if len(fields) > 8 else None,
-                }
-            )
-    now = (now or datetime.now(TZ)).astimezone(TZ)
-    session = apply_sessions(rows, asset.get("session_profile", "cn_equity"), now)
-    validate_rows(session["rows"])
-    return {
-        **session,
-        "code": asset["code"],
-        "name": fields[0],
-        "basis": "market_ohlc",
-        "provider": "sina",
-        **_etf_volume_meta(asset, 0.01),
     }
 
 
@@ -453,6 +404,18 @@ def verify_session_freshness(
                 raise StaleMarketSnapshot(
                     f"该备用源仅支持收盘后核对，{active_day} 尚未收盘确认"
                 )
+    quote_at_raw = (snapshot.get("session") or {}).get("quote_at")
+    if quote_at_raw:
+        quote_at = datetime.fromisoformat(quote_at_raw)
+        latest_bounds = session_bounds(profile, latest_bar)
+        if (
+            latest_bounds
+            and now >= latest_bounds["confirm_after"]
+            and quote_at < latest_bounds["close"]
+        ):
+            raise StaleMarketSnapshot(
+                f"快照时间 {quote_at.astimezone(TZ).strftime('%H:%M:%S')} 早于收盘时间，尚非收盘确认行情"
+            )
     if (is_fallback or has_fallbacks) and (
         date.fromisoformat(as_of) - date.fromisoformat(latest_bar)
     ).days > 7:
@@ -497,25 +460,42 @@ async def get_market_response(client, provider, url, params, headers=None):
 def source_specs(asset):
     primary = {
         key: asset[key]
-        for key in ("provider", "code", "secid", "symbol", "expected_name")
+        for key in ("provider", "code", "secid", "expected_name")
         if asset.get(key)
     }
     primary["role"] = "primary"
     specs = [primary]
     seen_providers = {primary.get("provider")}
+    primary_code = asset.get("code")
+    primary_exchange = _asset_exchange(primary)
     for entry in asset.get("fallbacks", []):
         provider = entry.get("provider")
         if not provider or provider in seen_providers:
             continue
         seen_providers.add(provider)
-        specs.append(
-            {
-                "code": asset.get("code"),
-                "expected_name": asset.get("expected_name"),
-                **entry,
-                "role": "fallback",
-            }
-        )
+        spec = {
+            "provider": provider,
+            "code": primary_code,
+            "expected_name": entry.get("expected_name") or asset.get("expected_name"),
+            "mode": entry.get("mode"),
+            "role": "fallback",
+        }
+        if entry.get("secid") is not None:
+            spec["secid"] = entry["secid"]
+        mismatch = None
+        if entry.get("code") is not None and entry.get("code") != primary_code:
+            mismatch = "备用源标的代码与主标的不一致"
+        else:
+            entry_exchange = _asset_exchange(spec)
+            if (
+                primary_exchange
+                and entry_exchange
+                and primary_exchange != entry_exchange
+            ):
+                mismatch = "备用源交易所与主标的不一致"
+        if mismatch:
+            spec["identity_error"] = mismatch
+        specs.append(spec)
     return specs
 
 
@@ -543,12 +523,6 @@ async def _fetch_single_source(client, asset, as_of, now):
         )
         response.raise_for_status()
         return parse_yahoo(response.json(), asset, as_of, now=now), str(response.url)
-    if provider == "tencent":
-        url = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
-        params = {"param": f"{asset['symbol']},day,,,600,"}
-        response = await get_market_response(client, provider, url, params)
-        response.raise_for_status()
-        return parse_tencent(response.json(), asset, as_of, now=now), str(response.url)
     if provider == "sse":
         headers = {"Referer": "https://www.sse.com.cn/"}
         dayk_url = f"https://yunhq.sse.com.cn:32042/v1/sh1/dayk/{quote(asset['code'], safe='')}"
@@ -579,8 +553,11 @@ async def _fetch_single_source(client, asset, as_of, now):
         hist_json = hist_resp.json()
         time_json = None
         active_day = active_trading_day(asset.get("session_profile", "cn_equity"), now)
-        pic = ((hist_json.get("data") or {}).get("picupdata") or [])
-        if active_day and (not pic or pic[-1][0] < active_day):
+        pic = (hist_json.get("data") or {}).get("picupdata") or []
+        last_hist_date = (
+            pic[-1][0] if pic and isinstance(pic[-1], list) and pic[-1] else None
+        )
+        if active_day and (not last_hist_date or str(last_hist_date) < active_day):
             time_url = "https://www.szse.cn/api/market/ssjjhq/getTimeData"
             time_resp = await get_market_response(
                 client,
@@ -595,32 +572,6 @@ async def _fetch_single_source(client, asset, as_of, now):
             parse_szse(hist_json, asset, as_of, now=now, time_payload=time_json),
             str(hist_resp.url),
         )
-    if provider == "sina":
-        kline_url = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
-        hq_url = f"https://hq.sinajs.cn/list={quote(asset['symbol'], safe='')}"
-        headers = {"Referer": "https://finance.sina.com.cn"}
-        kline_resp = await get_market_response(
-            client,
-            provider,
-            kline_url,
-            {
-                "symbol": asset["symbol"],
-                "scale": "240",
-                "ma": "no",
-                "datalen": "600",
-            },
-            headers=headers,
-        )
-        kline_resp.raise_for_status()
-        hq_resp = await get_market_response(
-            client, provider, hq_url, {}, headers=headers
-        )
-        hq_resp.raise_for_status()
-        hq_text = hq_resp.content.decode("gbk", errors="replace")
-        return (
-            parse_sina(kline_resp.json(), hq_text, asset, as_of, now=now),
-            str(kline_resp.url),
-        )
     raise ValueError("未知行情来源")
 
 
@@ -630,14 +581,18 @@ def _classify_attempt_error(exc):
     if isinstance(
         exc,
         (
+            TimeoutError,
             httpx.RemoteProtocolError,
             httpx.ConnectError,
+            httpx.ConnectTimeout,
             httpx.TimeoutException,
         ),
     ):
         return "disconnected"
     if isinstance(exc, StaleMarketSnapshot):
         return "stale"
+    if isinstance(exc, InsufficientMarketHistory):
+        return "insufficient_history"
     if isinstance(exc, IdentityMismatch) or "身份" in str(exc):
         return "identity_mismatch"
     return "error"
@@ -651,39 +606,58 @@ def fetch(asset, as_of, now=None):
 
 
 async def fetch_market_snapshot(asset, as_of, now=None):
-    explicit_now = now is not None
     now = (now or datetime.now(TZ)).astimezone(TZ)
     specs = source_specs(asset)
-    per_source_timeout = (
-        20
-        if len(specs) == 1
-        else min(12.0, max(3.0, REQUEST_DEADLINE / (len(specs) + 1)))
-    )
+    multi_source = len(specs) > 1
+    per_source_timeout = min(12.0, float(REQUEST_DEADLINE)) if multi_source else 20
     client_timeout = (
-        per_source_timeout
-        if len(specs) == 1
-        else httpx.Timeout(per_source_timeout, connect=min(5.0, per_source_timeout))
+        httpx.Timeout(per_source_timeout, connect=min(5.0, per_source_timeout))
+        if multi_source
+        else per_source_timeout
     )
     attempts = []
     primary_provider = asset.get("provider")
-    async with (
-        asyncio.timeout(REQUEST_DEADLINE),
-        httpx.AsyncClient(
-            timeout=client_timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 ChanceTrack/0.9"},
-        ) as client,
-    ):
-        for spec in specs:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + REQUEST_DEADLINE
+    catch_types = (
+        (TimeoutError, httpx.HTTPError, ValueError, KeyError, TypeError, IndexError)
+        if multi_source
+        else (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError)
+    )
+
+    async def try_candidates(client):
+        for index, spec in enumerate(specs):
             provider = spec.get("provider")
             target = {
                 **asset,
-                **{k: v for k, v in spec.items() if k not in ("role", "mode")},
+                **{
+                    k: v
+                    for k, v in spec.items()
+                    if k not in ("role", "mode", "identity_error")
+                },
             }
             try:
-                snapshot, url_str = await _fetch_single_source(
-                    client, target, as_of, now
-                )
+                if spec.get("identity_error"):
+                    raise IdentityMismatch(spec["identity_error"])
+                if multi_source:
+                    remaining_candidates = len(specs) - index
+                    remaining_budget = deadline - loop.time()
+                    if remaining_budget <= 0:
+                        raise TimeoutError(f"超出采集总预算 {REQUEST_DEADLINE} 秒")
+                    candidate_budget = min(
+                        per_source_timeout,
+                        max(0.01, remaining_budget / remaining_candidates),
+                    )
+                    async with asyncio.timeout(candidate_budget):
+                        snapshot, url_str = await _fetch_single_source(
+                            client, target, as_of, now
+                        )
+                else:
+                    snapshot, url_str = await _fetch_single_source(
+                        client, target, as_of, now
+                    )
+                if snapshot.get("code") != asset.get("code"):
+                    raise IdentityMismatch("返回标的代码与主标的不一致")
                 verify_session_freshness(
                     snapshot,
                     target,
@@ -691,8 +665,17 @@ async def fetch_market_snapshot(asset, as_of, now=None):
                     now,
                     source_mode=spec.get("mode"),
                     is_fallback=(spec["role"] == "fallback"),
-                    has_fallbacks=(len(specs) > 1),
+                    has_fallbacks=multi_source,
                 )
+                confirmed_rows = [
+                    row
+                    for row in snapshot["rows"]
+                    if row["date"] != snapshot.get("provisional_date")
+                ]
+                if multi_source and len(confirmed_rows) < 120:
+                    raise InsufficientMarketHistory(
+                        f"已收盘日线仅 {len(confirmed_rows)} 根，不足 120 根分析基线"
+                    )
                 attempts.append(
                     {
                         "provider": provider,
@@ -704,7 +687,7 @@ async def fetch_market_snapshot(asset, as_of, now=None):
                 )
                 snapshot.update(
                     source=url_str,
-                    fetched_at=now.isoformat() if explicit_now else datetime.now(TZ).isoformat(),
+                    fetched_at=datetime.now(TZ).isoformat(),
                     primary_provider=primary_provider,
                     fallback_used=spec["role"] == "fallback",
                     fetch_status="fallback_ok"
@@ -713,21 +696,31 @@ async def fetch_market_snapshot(asset, as_of, now=None):
                     attempts=attempts,
                 )
                 return snapshot
-            except (
-                httpx.HTTPError,
-                ValueError,
-                KeyError,
-                TypeError,
-            ) as exc:
+            except catch_types as exc:
                 attempts.append(
                     {
                         "provider": provider,
                         "provider_label": provider_label(provider),
                         "role": spec["role"],
                         "status": _classify_attempt_error(exc),
-                        "detail": f"{type(exc).__name__}: {exc}",
+                        "detail": f"{type(exc).__name__}: {str(exc) or '采集超过候选时限'}",
                     }
                 )
+        return None
+
+    async with httpx.AsyncClient(
+        timeout=client_timeout,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 ChanceTrack/0.9"},
+    ) as client:
+        if multi_source:
+            snapshot = await try_candidates(client)
+        else:
+            async with asyncio.timeout(REQUEST_DEADLINE):
+                snapshot = await try_candidates(client)
+    if snapshot is not None:
+        return snapshot
+
     statuses = [entry["status"] for entry in attempts]
     if statuses and all(status == "cooling_down" for status in statuses):
         aggregate_status = "cooling_down"
@@ -737,6 +730,8 @@ async def fetch_market_snapshot(asset, as_of, now=None):
         aggregate_status = "disconnected"
     elif "stale" in statuses:
         aggregate_status = "stale"
+    elif "insufficient_history" in statuses:
+        aggregate_status = "insufficient_history"
     else:
         aggregate_status = "error"
     summary = "；".join(

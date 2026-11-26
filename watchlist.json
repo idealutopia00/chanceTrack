@@ -28,8 +28,8 @@
     "label": "黄金ETF国泰",
     "ticker": "518800",
     "code": "518800",
-    "symbol": "sh518800",
-    "provider": "tencent",
+    "secid": "1.518800",
+    "provider": "eastmoney",
     "expected_name": "黄金ETF国泰",
     "kind": "etf",
     "group": "黄金",
@@ -43,12 +43,6 @@
         "provider": "sse",
         "code": "518800",
         "expected_name": "黄金基金"
-      },
-      {
-        "provider": "sina",
-        "code": "518800",
-        "symbol": "sh518800",
-        "expected_name": "黄金ETF国泰"
       }
     ]
   },
@@ -57,8 +51,8 @@
     "label": "科创创业ETF天弘",
     "ticker": "159603",
     "code": "159603",
-    "symbol": "sz159603",
-    "provider": "tencent",
+    "secid": "0.159603",
+    "provider": "eastmoney",
     "expected_name": "科创创业ETF天弘",
     "kind": "etf",
     "group": "国内指数",
@@ -79,12 +73,6 @@
         "provider": "szse",
         "code": "159603",
         "expected_name": "科创创业ETF天弘"
-      },
-      {
-        "provider": "sina",
-        "code": "159603",
-        "symbol": "sz159603",
-        "expected_name": "双创天弘"
       }
     ]
   },

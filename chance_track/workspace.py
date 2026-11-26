@@ -52,7 +52,7 @@ def catalog(path, query=""):
         if q
         in " ".join(
             [
-                *(str(a.get(k, "")) for k in ("label", "code", "ticker", "symbol", "market")),
+                *(str(a.get(k, "")) for k in ("label", "code", "ticker", "market")),
                 *(str(alias) for alias in a.get("aliases", [])),
             ]
         ).casefold()
@@ -223,7 +223,6 @@ def edit(path, payload, fetcher=fetch):
                         "label",
                         "ticker",
                         "code",
-                        "symbol",
                         "provider",
                         "session_profile",
                         "secid",

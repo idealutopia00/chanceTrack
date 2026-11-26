@@ -195,7 +195,21 @@ def validate_configuration(config):
         else:
             raise ValueError("未知策略类型")
     assets_by_id = {asset["id"]: asset for asset in config["assets"]}
-    valid_providers = ("yahoo", "eastmoney", "tencent", "sse", "szse", "sina")
+    valid_providers = ("yahoo", "eastmoney", "sse", "szse")
+
+    def source_exchange(spec):
+        provider = spec.get("provider")
+        if provider == "sse":
+            return "sh"
+        if provider == "szse":
+            return "sz"
+        if provider == "eastmoney":
+            secid = str(spec.get("secid") or "")
+            if secid.startswith("1."):
+                return "sh"
+            if secid.startswith("0."):
+                return "sz"
+        return None
 
     def validate_source(spec, session_profile, default_code=None):
         provider = spec.get("provider")
@@ -211,12 +225,6 @@ def validate_configuration(config):
                 raise ValueError("东方财富需要secid和精确名称")
             if spec["secid"].split(".")[-1] != code:
                 raise ValueError("东方财富须填写匹配的市场代码")
-        elif provider in ("tencent", "sina"):
-            symbol = spec.get("symbol") or ""
-            if not symbol or not spec.get("expected_name"):
-                raise ValueError("腾讯与新浪数据源需要市场代码 symbol 和精确名称")
-            if not re.fullmatch(r"(sh|sz)[A-Za-z0-9]+", symbol) or symbol[2:] != code:
-                raise ValueError("腾讯与新浪 symbol 须以 sh/sz 开头并匹配标的代码")
         elif provider in ("sse", "szse"):
             if not code or not spec.get("expected_name"):
                 raise ValueError("交易所数据源需要标的代码和精确名称")
@@ -237,10 +245,20 @@ def validate_configuration(config):
         if not isinstance(fallbacks, list):
             raise ValueError("备用行情源须为列表")
         seen_providers = {a["provider"]}
+        primary_exchange = source_exchange(a)
         for entry in fallbacks:
             if not isinstance(entry, dict):
                 raise ValueError("备用行情源配置无效")
+            if entry.get("code") is not None and entry.get("code") != a["code"]:
+                raise ValueError("备用行情源标的代码须与主标的一致")
             validate_source(entry, a["session_profile"], default_code=a["code"])
+            entry_exchange = source_exchange(entry)
+            if (
+                primary_exchange
+                and entry_exchange
+                and primary_exchange != entry_exchange
+            ):
+                raise ValueError("备用行情源交易所须与主标的一致")
             if entry["provider"] in seen_providers:
                 raise ValueError("备用行情源须使用与主源及其他备用源不同的独立来源")
             seen_providers.add(entry["provider"])
@@ -352,7 +370,9 @@ class ConfigurationConflict(ValueError):
     pass
 
 
-def save_configuration(path, config, expected_version, fetcher=fetch, *, lifecycle=None):
+def save_configuration(
+    path, config, expected_version, fetcher=fetch, *, lifecycle=None, validate_new=True
+):
     previous = load_configuration(path)
     if previous["version"] != expected_version:
         raise ConfigurationConflict("配置已被修改，请重新加载后保存")
@@ -398,14 +418,14 @@ def save_configuration(path, config, expected_version, fetcher=fetch, *, lifecyc
             "provider",
             "code",
             "secid",
-            "symbol",
             "expected_name",
             "session_profile",
         )
         if old and any(a.get(k) != old.get(k) for k in identity):
             raise ValueError("已有标的身份不可修改；请归档后使用新ID添加")
         if (
-            a.get("enabled")
+            validate_new
+            and a.get("enabled")
             and not a.get("archived")
             and (not old or not old.get("enabled") or old.get("archived"))
         ):
@@ -496,3 +516,101 @@ def configuration_version(path, version):
             if row
             else None
         )
+
+
+LEGACY_ETF_REPLACEMENTS = (
+    ("gold", "AU9999", "gold_etf_518800"),
+    ("star_chinext50", "931643", "star_chinext50_etf_159603"),
+)
+
+
+def legacy_etf_targets(config):
+    assets = {asset["id"]: asset for asset in config.get("assets", [])}
+    pending = []
+    for legacy_id, legacy_code, replacement_id in LEGACY_ETF_REPLACEMENTS:
+        old = assets.get(legacy_id)
+        if (
+            old
+            and old.get("code") == legacy_code
+            and not old.get("archived")
+            and old.get("enabled", True)
+        ):
+            pending.append(
+                {
+                    "legacy_id": legacy_id,
+                    "legacy_code": legacy_code,
+                    "legacy_label": old.get("label", legacy_id),
+                    "replacement_id": replacement_id,
+                }
+            )
+    return pending
+
+
+def migrate_etf_targets(path, *, validate_live=False, fetcher=fetch):
+    current = load_configuration(path)
+    pending = legacy_etf_targets(current)
+    if not pending:
+        return {"changed": False, "version": current["version"], "migrated": []}
+    presets = {
+        asset["id"]: asset
+        for asset in json.loads(
+            (Path(__file__).resolve().parent.parent / "watchlist.json").read_text()
+        )
+    }
+    updated = {
+        "assets": deepcopy(current["assets"]),
+        "strategies": deepcopy(current["strategies"]),
+    }
+    assets_by_id = {asset["id"]: asset for asset in updated["assets"]}
+    strategy_ids = {rule["id"] for rule in updated["strategies"]}
+    migrated = []
+    for entry in pending:
+        old = assets_by_id[entry["legacy_id"]]
+        replacement_id = entry["replacement_id"]
+        preset = deepcopy(presets[replacement_id])
+        carried = [sid for sid in old.get("strategies", []) if sid in strategy_ids]
+        old["archived"] = True
+        old["enabled"] = False
+        existing = assets_by_id.get(replacement_id)
+        if existing is not None:
+            existing["archived"] = False
+            existing["enabled"] = True
+            existing["watchlisted"] = existing.get("watchlisted") or old.get(
+                "watchlisted", True
+            )
+            existing.setdefault(
+                "priority", old.get("priority", preset.get("priority", 10))
+            )
+            existing["strategies"] = list(
+                dict.fromkeys([*(existing.get("strategies") or []), *carried])
+            )
+            replacement = existing
+        else:
+            preset["strategies"] = carried
+            preset["enabled"] = True
+            preset["archived"] = False
+            preset["watchlisted"] = old.get(
+                "watchlisted", preset.get("watchlisted", True)
+            )
+            preset["priority"] = old.get("priority", preset.get("priority", 10))
+            insert_at = updated["assets"].index(old) + 1
+            updated["assets"].insert(insert_at, preset)
+            assets_by_id[replacement_id] = preset
+            replacement = preset
+        migrated.append(
+            {
+                "from_id": old["id"],
+                "from_code": old["code"],
+                "to_id": replacement["id"],
+                "to_code": replacement["code"],
+                "strategies": list(replacement["strategies"]),
+            }
+        )
+    version = save_configuration(
+        path,
+        updated,
+        current["version"],
+        fetcher=fetcher,
+        validate_new=validate_live,
+    )
+    return {"changed": True, "version": version, "migrated": migrated}

@@ -1202,7 +1202,6 @@
     const [provider, session_profile] = data.profile.split(":");
     const isEtf =
       session_profile === "cn_equity" &&
-      provider !== "eastmoney" &&
       /^(51|56|58|15|16)/.test(data.code || "");
     const asset = {
       ...data,

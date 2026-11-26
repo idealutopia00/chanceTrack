@@ -1329,17 +1329,20 @@ def test_manage_form_resolves_etf_kind_before_live_validation_and_blocks_proofle
         )
 
     # 2. Submitting Eastmoney 518800 through POST /manage with default kind="index"
-    # must resolve kind="etf" BEFORE live validation calls fetcher.
+    # must resolve kind="etf" BEFORE live validation calls fetcher (pinned clock).
+    pinned_now = datetime(2026, 11, 25, 14, 35, tzinfo=TZ)
+
+    class _PinnedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return pinned_now if tz is None else pinned_now.astimezone(tz)
+
+    monkeypatch.setattr("chance_track.configuration.datetime", _PinnedDatetime)
     seen_kinds = []
-    today_iso = datetime.now(TZ).date().isoformat()
-    today_bars = _sample_series(140, today_iso)
-    today_payload = _eastmoney_payload("518800", "黄金ETF国泰", 1, today_bars)
-    latest_day = today_bars[-1][0]
-    intraday_now = datetime.fromisoformat(f"{latest_day}T14:35:00+08:00")
 
     def validating_fetcher(asset, as_of):
         seen_kinds.append(asset.get("kind"))
-        return data.parse_eastmoney(today_payload, asset, as_of, now=intraday_now)
+        return data.parse_eastmoney(em_payload, asset, as_of, now=pinned_now)
 
     monkeypatch.setattr(
         "chance_track.web.save_configuration",
@@ -1349,6 +1352,41 @@ def test_manage_form_resolves_etf_kind_before_live_validation_and_blocks_proofle
     client = TestClient(create_app(db_path))
     manage_html = client.get("/manage").text
     token = re.search(r'name="csrf"\s+value="([^"]+)"', manage_html).group(1)
+
+    # 2a. Exchange/session mismatch: Eastmoney 1.518800 with sge_gold must be rejected
+    # before live fetch under both index and etf kind selections.
+    for mismatched_kind in ("index", "etf"):
+        bad_draft = {
+            "assets": [
+                *base_cfg["assets"],
+                {
+                    **raw_asset,
+                    "id": f"bad_sge_{mismatched_kind}",
+                    "session_profile": "sge_gold",
+                    "kind": mismatched_kind,
+                    "enabled": True,
+                    "archived": False,
+                    "strategies": [],
+                },
+            ],
+            "strategies": base_cfg["strategies"],
+        }
+        bad_resp = client.post(
+            "/manage",
+            data={
+                "csrf": token,
+                "version": str(base_cfg["version"]),
+                "payload": json.dumps(bad_draft, ensure_ascii=False),
+            },
+            follow_redirects=False,
+        )
+        assert bad_resp.status_code == 400
+        assert seen_kinds == []
+        assert all(
+            a["id"] != f"bad_sge_{mismatched_kind}"
+            for a in load_configuration(db_path)["assets"]
+        )
+
     draft = {
         "assets": [
             *base_cfg["assets"],

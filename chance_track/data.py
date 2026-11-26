@@ -74,14 +74,12 @@ def _is_cn_etf_code(exchange, code):
 
 
 def resolve_asset_kind(asset):
-    if asset.get("session_profile") == "sge_gold":
-        return "spot"
     if asset.get("kind") == "etf":
         return "etf"
-    if asset.get("session_profile") == "cn_equity" and _is_cn_etf_code(
-        _asset_exchange(asset), asset.get("code")
-    ):
+    if _is_cn_etf_code(_asset_exchange(asset), asset.get("code")):
         return "etf"
+    if asset.get("session_profile") == "sge_gold":
+        return "spot"
     return "index"
 
 
@@ -130,6 +128,14 @@ def _asset_exchange(spec):
 
 
 def parse_eastmoney(payload, asset, as_of, now=None):
+    if asset.get("session_profile") == "sge_gold" and not str(
+        asset.get("secid") or ""
+    ).startswith("118."):
+        raise IdentityMismatch("上金所黄金时段仅支持上金所现货市场代码")
+    if asset.get("session_profile") == "cn_equity" and str(
+        asset.get("secid") or ""
+    ).startswith("118."):
+        raise IdentityMismatch("中国股市时段不支持上金所现货市场代码")
     data = payload.get("data")
     if (
         not data

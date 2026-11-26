@@ -211,6 +211,12 @@ def validate_configuration(config):
                 raise ValueError("东方财富需要secid和精确名称")
             if spec["secid"].split(".")[-1] != code:
                 raise ValueError("东方财富须填写匹配的市场代码")
+            if session_profile == "sge_gold" and not str(spec["secid"]).startswith(
+                "118."
+            ):
+                raise ValueError("上金所黄金时段仅支持 118. 开头的上金所现货 secid")
+            if session_profile == "cn_equity" and str(spec["secid"]).startswith("118."):
+                raise ValueError("中国股市时段不支持上金所黄金现货 secid")
         elif provider in ("sse", "szse"):
             if not code or not spec.get("expected_name"):
                 raise ValueError("交易所数据源需要标的代码和精确名称")
@@ -226,6 +232,10 @@ def validate_configuration(config):
             raise ValueError("标的名称、代码、交易时段不能为空")
         if a.get("kind") not in (None, "index", "spot", "etf"):
             raise ValueError("未知标的类型")
+        if a["session_profile"] == "sge_gold" and a.get("kind") == "etf":
+            raise ValueError("上金所黄金时段不支持场内 ETF 品种")
+        if a["session_profile"] != "sge_gold" and a.get("kind") == "spot":
+            raise ValueError("现货品种仅支持上金所黄金时段")
         validate_source(a, a["session_profile"])
         fallbacks = a.get("fallbacks", [])
         if not isinstance(fallbacks, list):

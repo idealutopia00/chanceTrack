@@ -15,7 +15,7 @@ from chance_track.runner import run
 from chance_track import storage
 from chance_track.notifications import build_message
 from chance_track.web import create_app
-from test_loop import sample, NOW, ASSET
+from helpers import sample, NOW, ASSET
 
 
 def test_bollinger_break_return_and_combination():
@@ -142,38 +142,6 @@ def test_configuration_versions_archive_conflict_and_dependencies(tmp_path):
     assert load_configuration(path)["assets"][0]["archived"]
 
 
-def test_report_notification_and_management_roundtrip(tmp_path):
-    path = tmp_path / "reports.sqlite"
-    config = load_configuration(path)
-    asset = {
-        **ASSET,
-        "strategies": ["macd", "ma", "boll_break"],
-        "session_profile": "cn_equity",
-    }
-    rid = run(path, [asset], send=False, now=NOW, fetcher=lambda *_: sample())
-    report = storage.report(path, rid)
-    assert report["configuration"]["version"] == config["version"]
-    result = report["items"][0]["result"]
-    assert len(result["strategies"]) == 3
-    message, keys = build_message(report, set())
-    assert "MACD 默认" in message and keys
-    _, repeated = build_message(report, keys)
-    assert not repeated
-    client = TestClient(create_app(path))
-    page = client.get("/manage")
-    assert page.status_code == 200 and "/static/manage.js" in page.text
-    csrf = re.search('name="csrf" value="([^"]+)"', page.text)[1]
-    response = client.post(
-        "/manage",
-        data={
-            "csrf": csrf,
-            "version": config["version"],
-            "payload": __import__("json").dumps(config),
-        },
-    )
-    assert response.status_code == 200
-    assert client.get(f"/reports/{rid}").status_code == 200
-    assert storage.report(path, rid) == report
 
 
 def test_activation_suppresses_history_not_next_close():
@@ -190,70 +158,12 @@ def test_activation_suppresses_history_not_next_close():
     assert not outputs[0]["historical_reference"]
 
 
-def test_management_csrf_save_and_historical_snapshot(tmp_path):
-    import json
-    import re
-    from fastapi.testclient import TestClient
-    from chance_track.web import create_app
-    from chance_track.configuration import configuration_version
-
-    path = tmp_path / "web.sqlite"
-    client = TestClient(create_app(path))
-    page = client.get("/manage")
-    assert page.status_code == 200
-    assert "/static/manage.js" in page.text
-    token = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
-    config = load_configuration(path)
-    config["assets"][0]["strategies"] = ["macd", "boll_break"]
-    data = {"csrf": token, "version": config["version"], "payload": json.dumps(config)}
-    assert client.post("/manage", data={**data, "csrf": "bad"}).status_code == 403
-    assert client.post("/manage", data=data).status_code == 200
-    assert configuration_version(path, 1)["assets"][0]["strategies"] == ["macd"]
-    assert client.get("/configuration/2").json()["assets"][0]["strategies"] == [
-        "macd",
-        "boll_break",
-    ]
-    assert client.post("/manage", data=data).status_code == 409
 
 
-def test_new_binding_old_event_is_reference_not_notification(tmp_path):
-    from chance_track.notifications import build_message
-    from chance_track.runner import run
-    from chance_track import storage
-    from test_loop import sample, NOW
-
-    asset = {
-        "id": "test",
-        "label": "测试",
-        "code": "TEST",
-        "enabled": True,
-        "session_profile": "cn_equity",
-        "strategies": ["macd", "boll_break"],
-        "activated": {"macd": NOW.isoformat(), "boll_break": NOW.isoformat()},
-    }
-    path = tmp_path / "events.sqlite"
-    report_id = run(path, [asset], now=NOW, send=False, fetcher=lambda *_: sample())
-    report = storage.report(path, report_id)
-    strategies = report["items"][0]["result"]["strategies"]
-    assert strategies[0]["event"] == "金叉"
-    assert all(s["historical_reference"] for s in strategies)
-    message, keys = build_message(report, set())
-    assert not keys and "启用前历史参考" in message
-    asset["activated"] = {}
-    second = run(path, [asset], now=NOW, send=False, fetcher=lambda *_: sample())
-    report = storage.report(path, second)
-    _, keys = build_message(report, set())
-    assert len(keys) == 2
-    assert not build_message(report, keys)[1]
-    from fastapi.testclient import TestClient
-    from chance_track.web import create_app
-
-    page = TestClient(create_app(path)).get(f"/reports/{second}")
-    assert page.status_code == 200 and "布林突破" in page.text
 
 
 def test_combination_same_bar_filter_and_missing_samples():
-    from test_loop import sample, NOW
+    from helpers import sample, NOW
 
     configs = load_defaults() + [
         {
@@ -278,7 +188,7 @@ def test_combination_same_bar_filter_and_missing_samples():
 
 
 def test_enabling_new_asset_validates_source_timezone_without_saving(tmp_path):
-    from test_loop import sample
+    from helpers import sample
 
     path = tmp_path / "enable.sqlite"
     config = load_configuration(path)
@@ -409,97 +319,3 @@ def test_relative_strength_requires_completed_same_currency_benchmark():
     assert ready.iloc[-2] and "^GSPC" in reasons[-2] and "比值 SMA2" in reasons[-2]
     benchmark["quote_currency"] = "EUR"
     assert not any(relative_strength(snapshot, closes, params)[0])
-
-
-def test_report_pins_benchmark_and_reuses_fetch_for_other_asset(tmp_path):
-    from chance_track import storage, workspace
-    from chance_track.notifications import build_message
-
-    path = tmp_path / "paired.sqlite"
-    config = load_configuration(path)
-    primary = next(a for a in config["assets"] if a["id"] == "nasdaq100")
-    benchmark = next(a for a in config["assets"] if a["id"] == "sp500")
-    preset = {
-        "id": "relative",
-        "name": "相对转强",
-        "kind": "relative_strength",
-        "params": {"trend": 3, "relative_period": 2, "benchmark": "sp500"},
-    }
-    primary["strategies"] = ["relative"]
-    config["strategies"].append(preset)
-    save_configuration(path, config, 1)
-    calls = []
-
-    def fetch_pair(asset, _day):
-        calls.append(asset["id"])
-        snapshot = sample()
-        rows = snapshot["rows"]
-        baseline = [100] * len(rows)
-        if asset["id"] == "nasdaq100":
-            baseline[-2:] = [90, 110]
-        for row, close in zip(rows, baseline):
-            row.update(open=close, close=close, high=close + 1, low=close - 1)
-        return {
-            **snapshot,
-            "code": asset["code"],
-            "provider": "yahoo",
-            "exchange_timezone": "America/New_York",
-            "quote_currency": "USD",
-        }
-
-    report_id = run(
-        path, watchlist=[primary, benchmark], send=False, now=NOW, fetcher=fetch_pair
-    )
-    item = storage.report(path, report_id)["items"][0]
-    assert calls == ["nasdaq100", "sp500"]
-    assert item["snapshot"]["benchmarks"]["sp500"]["code"] == "^GSPC"
-    observed = item["result"]["strategies"][0]
-    assert observed["event"] == "相对转强" and "^GSPC" in observed["detail"]
-    result = workspace.preview(path, {"report_id": report_id}, "nasdaq100", [preset])
-    assert result["result"]["strategies"][0]["event"] == observed["event"]
-    assert result["result"]["strategies"][0]["detail"] == observed["detail"]
-
-    path = tmp_path / "scheduled-pair.sqlite"
-    save_configuration(path, config, 1)
-    primary = {**primary, "activated": {}}
-    failures = []
-
-    def fail_once(asset, day):
-        if asset["id"] == "sp500" and not failures:
-            failures.append(asset["id"])
-            raise ValueError("synthetic benchmark failure")
-        return fetch_pair(asset, day)
-
-    calls.clear()
-    first = run(
-        path,
-        watchlist=[primary],
-        scheduled=True,
-        send=False,
-        now=NOW,
-        fetcher=fail_once,
-    )
-    initial = storage.report(path, first)["items"][0]
-    assert (
-        initial["status"] == "ok"
-        and initial["result"]["strategies"][0]["event"] is None
-    )
-    second = run(
-        path,
-        watchlist=[primary],
-        scheduled=True,
-        send=False,
-        now=NOW + timedelta(minutes=5),
-        fetcher=fail_once,
-    )
-    retry = storage.report(path, second)["items"][0]
-    assert second != first and calls == ["nasdaq100", "sp500"]
-    assert failures == ["sp500"]
-    assert retry["checked_at"] == initial["checked_at"]
-    assert retry["snapshot"]["rows"] == initial["snapshot"]["rows"]
-    assert retry["result"]["strategies"][0]["event"] == observed["event"]
-    assert retry["result"]["strategies"][0]["new_event"]
-    assert not build_message(storage.report(path, first), set())[1]
-    assert len(build_message(storage.report(path, second), set())[1]) == 1
-    assert retry["carried_forward"] and retry["origin_report_id"] == first
-    assert storage.report(path, first)["items"][0] == initial

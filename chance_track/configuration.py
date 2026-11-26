@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import configuration_store, storage
-from .data import TZ, _asset_exchange, fetch
+from .data import TZ, _asset_exchange, fetch, resolve_asset_kind
 from .market_sessions import PROFILES
 
 DEFAULT_STRATEGIES = [
@@ -409,6 +409,7 @@ def save_configuration(
         )
         if old and any(a.get(k) != old.get(k) for k in identity):
             raise ValueError("已有标的身份不可修改；请归档后使用新ID添加")
+        a["kind"] = resolve_asset_kind(a)
         if (
             validate_new
             and a.get("enabled")
@@ -428,8 +429,6 @@ def save_configuration(
             ):
                 raise ValueError("行情时区与选定市场时段不匹配")
             a["validated_at"] = now.isoformat()
-        if a.get("kind") != "etf":
-            a["kind"] = "spot" if a["session_profile"] == "sge_gold" else "index"
         activations = dict(old.get("activated", {})) if old else {}
         if lifecycle is not None:
             activations.pop(lifecycle[0], None)
@@ -627,6 +626,10 @@ def migrate_etf_targets(path, *, validate_live=False, fetcher=fetch):
         if len(matches) == 1:
             existing = matches[0]
             existing["kind"] = preset["kind"]
+            if not existing.get("market") or existing.get("market") == "中国指数":
+                existing["market"] = preset["market"]
+            if not existing.get("currency") or existing.get("currency") == "点":
+                existing["currency"] = preset["currency"]
             existing["archived"] = False
             existing["enabled"] = True
             existing["watchlisted"] = existing.get("watchlisted", True) or old.get(

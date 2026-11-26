@@ -1294,3 +1294,169 @@ def test_unrelated_scheduled_retry_preserves_provider_probe_rotation(tmp_path, m
         fetcher=fetcher,
     )
     assert probed_em == ["star_chinext50_etf_159603", "gold_etf_518800"]
+
+
+def test_manage_form_resolves_etf_kind_before_live_validation_and_blocks_proofless_close(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "manage-etf.sqlite3"
+    base_cfg = load_configuration(db_path)
+    bars = _sample_series(140, "2026-11-25")
+    em_payload = _eastmoney_payload("518800", "黄金ETF国泰", 1, bars)
+    close_check_now = datetime(2026, 11, 25, 15, 6, tzinfo=TZ)
+
+    # 1. Direct parse_eastmoney on an Eastmoney 518800 payload even with kind="index"
+    # must enforce ETF close-time evidence and volume_unit="手".
+    raw_asset = {
+        "id": "custom_gold_etf",
+        "label": "黄金ETF国泰",
+        "code": "518800",
+        "secid": "1.518800",
+        "provider": "eastmoney",
+        "expected_name": "黄金ETF国泰",
+        "session_profile": "cn_equity",
+        "kind": "index",
+    }
+    parsed = data.parse_eastmoney(
+        em_payload, raw_asset, "2026-11-25", now=close_check_now
+    )
+    assert parsed["provisional_date"] == "2026-11-25"
+    assert parsed["session"]["phase"] == "unconfirmed"
+    assert parsed["volume_unit"] == "手"
+    with pytest.raises(data.StaleMarketSnapshot):
+        data.verify_session_freshness(
+            parsed, raw_asset, "2026-11-25", now=close_check_now
+        )
+
+    # 2. Submitting Eastmoney 518800 through POST /manage with default kind="index"
+    # must resolve kind="etf" BEFORE live validation calls fetcher.
+    seen_kinds = []
+    today_iso = datetime.now(TZ).date().isoformat()
+    today_bars = _sample_series(140, today_iso)
+    today_payload = _eastmoney_payload("518800", "黄金ETF国泰", 1, today_bars)
+    latest_day = today_bars[-1][0]
+    intraday_now = datetime.fromisoformat(f"{latest_day}T14:35:00+08:00")
+
+    def validating_fetcher(asset, as_of):
+        seen_kinds.append(asset.get("kind"))
+        return data.parse_eastmoney(today_payload, asset, as_of, now=intraday_now)
+
+    monkeypatch.setattr(
+        "chance_track.web.save_configuration",
+        lambda *a, **kw: save_configuration(*a, fetcher=validating_fetcher, **kw),
+    )
+
+    client = TestClient(create_app(db_path))
+    manage_html = client.get("/manage").text
+    token = re.search(r'name="csrf"\s+value="([^"]+)"', manage_html).group(1)
+    draft = {
+        "assets": [
+            *base_cfg["assets"],
+            {
+                **raw_asset,
+                "enabled": True,
+                "archived": False,
+                "strategies": [],
+            },
+        ],
+        "strategies": base_cfg["strategies"],
+    }
+    resp = client.post(
+        "/manage",
+        data={
+            "csrf": token,
+            "version": str(base_cfg["version"]),
+            "payload": json.dumps(draft, ensure_ascii=False),
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert seen_kinds == ["etf"]
+    saved = load_configuration(db_path)
+    added = next(a for a in saved["assets"] if a["id"] == "custom_gold_etf")
+    assert added["kind"] == "etf"
+
+
+def test_migrate_etf_targets_normalizes_legacy_market_and_currency_defaults(tmp_path):
+    from chance_track import configuration_store
+
+    db_path = tmp_path / "legacy-defaults.sqlite3"
+    base_cfg = load_configuration(db_path)
+    payload = {
+        "assets": [
+            {
+                "id": "gold",
+                "label": "黄金 Au99.99",
+                "code": "AU9999",
+                "secid": "118.AU9999",
+                "provider": "eastmoney",
+                "expected_name": "AU9999",
+                "kind": "spot",
+                "enabled": True,
+                "archived": False,
+                "session_profile": "sge_gold",
+                "strategies": ["macd"],
+            },
+            {
+                "id": "star_chinext50",
+                "label": "科创创业50",
+                "code": "931643",
+                "secid": "2.931643",
+                "provider": "eastmoney",
+                "expected_name": "科创创业50",
+                "kind": "index",
+                "enabled": True,
+                "archived": False,
+                "session_profile": "cn_equity",
+                "strategies": ["macd"],
+            },
+            {
+                "id": "custom_518800",
+                "label": "黄金ETF国泰",
+                "code": "518800",
+                "secid": "1.518800",
+                "provider": "eastmoney",
+                "expected_name": "黄金ETF国泰",
+                "kind": "index",
+                "market": "中国指数",
+                "currency": "点",
+                "enabled": False,
+                "archived": False,
+                "session_profile": "cn_equity",
+                "strategies": [],
+            },
+            {
+                "id": "custom_159603",
+                "label": "科创创业ETF天弘",
+                "code": "159603",
+                "secid": "0.159603",
+                "provider": "eastmoney",
+                "expected_name": "科创创业ETF天弘",
+                "kind": "index",
+                "market": "自定义深市板块",
+                "currency": "RMB",
+                "enabled": False,
+                "archived": False,
+                "session_profile": "cn_equity",
+                "strategies": [],
+            },
+        ],
+        "strategies": base_cfg["strategies"],
+    }
+    with storage.connect(db_path) as db:
+        cur = db.execute(
+            "INSERT INTO configuration_versions(created_at,payload) VALUES(?,?)",
+            ("2026-11-25T10:00:00+08:00", json.dumps(payload, ensure_ascii=False)),
+        )
+        configuration_store.write_current(db, payload, cur.lastrowid)
+
+    result = migrate_etf_targets(db_path, validate_live=False)
+    assert result["changed"] is True
+    saved = {a["id"]: a for a in load_configuration(db_path)["assets"]}
+    assert saved["custom_518800"]["kind"] == "etf"
+    assert saved["custom_518800"]["market"] == "中国 · 上交所 ETF"
+    assert saved["custom_518800"]["currency"] == "元"
+    # Non-default custom market/currency are preserved
+    assert saved["custom_159603"]["kind"] == "etf"
+    assert saved["custom_159603"]["market"] == "自定义深市板块"
+    assert saved["custom_159603"]["currency"] == "RMB"

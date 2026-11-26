@@ -62,8 +62,31 @@ def _valid_positive_ohlc(opening, high, low, close):
     return all(math.isfinite(value) and value > 0 for value in values)
 
 
-def _etf_volume_meta(asset, multiplier):
+def _is_cn_etf_code(exchange, code):
+    code_str = str(code or "")
+    if len(code_str) != 6 or not code_str.isdigit():
+        return False
+    if exchange == "sh":
+        return code_str.startswith(("51", "56", "58"))
+    if exchange == "sz":
+        return code_str.startswith("159")
+    return False
+
+
+def resolve_asset_kind(asset):
+    if asset.get("session_profile") == "sge_gold":
+        return "spot"
     if asset.get("kind") == "etf":
+        return "etf"
+    if asset.get("session_profile") == "cn_equity" and _is_cn_etf_code(
+        _asset_exchange(asset), asset.get("code")
+    ):
+        return "etf"
+    return "index"
+
+
+def _etf_volume_meta(asset, multiplier):
+    if resolve_asset_kind(asset) == "etf":
         return {"volume_unit": "手", "volume_multiplier": multiplier}
     return {}
 
@@ -136,7 +159,7 @@ def parse_eastmoney(payload, asset, as_of, now=None):
         rows,
         asset.get("session_profile", "cn_equity"),
         now,
-        require_same_day_quote_at=(asset.get("kind") == "etf"),
+        require_same_day_quote_at=(resolve_asset_kind(asset) == "etf"),
     )
     validate_rows(session["rows"])
     return {

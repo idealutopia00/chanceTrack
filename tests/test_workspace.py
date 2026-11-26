@@ -465,3 +465,161 @@ def test_check_uses_one_current_configuration_snapshot(tmp_path, monkeypatch):
     report_id = run(path, send=False, now=NOW, fetcher=lambda *_: sample())
     assert reads == [path]
     assert storage.report(path, report_id)["configuration"] == config
+
+
+def test_dividend_low_vol_etf_515450_catalog_search_add_and_observe_only(
+    tmp_path, monkeypatch
+):
+    from datetime import date, datetime, timedelta
+
+    from chance_track.data import TZ, IdentityMismatch, parse_sse
+    from chance_track.market_sessions import cn_trading_day
+    from chance_track.presentation import signal_rows
+
+    path, config, rid, client, csrf = setup_workspace(tmp_path)
+    pinned_now = datetime(2026, 11, 25, 14, 35, tzinfo=TZ)
+
+    class _PinnedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return pinned_now if tz is None else pinned_now.astimezone(tz)
+
+    monkeypatch.setattr("chance_track.configuration.datetime", _PinnedDatetime)
+    monkeypatch.setattr("chance_track.workspace.datetime", _PinnedDatetime)
+
+    # 1. Search by aliases and official code returns 515450 ETF (not H30269 / fund NAV)
+    for query in ("低波红利", "红利低波", "515450", "红利50", "sh515450"):
+        matches = client.get(f"/api/symbols?q={query}").json()["assets"]
+        assert any(a["id"] == "dividend_low_vol_etf_515450" for a in matches), query
+    preset = next(
+        a
+        for a in client.get("/api/symbols?q=515450").json()["assets"]
+        if a["id"] == "dividend_low_vol_etf_515450"
+    )
+    assert preset["code"] == "515450"
+    assert preset["label"] == "红利低波50ETF南方"
+    assert preset["provider"] == "sse"
+    assert preset["expected_name"] == "红利50"
+    assert preset["kind"] == "etf"
+    assert preset["group"] == "国内指数"
+    assert preset["currency"] == "元"
+    assert preset["session_profile"] == "cn_equity"
+
+    # Build 140 realistic SSE OHLCV trading days up to 2026-11-25
+    days = []
+    cursor = date(2026, 11, 25)
+    while len(days) < 140:
+        if cn_trading_day(cursor):
+            days.append(cursor.isoformat())
+        cursor -= timedelta(days=1)
+    days.reverse()
+    dayk = {
+        "code": "515450",
+        "kline": [
+            [
+                int(day.replace("-", "")),
+                round(1.4 + i * 0.001, 3),
+                round(1.42 + i * 0.001, 3),
+                round(1.39 + i * 0.001, 3),
+                round(1.41 + i * 0.001, 3),
+                85000000,
+            ]
+            for i, day in enumerate(days)
+        ],
+    }
+    snap = {
+        "code": "515450",
+        "date": 20261125,
+        "time": 143500,
+        "snap": ["红利50", 1.54, 1.539, 1.559, 1.529, 1.549, 0, 0, 85000000],
+    }
+
+    # 2. Identity mismatch (wrong ETF name) is rejected before adding
+    bad_snap = {**snap, "snap": ["其他ETF", *snap["snap"][1:]]}
+    try:
+        parse_sse(dayk, bad_snap, preset, "2026-11-25", now=pinned_now)
+        raise AssertionError("expected IdentityMismatch")
+    except IdentityMismatch:
+        pass
+
+    # 3. Adding via /api/workspace/edit validates real SSE OHLC, attaches zero strategies,
+    # creates exploration K-line quote, and produces no report or notification
+    def fake_fetch(asset, as_of):
+        return parse_sse(dayk, snap, asset, as_of, now=pinned_now)
+
+    monkeypatch.setattr("chance_track.workspace.fetch", fake_fetch)
+    orig_edit = workspace.edit
+    monkeypatch.setattr(
+        "chance_track.workspace.edit",
+        lambda p, payload, fetcher=fake_fetch: orig_edit(p, payload, fetcher=fake_fetch),
+    )
+
+    resp = client.post(
+        "/api/workspace/edit",
+        json={
+            "csrf": csrf,
+            "version": config["version"],
+            "action": "add_asset",
+            "asset": {"id": "dividend_low_vol_etf_515450"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["selected"] == "dividend_low_vol_etf_515450"
+    assert body["quote"]["mode"] == "exploration"
+    assert body["quote"]["source"]["quote_id"]
+    assert len(body["quote"]["result"]["chart"]["candles"]) == 140
+    assert body["quote"]["result"]["bar_date"] == "2026-11-25"
+
+    saved_cfg = load_configuration(path)
+    added = next(
+        a for a in saved_cfg["assets"] if a["id"] == "dividend_low_vol_etf_515450"
+    )
+    assert added["enabled"] is True
+    assert added["archived"] is False
+    assert added["watchlisted"] is True
+    assert added["group"] == "国内指数"
+    assert added["strategies"] == []
+    assert added["kind"] == "etf"
+    assert len(storage.reports(path)) == 1
+    assert storage.notification(path, rid) is None
+
+    # 4. Alias search still finds 515450 after it is saved into configuration
+    assert any(
+        a["id"] == "dividend_low_vol_etf_515450"
+        for a in client.get("/api/symbols?q=低波红利").json()["assets"]
+    )
+
+    # 5. Subsequent check includes 515450 for daily K-line observation only: zero triggered/backfill alerts
+    sent = []
+    report_id = run(
+        path,
+        watchlist=[added],
+        scheduled=True,
+        send=True,
+        now=pinned_now,
+        fetcher=lambda asset, day: fake_fetch(asset, day),
+        sender=lambda *args: sent.append(args),
+    )
+    assert len(sent) == 1
+    assert "新增确认提醒 0 项" in sent[0][1]
+    assert "未绑定策略 · 仅观察行情" in sent[0][1]
+    with storage.connect(path) as db:
+        event_count = db.execute(
+            "SELECT count(*) FROM events WHERE key LIKE ?",
+            ("dividend_low_vol_etf_515450:%",),
+        ).fetchone()[0]
+        notif_event_count = db.execute(
+            "SELECT count(*) FROM notification_events WHERE key LIKE ?",
+            ("dividend_low_vol_etf_515450:%",),
+        ).fetchone()[0]
+    assert event_count == 0
+    assert notif_event_count == 0
+    report = storage.report(path, report_id)
+    item = report["items"][0]
+    assert item["status"] == "ok"
+    assert item["result"]["strategies"] == []
+    assert item["result"]["chart"]["strategy_events"] == []
+    rows = signal_rows(report)
+    assert rows[0]["signal"] == "未绑定策略"
+    assert rows[0]["status"] == "仅观察行情"

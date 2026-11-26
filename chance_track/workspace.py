@@ -34,17 +34,57 @@ def tables(db):
     """)
 
 
+OBSERVATION_CATALOG = [
+    {
+        "id": "dividend_low_vol_etf_515450",
+        "label": "红利低波50ETF南方",
+        "ticker": "515450",
+        "code": "515450",
+        "provider": "sse",
+        "expected_name": "红利50",
+        "kind": "etf",
+        "group": "国内指数",
+        "market": "中国 · 上交所 ETF",
+        "currency": "元",
+        "enabled": True,
+        "session_profile": "cn_equity",
+        "aliases": [
+            "红利低波",
+            "低波红利",
+            "红利低波50",
+            "红利50",
+            "红利低波50ETF",
+            "红利低波50ETF南方",
+            "515450",
+            "sh515450",
+        ],
+        "fallbacks": [],
+    },
+]
+
+
 def _known_catalog():
-    return json.loads(
+    entries = json.loads(
         (Path(__file__).resolve().parent.parent / "watchlist.json").read_text()
     )
+    seen = {a["id"] for a in entries}
+    for extra in OBSERVATION_CATALOG:
+        if extra["id"] not in seen:
+            entries.append(deepcopy(extra))
+            seen.add(extra["id"])
+    return entries
 
 
 def catalog(path, query=""):
     config = load_configuration(path)
     known = _known_catalog()
     by_id = {a["id"]: a for a in known}
-    by_id.update({a["id"]: a for a in config["assets"]})
+    for asset in config["assets"]:
+        preset = by_id.get(asset["id"])
+        if preset and preset.get("aliases") and not asset.get("aliases"):
+            by_id[asset["id"]] = {**asset, "aliases": list(preset["aliases"])}
+        else:
+            by_id[asset["id"]] = asset
     q = query.strip().casefold()
     return [
         a

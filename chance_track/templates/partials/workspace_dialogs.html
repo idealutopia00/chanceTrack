@@ -5,8 +5,8 @@
 <dialog id="asset-settings" class="workspace-dialog" aria-labelledby="asset-settings-title"><div class="dialog-heading"><h2 id="asset-settings-title">观察标的设置</h2><button type="button" data-close aria-label="关闭标的设置">×</button></div><form id="asset-settings-form"><label class="field-label">显示名称<input name="label" required maxlength="100"></label><label class="field-label">分组<input name="group" maxlength="100" placeholder="例如：美国指数、国内指数、黄金"></label><label class="field-label">状态<select name="state"><option value="enabled">启用</option><option value="disabled">停用</option><option value="archived">归档（保留历史）</option></select></label><button type="submit">保存设置</button></form><div id="asset-monitors"></div><p class="dialog-status" role="status"></p></dialog>
 <dialog id="pinned-note-dialog" class="workspace-dialog" aria-labelledby="pinned-note-title">
   <div class="dialog-heading"><h2 id="pinned-note-title">{{ pinned_note.title if pinned_note else '投资备忘录' }}</h2><button type="button" data-close aria-label="关闭备忘录">×</button></div>
-  {% if pinned_note %}<article class="investment-markdown">{{ pinned_note.markdown|investment_markdown }}</article>{% endif %}
-  <a href="/investment-notes">管理备忘录与历史 ↗</a>
+  {% if pinned_note %}{% set pinned_has_h1 = pinned_note.markdown.lstrip().startswith('# ' ~ pinned_note.title) %}<article class="investment-markdown{% if pinned_has_h1 %} has-dialog-title{% endif %}">{{ pinned_note.markdown|investment_markdown }}</article>{% endif %}
+  <div class="pinned-note-footer"><a href="/investment-notes">管理备忘录与历史 ↗</a></div>
 </dialog>
 
 <dialog id="automatic-monitoring-dialog" class="workspace-dialog" aria-labelledby="automatic-monitoring-title">

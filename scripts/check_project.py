@@ -1,51 +1,53 @@
-"""Validate deployable source before touching running LaunchAgents."""
+"""Validate deployable v1.0 source (Python, catalog, lockfile, TypeScript, Vite build)."""
 
 import json
+from pathlib import Path
 import shutil
 import subprocess
 import tomllib
-from pathlib import Path
-
-from jinja2 import Environment, FileSystemLoader
 
 from chance_track.market_sessions import PROFILES
 
 
-def validate_source(root):
+def validate_source(root, *, build_frontend=True):
     root = Path(root)
     package = root / "chance_track"
     for path in package.rglob("*.py"):
         compile(path.read_bytes(), str(path), "exec")
-    scripts = ("app.js", "manage.js", "workspace.mjs", "watchlist.mjs", "theme.js")
-    for name in ("app.css", *scripts):
-        text = (package / "static" / name).read_text()
-        if "<!doctype" in text.lower() or "<html" in text.lower():
-            raise ValueError(f"拒绝部署：{name} 被误写成 HTML")
-    templates = Environment(loader=FileSystemLoader(package / "templates"))
-    for name in templates.list_templates():
-        templates.get_template(name)
-    assets = json.loads((root / "watchlist.json").read_text())
+
+    catalog_path = root / "catalog.json"
+    if not catalog_path.is_file():
+        raise ValueError("缺少统一标的目录 catalog.json")
+    assets = json.loads(catalog_path.read_text(encoding="utf-8"))
     ids = [asset["id"] for asset in assets]
     if len(ids) != len(set(ids)):
-        raise ValueError("观察清单存在重复 id")
+        raise ValueError("标的目录存在重复 id")
     for asset in assets:
-        if asset.get("enabled") and asset.get("session_profile") not in PROFILES:
+        if asset.get("session_profile") not in PROFILES:
             raise ValueError(f"缺少有效交易时段：{asset['id']}")
-    project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
-    lock = tomllib.loads((root / "uv.lock").read_text())
+
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
     locked = next(
         item["version"] for item in lock["package"] if item["name"] == project["name"]
     )
     if project["version"] != locked:
-        raise ValueError("uv.lock 与项目版本不一致，请先 uv sync")
-    node = shutil.which("node")
-    if node:
-        for script in scripts:
-            subprocess.run(
-                [node, "--check", str(package / "static" / script)], check=True
-            )
+        raise ValueError("uv.lock 与项目版本不一致，请先 uv lock")
+
+    frontend_dir = root / "frontend"
+    if build_frontend and frontend_dir.is_dir():
+        npm = shutil.which("npm")
+        if not npm:
+            raise ValueError("缺少 npm，无法校验和构建 v1.0 前端")
+        if not (frontend_dir / "node_modules").is_dir():
+            subprocess.run([npm, "--prefix", str(frontend_dir), "ci"], check=True)
+        subprocess.run([npm, "--prefix", str(frontend_dir), "run", "typecheck"], check=True)
+        subprocess.run([npm, "--prefix", str(frontend_dir), "run", "build"], check=True)
+        dist_index = package / "static" / "dist" / "index.html"
+        if not dist_index.is_file() or not dist_index.read_text(encoding="utf-8").strip():
+            raise ValueError("前端构建产物缺失：chance_track/static/dist/index.html")
 
 
 if __name__ == "__main__":
     validate_source(Path(__file__).resolve().parent.parent)
-    print("项目检查通过：Python、模板、静态文件、观察清单、依赖锁")
+    print("项目检查通过：Python、catalog.json、依赖锁、TypeScript 与前端构建产物")

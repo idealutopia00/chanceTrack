@@ -5,8 +5,8 @@
 | 任务 | 先读 | 实现入口 | 定向验证 |
 | --- | --- | --- | --- |
 | 交易日、夜盘与收盘判定 | [领域定义](CONTEXT.md)、[市场时段](docs/decisions/006-market-sessions.md)、[盘中预览](docs/decisions/005-intraday-preview.md) | [market_sessions](chance_track/market_sessions.py)、[runner](chance_track/runner.py) | `uv run pytest -q tests/test_market_sessions.py tests/test_intraday.py` |
-| 策略、过滤与事件 | [组合策略](CONTEXT.md)、[策略管理](docs/decisions/008-strategy-management.md) | [strategies](chance_track/strategies.py)、[analysis](chance_track/analysis.py) | `uv run pytest -q tests/test_strategies.py tests/test_workspace.py` |
-| 图表与通知 | [展示语义](CONTEXT.md)、[图表工作台](docs/decisions/009-chart-workspace.md)、[通知去重](docs/decisions/007-notification-dedup.md) | [app.js](chance_track/static/app.js)、[presentation](chance_track/presentation.py)、[notifications](chance_track/notifications.py) | `uv run pytest -q tests/test_workspace.py tests/test_notifications.py`；`node tests/check_updates.mjs` |
+| 数据模型、迁移与策略 | [领域定义](CONTEXT.md)、[v1.0 数据模型](docs/decisions/012-v1-data-model.md)、[策略管理](docs/decisions/008-strategy-management.md) | [schema](chance_track/schema.py)、[storage](chance_track/storage.py)、[strategies](chance_track/strategies.py)、[analysis](chance_track/analysis.py) | `uv run pytest -q tests/test_v1_schema_migration.py tests/test_strategies.py` |
+| 工作台 SPA、API 与通知 | [展示语义](CONTEXT.md)、[v1.0 前端工作台](docs/decisions/013-v1-frontend-workspace.md)、[通知去重](docs/decisions/007-notification-dedup.md) | [App.tsx](frontend/src/App.tsx)、[web](chance_track/web.py)、[workspace](chance_track/workspace.py)、[notifications](chance_track/notifications.py) | `uv run pytest -q tests/test_v1_api.py tests/test_v1_runner_notifications.py`；`node tests/check_v1_app.mjs` |
 
 提交前运行 [开发指南中的项目检查](docs/development.md#提交前验证)。工作台交互使用隔离的合成数据，参见[工作台交互验证](docs/development.md#工作台交互验证)。
 

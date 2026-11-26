@@ -1,90 +1,43 @@
-# 开发与维护
+# 开发与维护（v1.0）
 
 ## Module 职责
 
-| Module | Interface与职责 |
+| Module | 职责 |
 | --- | --- |
-| data | fetch：请求并校验真实行情，不生成信号 |
-| market_sessions | apply_sessions：统一交易日、时区、夜盘和收盘状态 |
-| analysis | analyze：纯MACD与交叉计算，产出图表和信号数据 |
-| storage | 不可变报告、追加决策、事件和通知状态持久化 |
-| presentation | signal_rows：纯展示语义，区分当前观察与上一收盘日参考 |
-| notifications | 使用统一展示结果生成文案并调用macOS通知 |
-| runner | 调度、互斥、重试、保存与发送的串联 |
-| web | 页面、受保护表单、通知视图；不重新计算指标 |
+| `catalog` | 读取唯一预设标的目录 `catalog.json` |
+| `data` | `fetch`：联网抓取并核验真实行情，不生成信号 |
+| `market_sessions` | `apply_sessions`：统一交易日、时区、夜盘与收盘状态 |
+| `analysis` | `analyze`：纯行情分析与默认 MACD 计算 |
+| `strategies` | `evaluate`、`chart_events`：纯策略规则、叠加图层与事件计算 |
+| `schema` | SQLite Schema v6 表定义与 v4/v5 → v6 无损迁移 |
+| `storage` | 规范化 SQLite 读写（标的、日线 `market_bars`、检查批次、信号流、决策、备忘、模板、通知） |
+| `configuration` | 标的与策略配置校验、乐观锁版本、等价合并与 ETF 迁移 |
+| `presentation` | `fetch_state_summary`、`signal_rows`：纯展示语义派生 |
+| `notifications` | 生成 macOS 通知文案并按 `signal_events.dedup_key` 去重发送 |
+| `runner` | 调度、跨进程检查锁、自动重试、入库与通知串联 |
+| `workspace` | 标的中心化图表数据计算、零副作用探索预览与工作台写命令 |
+| `web` | FastAPI `/api/v1/*` JSON API 与编译态 React SPA 托管 |
+| `frontend/` | React 19 + TypeScript + Vite + Tailwind CSS + Lightweight Charts 前端源码 |
 
-当前状态和历史参考统一由presentation派生，网页与通知不得各自推断日期/状态。分析规则变更需升级规则版本；仅调整展示不改写报告、不清空事件或通知表。
+## 前端开发与构建
 
-## 模板和静态资源
-
-主模板负责页面骨架；partials内分别维护chart、asset_details、notification。保持现有表单和图表元素ID，前端脚本依赖这些ID。不要把整页HTML写入app.css；部署前检查会明确拒绝此类错误。
-
-自有Python、JS、CSS与模板已格式化，vendor内的第三方图表源码和许可保持原样。可按需使用以下格式化工具，不增加运行时依赖：
-
-```sh
-uvx ruff format chance_track scripts tests
-npx --yes prettier --write chance_track/static/app.css chance_track/static/app.js tests/check_updates.mjs
-uvx djlint chance_track/templates --reformat --profile=jinja
-```
+- 开发联调：分别启动后端 `uv run chance-track serve` 与前端 `npm --prefix frontend run dev`（自动代理 `/api` 至 `127.0.0.1:8765`）。
+- 生产构建：`npm --prefix frontend run build` 输出静态产物至 `chance_track/static/dist/`（已列入 `.gitignore`，不入 Git）。
 
 ## 提交前验证
 
 ```sh
 uv run python scripts/check_project.py
 uv run pytest -q
-node tests/check_updates.mjs
 ```
 
-`check_project.py`验证Python语法、Jinja模板、静态文件类型、观察清单和锁文件；如果本机有Node，也验证JS语法。安装器在停止LaunchAgent之前调用同一个检查，避免已知坏源文件替换正常版本。
-
-数据库和历史快照不因整理删除。不要通过清库“修复”旧信号；应保留来源、说明语义并添加行为检查。旧预览放在archive，只是当时的演示，不参与运行和取数。
-
-## 截图中黄金11月16日死叉的来源
-
-来自报告#11当时保存的Au99.99真实日线，11月16日DIF−DEA由正转负，因此作为上一已收盘日参考。11月17日未收盘K线当时并无新交叉。之前将两者放进同一表，导致看似重复或像当天新信号；本次整理将两种scope分区，计算和原始快照保持不变。
+`scripts/check_project.py` 会依次校验 Python 语法、`catalog.json`、`uv.lock` 一致性，以及 `frontend/` 的 TypeScript 类型检查与 Vite 生产构建产物。
 
 ## 工作台交互验证
 
-`tests/test_workspace.py` 验证探索无正式副作用、模板与配置并发版本、局部绑定的影响范围、独立行情引用、决策探索依据与组合依赖参数。
+使用隔离的临时 SQLite 合成数据启动测试服务，再运行 `tests/check_v1_app.mjs`（Playwright + 本机 Chrome）验证桌面 `1280×900` 与窄屏 `390×844`、浅/深双主题、4 个一级视图（工作台 / 信号流 / 规则库 / 备忘录）、指标探索、决策追加与 K 线标注、关联备忘与零横向溢出。
 
-可选的 `tests/check_workspace.mjs` 使用 Playwright + 本机 Chrome 验证完整交互。在仓库根目录运行以下命令，以合成日线创建临时 SQLite，并监听本机测试端口。生成报告时使用未绑定策略的标的，让图表探索从空指标列表开始。生成 12 份报告，让测试可打开历史报告 #11。
+## Schema v5 → v6 升级与恢复
 
-```sh
-PYTHONPATH=tests uv run python - <<'PY'
-from datetime import timedelta
-from pathlib import Path
-from tempfile import TemporaryDirectory
-
-import uvicorn
-from test_loop import NOW, sample
-
-from chance_track import storage
-from chance_track.configuration import load_configuration
-from chance_track.runner import run
-from chance_track.web import create_app
-
-with TemporaryDirectory() as directory:
-    path = str(Path(directory) / "workspace.sqlite")
-    storage.initialize(path)
-    assets = [
-        {**asset, "strategies": []}
-        for asset in load_configuration(path)["assets"]
-    ]
-    for minutes in range(11, -1, -1):
-        run(path, watchlist=assets, send=False,
-            now=NOW - timedelta(minutes=minutes),
-            fetcher=lambda *_: sample())
-    uvicorn.run(create_app(path), host="127.0.0.1", port=8766)
-PY
-```
-
-确认上面的测试服务成功启动后，在另一终端执行 `CHANCE_TEST_URL=http://127.0.0.1:8766 PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node tests/check_workspace.mjs`。`CHROME_BIN` 可覆盖浏览器路径。测试会保存测试模板、监测配置和决策。同一测试服务也可运行 `tests/check_indicator_markers.mjs`，沿用上述环境变量，在桌面和窄屏验证布林带与 MACD 事件定位。同一服务也支持 `tests/check_volume.mjs`，用于核对合成成交量、日周切换和触控读数。验证完成后停止测试服务。
-
-## 监测配置升级与恢复
-
-当前候选支持从 v0.8 的 SQLite 结构 4 升级到 5，空库直接建立结构 5。CLI 和网页直接启动会拒绝旧结构，旧于结构 4 的库可先用 v0.8 恢复。备份、可用的旧运行版本和隔离预演通过后再切换运行副本。升级不会引发行情检查或发送通知；正常调度在服务恢复后继续运行。
-
-- 安装器先暂停检查与网页 LaunchAgent，再将一致性备份和 `runtime-revision.txt` 写入 ChanceTrack 应用支持目录的 `backups/configuration-v4-*`。它在临时副本上验证迁移、`quick_check` 和外键。预演失败时保留旧程序、旧库并恢复之前运行的任务。
-- 成功后核对运行副本 SHA、首页 HTTP 状态和启动日志中的结构升级错误。遇到异常先暂停新版网页和检查任务，保留当前数据库的一致性副本。用备份内记录的程序 SHA 和配套的结构 4 库在独立目录恢复，检查历史报告、备忘及合成行情检查。Git 回退仅选择程序版本。
-- 若已产生新版记录，先留存新版库并对照两个副本确定回退后的影响。恢复到正式路径须先确认恢复目标、写入停止和新增记录的处理方案。
-- 候选验收使用冻结的 v0.8 合成数据库。项目检查之外，核对同时绑定两条 MACD 时优化操作的幂等性、旧组合依赖、历史通知去重，以及更换程序版本后的安装、重启和手动、定时检查。
+- `scripts/install_launchd.py` 在停止现有 LaunchAgent 后，会自动将旧库一致性备份与 `runtime-revision.txt` 写入 `~/Library/Application Support/ChanceTrack/backups/schema-v5-to-v6-*`，先在临时副本预演迁移并校验 `PRAGMA quick_check` 与 `PRAGMA foreign_key_check`，预演通过后才构建并切换运行副本。
+- 升级后不触发行情抓取或补发历史通知（`signal_events.dedup_key` 与 `notified_at` 完整保留）。

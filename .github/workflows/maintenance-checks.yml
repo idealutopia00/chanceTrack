@@ -5,6 +5,7 @@ on:
     branches:
       - self-iteration
       - 'maintenance/**'
+      - 'refactor/**'
 
 jobs:
   project:
@@ -20,6 +21,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - run: npm --prefix frontend ci
       - run: uv run python scripts/check_project.py
       - run: uv run pytest -q
-      - run: node tests/check_updates.mjs

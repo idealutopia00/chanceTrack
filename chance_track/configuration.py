@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import configuration_store, storage
+from .catalog import catalog_by_id, default_watchlist
 from .data import TZ, _asset_exchange, fetch, resolve_asset_kind
 from .market_sessions import PROFILES
 
@@ -42,33 +43,6 @@ DEFAULT_STRATEGIES = [
 ]
 
 
-def migrate_configuration(db):
-    for statement in configuration_store.SCHEMA:
-        db.execute(statement)
-    row = db.execute(
-        "SELECT id, payload FROM configuration_versions ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    if row:
-        try:
-            payload = json.loads(row["payload"])
-            known = {rule["id"] for rule in payload["strategies"]}
-            for asset in payload["assets"]:
-                if unknown := set(asset.get("strategies", [])) - known:
-                    raise ValueError(f"标的 {asset['id']} 的策略引用不存在：{', '.join(sorted(unknown))}")
-            for rule in payload["strategies"]:
-                if rule["kind"] == "combination":
-                    for role in ("trigger", "band"):
-                        if rule.get(role) and rule[role] not in known:
-                            raise ValueError(f"组合 {rule['id']} 的 {role} 引用不存在：{rule[role]}")
-            validate_configuration(payload)
-            configuration_store.write_current(db, payload, row["id"])
-            if configuration_store.read_current(db) != {"version": row["id"], **payload}:
-                raise ValueError("新旧配置内容不一致")
-        except (ValueError, KeyError, TypeError) as exc:
-            raise ValueError(f"无法迁移配置版本 {row['id']}：{exc}") from exc
-    db.execute(f"PRAGMA user_version={configuration_store.SCHEMA_VERSION}")
-
-
 def load_configuration(path):
     storage.initialize(path)
     with storage.connect(path) as db:
@@ -79,12 +53,10 @@ def load_configuration(path):
         db.execute("BEGIN IMMEDIATE")
         if current := configuration_store.read_current(db):
             return current
-        assets = json.loads(
-            (Path(__file__).resolve().parent.parent / "watchlist.json").read_text()
-        )
+        now_iso = datetime.now(TZ).isoformat()
+        assets = default_watchlist()
         for asset in assets:
             bound = list(asset.get("strategies", ["macd"]))
-            now_iso = datetime.now(TZ).isoformat()
             asset.update(
                 strategies=bound,
                 archived=False,
@@ -94,12 +66,8 @@ def load_configuration(path):
             "assets": assets,
             "strategies": json.loads(json.dumps(DEFAULT_STRATEGIES)),
         }
-        cursor = db.execute(
-            "INSERT INTO configuration_versions(created_at,payload) VALUES(?,?)",
-            (datetime.now(TZ).isoformat(), json.dumps(payload, ensure_ascii=False)),
-        )
-        configuration_store.write_current(db, payload, cursor.lastrowid)
-        return {"version": cursor.lastrowid, **payload}
+        configuration_store.write_current(db, payload, 1, now_iso)
+        return {"version": 1, **payload}
 
 
 def validate_configuration(config):
@@ -224,6 +192,8 @@ def validate_configuration(config):
             raise ValueError("未知备用源可用时段模式")
 
     for a in config["assets"]:
+        if a.get("archived"):
+            continue
         if (
             not a.get("label")
             or not a.get("code")
@@ -471,48 +441,13 @@ def save_configuration(
         a["activated"] = activations
     with storage.connect(path) as db:
         db.execute("BEGIN IMMEDIATE")
-        latest = db.execute("SELECT max(id) FROM configuration_versions").fetchone()[0]
+        row = db.execute("SELECT version FROM config_meta WHERE singleton=1").fetchone()
+        latest = int(row["version"]) if row else 0
         if latest != expected_version:
             raise ConfigurationConflict("配置已被修改，请重新加载后保存")
-        cursor = db.execute(
-            "INSERT INTO configuration_versions(created_at,payload) VALUES(?,?)",
-            (
-                now.isoformat(),
-                json.dumps(
-                    {"assets": config["assets"], "strategies": config["strategies"]},
-                    ensure_ascii=False,
-                ),
-            ),
-        )
-        configuration_store.write_current(db, config, cursor.lastrowid)
-        return cursor.lastrowid
-
-
-def configuration_history(path):
-    load_configuration(path)
-    with storage.connect(path) as db:
-        return [
-            dict(r)
-            for r in db.execute(
-                "SELECT id,created_at FROM configuration_versions ORDER BY id DESC"
-            )
-        ]
-
-
-def configuration_version(path, version):
-    with storage.connect(path) as db:
-        row = db.execute(
-            "SELECT * FROM configuration_versions WHERE id=?", (version,)
-        ).fetchone()
-        return (
-            {
-                "version": row["id"],
-                "created_at": row["created_at"],
-                **json.loads(row["payload"]),
-            }
-            if row
-            else None
-        )
+        new_version = latest + 1
+        configuration_store.write_current(db, config, new_version, now.isoformat())
+        return new_version
 
 
 LEGACY_ETF_REPLACEMENTS = (
@@ -584,12 +519,7 @@ def migrate_etf_targets(path, *, validate_live=False, fetcher=fetch):
             "migrated": [],
             "skipped": [],
         }
-    presets = {
-        asset["id"]: asset
-        for asset in json.loads(
-            (Path(__file__).resolve().parent.parent / "watchlist.json").read_text()
-        )
-    }
+    presets = catalog_by_id()
     updated = {
         "assets": deepcopy(current["assets"]),
         "strategies": deepcopy(current["strategies"]),

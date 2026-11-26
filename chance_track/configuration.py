@@ -626,6 +626,7 @@ def migrate_etf_targets(path, *, validate_live=False, fetcher=fetch):
         old["enabled"] = False
         if len(matches) == 1:
             existing = matches[0]
+            existing["kind"] = preset["kind"]
             existing["archived"] = False
             existing["enabled"] = True
             existing["watchlisted"] = existing.get("watchlisted", True) or old.get(

@@ -313,8 +313,18 @@ def create_app(db_path):
             raise HTTPException(403, "请刷新页面后重试")
         try:
             result = migrate_etf_targets(db_path)
-            if not result["changed"] and result.get("skipped"):
+            if result.get("skipped"):
                 reasons = "；".join(item["reason"] for item in result["skipped"])
+                if result["changed"]:
+                    pairs = "，".join(
+                        f"{item['from_code']}->{item['to_code']}"
+                        for item in result["migrated"]
+                    )
+                    return management_page(
+                        request,
+                        ValueError(f"已切换 {pairs}；以下标的未迁移：{reasons}"),
+                        200,
+                    )
                 raise ValueError(reasons)
         except (ValueError, KeyError, TypeError, httpx.HTTPError) as exc:
             return management_page(

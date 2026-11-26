@@ -995,20 +995,28 @@ def test_unknown_exchange_rejected_in_validation_and_runtime(monkeypatch):
     with pytest.raises(ValueError, match="交易所"):
         validate_configuration({"assets": [bad_asset], "strategies": []})
 
+    # Even if primary would return HTTP 200 with 140 bars, runtime must reject BEFORE any request
+    bars = _sample_series(140, "2026-11-25")
     requested = []
 
     def handler(url, params, headers, kwargs):
         requested.append(url)
-        return httpx.Response(503, request=httpx.Request("GET", url))
+        req = httpx.Request("GET", url, params=params)
+        return httpx.Response(
+            200, request=req, json=_eastmoney_payload("518800", "黄金ETF国泰", 2, bars)
+        )
 
     _patch_http(monkeypatch, handler)
     with pytest.raises(MarketFetchError) as exc_info:
-        data.fetch(bad_asset, "2026-11-25", now=datetime(2026, 11, 25, 16, 0, tzinfo=TZ))
-    assert len(requested) == 1 and "push2his.eastmoney.com" in requested[0]
-    assert [a["status"] for a in exc_info.value.attempts] == ["error", "identity_mismatch"]
+        data.fetch(bad_asset, "2026-11-25", now=datetime(2026, 11, 25, 10, 16, tzinfo=TZ))
+    assert requested == []
+    assert [a["status"] for a in exc_info.value.attempts] == [
+        "identity_mismatch",
+        "identity_mismatch",
+    ]
 
 
-def test_migration_verifies_instrument_reconciles_fallbacks_and_preserves_priority(tmp_path):
+def test_migration_verifies_instrument_reconciles_fallbacks_and_preserves_priority(tmp_path, monkeypatch):
     now = datetime(2026, 11, 25, 16, 0, tzinfo=TZ)
     base_strategies = [
         {"id": "macd", "name": "MACD 默认", "kind": "macd", "group": "趋势", "params": {"fast": 12, "slow": 26, "signal": 9}}
@@ -1071,7 +1079,8 @@ def test_migration_verifies_instrument_reconciles_fallbacks_and_preserves_priori
     assert after_conflict["gold"]["enabled"] is True and after_conflict["gold"]["archived"] is False
     assert after_conflict["gold_etf_518800"]["code"] == "515450"
 
-    # Case 2: Pre-existing 518800 under gold_etf_518800 on eastmoney with empty fallbacks -> reconciles sse fallback
+    # Case 2: Base-version 518800 saved with kind="index" on eastmoney & empty fallbacks -> normalizes kind="etf",
+    # reconciles sse fallback, and blocks timestamp-free eastmoney close at 15:06 so fetch falls back to sse
     db_reconcile = seed_db(
         "reconcile.sqlite3",
         [
@@ -1083,7 +1092,7 @@ def test_migration_verifies_instrument_reconciles_fallbacks_and_preserves_priori
                 "secid": "1.518800",
                 "provider": "eastmoney",
                 "expected_name": "黄金ETF国泰",
-                "kind": "etf",
+                "kind": "index",
                 "enabled": True,
                 "archived": False,
                 "session_profile": "cn_equity",
@@ -1096,10 +1105,34 @@ def test_migration_verifies_instrument_reconciles_fallbacks_and_preserves_priori
     assert res_reconcile["changed"] is True
     after_reconcile = {a["id"]: a for a in load_configuration(db_reconcile)["assets"]}
     assert after_reconcile["gold"]["archived"] is True
-    assert after_reconcile["gold_etf_518800"]["fallbacks"] == [
+    reconciled_518800 = after_reconcile["gold_etf_518800"]
+    assert reconciled_518800["kind"] == "etf"
+    assert reconciled_518800["fallbacks"] == [
         {"provider": "sse", "code": "518800", "expected_name": "黄金基金"}
     ]
-    assert "priority" not in after_reconcile["gold_etf_518800"]
+    assert "priority" not in reconciled_518800
+
+    bars = _sample_series(140, "2026-11-25")
+    sse_dayk, sse_snap = _sse_payloads("518800", "黄金基金", bars, snap_time="150000")
+
+    def reconcile_handler(url, params, headers, kwargs):
+        req = httpx.Request("GET", url, params=params)
+        if "push2his.eastmoney.com" in url:
+            return httpx.Response(
+                200, request=req, json=_eastmoney_payload("518800", "黄金ETF国泰", 1, bars)
+            )
+        if "dayk" in url:
+            return httpx.Response(200, request=req, json=sse_dayk)
+        if "snap" in url:
+            return httpx.Response(200, request=req, json=sse_snap)
+        raise AssertionError(url)
+
+    _patch_http(monkeypatch, reconcile_handler)
+    fetched = data.fetch(
+        reconciled_518800, "2026-11-25", now=datetime(2026, 11, 25, 15, 6, tzinfo=TZ)
+    )
+    assert fetched["provider"] == "sse" and fetched["fetch_status"] == "fallback_ok"
+    assert [a["status"] for a in fetched["attempts"]] == ["stale", "ok"]
 
     # Case 3: Manually added 518800 under custom ID -> reused, no duplicate monitor, absent priority stays absent
     db_manual = seed_db(
@@ -1112,7 +1145,7 @@ def test_migration_verifies_instrument_reconciles_fallbacks_and_preserves_priori
                 "code": "518800",
                 "provider": "sse",
                 "expected_name": "黄金基金",
-                "kind": "etf",
+                "kind": "index",
                 "enabled": True,
                 "archived": False,
                 "session_profile": "cn_equity",
@@ -1125,8 +1158,51 @@ def test_migration_verifies_instrument_reconciles_fallbacks_and_preserves_priori
     after_manual = load_configuration(db_manual)["assets"]
     enabled_518800 = [a for a in after_manual if a["code"] == "518800" and a["enabled"] and not a["archived"]]
     assert [a["id"] for a in enabled_518800] == ["asset_manual_518800"]
+    assert enabled_518800[0]["kind"] == "etf"
     assert enabled_518800[0]["strategies"] == ["macd"]
     assert "priority" not in enabled_518800[0]
+
+    # Case 4: Partial migration via POST /manage/migrate-etf-targets reports skip reason instead of discarding it
+    db_partial = seed_db(
+        "partial.sqlite3",
+        [
+            legacy_gold,
+            {
+                "id": "star_chinext50",
+                "label": "科创创业50",
+                "ticker": "931643",
+                "code": "931643",
+                "secid": "2.931643",
+                "expected_name": "科创创业50",
+                "provider": "eastmoney",
+                "kind": "index",
+                "enabled": True,
+                "archived": False,
+                "session_profile": "cn_equity",
+                "strategies": ["macd"],
+            },
+            {
+                "id": "gold_etf_518800",
+                "label": "误占ID",
+                "code": "515450",
+                "provider": "sse",
+                "expected_name": "红利50",
+                "kind": "etf",
+                "enabled": True,
+                "archived": False,
+                "session_profile": "cn_equity",
+                "strategies": [],
+            },
+        ],
+    )
+    client = TestClient(create_app(db_partial))
+    token = re.search(r'name="csrf"\s+value="([^"]+)"', client.get("/manage").text).group(1)
+    partial_resp = client.post(
+        "/manage/migrate-etf-targets", data={"csrf": token}, follow_redirects=False
+    )
+    assert partial_resp.status_code == 200
+    assert "931643-&gt;159603" in partial_resp.text or "931643->159603" in partial_resp.text
+    assert "515450" in partial_resp.text and "已保留原标的未迁移" in partial_resp.text
 
 
 def test_unrelated_scheduled_retry_preserves_provider_probe_rotation(tmp_path, monkeypatch):

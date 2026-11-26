@@ -479,7 +479,10 @@ def source_specs(asset):
     seen_providers = {primary.get("provider")}
     primary_code = asset.get("code")
     primary_exchange = _asset_exchange(primary)
-    for entry in asset.get("fallbacks", []):
+    fallbacks = asset.get("fallbacks", [])
+    if fallbacks and not primary_exchange:
+        primary["identity_error"] = "主源交易所无法验证，禁止使用备用源链路"
+    for entry in fallbacks:
         provider = entry.get("provider")
         if not provider or provider in seen_providers:
             continue

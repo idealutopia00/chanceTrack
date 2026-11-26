@@ -623,3 +623,23 @@ def test_dividend_low_vol_etf_515450_catalog_search_add_and_observe_only(
     rows = signal_rows(report)
     assert rows[0]["signal"] == "未绑定策略"
     assert rows[0]["status"] == "仅观察行情"
+
+
+def test_pinned_note_dialog_deduplicates_only_exact_leading_h1(tmp_path):
+    path = tmp_path / "notes.sqlite3"
+    storage.initialize(path)
+    client = TestClient(create_app(path))
+
+    note_id = storage.save_investment_note(
+        path, None, "投资", "# 投资\n\n正文段落", NOW.isoformat()
+    )
+    storage.pin_investment_note(path, note_id)
+    exact_html = client.get("/").text
+    assert 'class="investment-markdown has-dialog-title"' in exact_html
+
+    storage.save_investment_note(
+        path, note_id, "投资", "# 投资备忘录与纪律\n\n正文段落", NOW.isoformat()
+    )
+    prefix_html = client.get("/").text
+    assert 'class="investment-markdown has-dialog-title"' not in prefix_html
+    assert "<h1>投资备忘录与纪律</h1>" in prefix_html

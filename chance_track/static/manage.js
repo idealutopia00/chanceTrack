@@ -30,7 +30,7 @@
   const fields = byId("rule-fields");
   const editToggle = byId("rule-fields-toggle");
   const saveRule = byId("save-rule");
-  let activeId, previousRule;
+  let activeId, previousRule, suppressFocusReturn = false;
   function element(tag, value) {
     const node = document.createElement(tag);
     node.textContent = value;
@@ -229,10 +229,23 @@
       row.className = "rule-row";
       row.id = `strategy-${s.id}`;
       const usage = affectedAssets(s.id);
-      const usageLabel = usage.length > 1 ? `${usage.length} 个标的 ›`
-        : usage.length === 1 ? `${usage[0].label} ›` : "未用于标的监测";
-      row.append(action(s.name, () => openRule(s.id)), element("span", ruleSummary(s)),
-        action(usageLabel, () => openRule(s.id)));
+      const usageNames = usage.map((asset) => asset.label);
+      const usageLabel =
+        usage.length > 2
+          ? `${usageNames.slice(0, 2).join("、")} 等 ${usage.length} 个标的 ›`
+          : usage.length === 2
+            ? `${usageNames.join("、")} · 2 个标的 ›`
+            : usage.length === 1
+              ? `${usageNames[0]} ›`
+              : "未用于标的监测";
+      const usageButton = action(usageLabel, () => openRule(s.id));
+      usageButton.className = `rule-usage ${usage.length ? "is-used" : "is-unused"}`;
+      if (usage.length) usageButton.title = `使用标的：${usageNames.join("、")}`;
+      row.append(
+        action(s.name, () => openRule(s.id)),
+        element("span", ruleSummary(s)),
+        usageButton,
+      );
       strategies.append(row);
     }
     if (activeId) renderRule();
@@ -356,6 +369,7 @@
       actions.append(action("标记删除或合并", () => {
         source.value = s.id;
         keep.value = "";
+        suppressFocusReturn = true;
         editor.close();
         byId("strategy-lifecycle").open = true;
         updateLifecycle();
@@ -380,11 +394,18 @@
   });
   byId("close-rule").onclick = () => editor.close();
   editor.addEventListener("close", () => {
+    const closedId = activeId;
+    const restoreFocus = !suppressFocusReturn;
+    suppressFocusReturn = false;
     restoreRule();
     previousRule = null;
     activeId = null;
     render();
     updateLifecycle();
+    if (restoreFocus && closedId) {
+      (document.querySelector(`#strategy-${CSS.escape(closedId)} button`)
+        ?? byId("add-strategy"))?.focus();
+    }
   });
   saveRule.onclick = () => {
     if (submit.disabled) {

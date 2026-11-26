@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import configuration_store, storage
-from .data import TZ, fetch
+from .data import TZ, _asset_exchange, fetch
 from .market_sessions import PROFILES
 
 DEFAULT_STRATEGIES = [
@@ -197,20 +197,6 @@ def validate_configuration(config):
     assets_by_id = {asset["id"]: asset for asset in config["assets"]}
     valid_providers = ("yahoo", "eastmoney", "sse", "szse")
 
-    def source_exchange(spec):
-        provider = spec.get("provider")
-        if provider == "sse":
-            return "sh"
-        if provider == "szse":
-            return "sz"
-        if provider == "eastmoney":
-            secid = str(spec.get("secid") or "")
-            if secid.startswith("1."):
-                return "sh"
-            if secid.startswith("0."):
-                return "sz"
-        return None
-
     def validate_source(spec, session_profile, default_code=None):
         provider = spec.get("provider")
         if provider not in valid_providers or session_profile not in PROFILES:
@@ -245,20 +231,20 @@ def validate_configuration(config):
         if not isinstance(fallbacks, list):
             raise ValueError("备用行情源须为列表")
         seen_providers = {a["provider"]}
-        primary_exchange = source_exchange(a)
+        primary_exchange = _asset_exchange(a)
         for entry in fallbacks:
             if not isinstance(entry, dict):
                 raise ValueError("备用行情源配置无效")
             if entry.get("code") is not None and entry.get("code") != a["code"]:
                 raise ValueError("备用行情源标的代码须与主标的一致")
             validate_source(entry, a["session_profile"], default_code=a["code"])
-            entry_exchange = source_exchange(entry)
+            entry_exchange = _asset_exchange(entry)
             if (
-                primary_exchange
-                and entry_exchange
-                and primary_exchange != entry_exchange
+                not primary_exchange
+                or not entry_exchange
+                or primary_exchange != entry_exchange
             ):
-                raise ValueError("备用行情源交易所须与主标的一致")
+                raise ValueError("备用行情源交易所须可验证且与主标的一致")
             if entry["provider"] in seen_providers:
                 raise ValueError("备用行情源须使用与主源及其他备用源不同的独立来源")
             seen_providers.add(entry["provider"])
@@ -546,11 +532,47 @@ def legacy_etf_targets(config):
     return pending
 
 
+def _matches_verified_instrument(asset, preset):
+    target_exchange = _asset_exchange(preset)
+    return (
+        asset.get("code") == preset["code"]
+        and asset.get("session_profile") == preset["session_profile"]
+        and target_exchange is not None
+        and _asset_exchange(asset) == target_exchange
+    )
+
+
+def _reconcile_etf_fallbacks(existing, preset):
+    fallbacks = list(existing.get("fallbacks") or [])
+    seen = {existing.get("provider"), *(entry.get("provider") for entry in fallbacks)}
+    # If an existing ETF entry still uses another primary (e.g. legacy eastmoney),
+    # ensure the verified official exchange source is present in its fallback chain.
+    if preset.get("provider") not in seen:
+        fallbacks.append(
+            {
+                "provider": preset["provider"],
+                "code": preset["code"],
+                "expected_name": preset["expected_name"],
+            }
+        )
+        seen.add(preset["provider"])
+    for entry in preset.get("fallbacks") or []:
+        if entry.get("provider") not in seen:
+            fallbacks.append(deepcopy(entry))
+            seen.add(entry.get("provider"))
+    existing["fallbacks"] = fallbacks
+
+
 def migrate_etf_targets(path, *, validate_live=False, fetcher=fetch):
     current = load_configuration(path)
     pending = legacy_etf_targets(current)
     if not pending:
-        return {"changed": False, "version": current["version"], "migrated": []}
+        return {
+            "changed": False,
+            "version": current["version"],
+            "migrated": [],
+            "skipped": [],
+        }
     presets = {
         asset["id"]: asset
         for asset in json.loads(
@@ -564,26 +586,57 @@ def migrate_etf_targets(path, *, validate_live=False, fetcher=fetch):
     assets_by_id = {asset["id"]: asset for asset in updated["assets"]}
     strategy_ids = {rule["id"] for rule in updated["strategies"]}
     migrated = []
+    skipped = []
     for entry in pending:
         old = assets_by_id[entry["legacy_id"]]
         replacement_id = entry["replacement_id"]
         preset = deepcopy(presets[replacement_id])
+        same_id = assets_by_id.get(replacement_id)
+        if same_id is not None and not _matches_verified_instrument(same_id, preset):
+            skipped.append(
+                {
+                    "legacy_id": old["id"],
+                    "legacy_code": old["code"],
+                    "reason": (
+                        f"已存在 ID 为 {replacement_id} 但标的代码/交易所不匹配的记录"
+                        f"（当前为 {same_id.get('code')}），已保留原标的未迁移"
+                    ),
+                }
+            )
+            continue
+        matches = [
+            asset
+            for asset in updated["assets"]
+            if asset["id"] != old["id"] and _matches_verified_instrument(asset, preset)
+        ]
+        if len(matches) > 1:
+            skipped.append(
+                {
+                    "legacy_id": old["id"],
+                    "legacy_code": old["code"],
+                    "reason": (
+                        f"存在多条 {preset['code']} 同交易所记录"
+                        f"（{', '.join(a['id'] for a in matches)}），身份不明确，已保留原标的未迁移"
+                    ),
+                }
+            )
+            continue
         carried = [sid for sid in old.get("strategies", []) if sid in strategy_ids]
         old["archived"] = True
         old["enabled"] = False
-        existing = assets_by_id.get(replacement_id)
-        if existing is not None:
+        if len(matches) == 1:
+            existing = matches[0]
             existing["archived"] = False
             existing["enabled"] = True
-            existing["watchlisted"] = existing.get("watchlisted") or old.get(
+            existing["watchlisted"] = existing.get("watchlisted", True) or old.get(
                 "watchlisted", True
             )
-            existing.setdefault(
-                "priority", old.get("priority", preset.get("priority", 10))
-            )
+            if "priority" not in existing and "priority" in old:
+                existing["priority"] = old["priority"]
             existing["strategies"] = list(
                 dict.fromkeys([*(existing.get("strategies") or []), *carried])
             )
+            _reconcile_etf_fallbacks(existing, preset)
             replacement = existing
         else:
             preset["strategies"] = carried
@@ -592,7 +645,10 @@ def migrate_etf_targets(path, *, validate_live=False, fetcher=fetch):
             preset["watchlisted"] = old.get(
                 "watchlisted", preset.get("watchlisted", True)
             )
-            preset["priority"] = old.get("priority", preset.get("priority", 10))
+            if "priority" in old:
+                preset["priority"] = old["priority"]
+            else:
+                preset.pop("priority", None)
             insert_at = updated["assets"].index(old) + 1
             updated["assets"].insert(insert_at, preset)
             assets_by_id[replacement_id] = preset
@@ -606,6 +662,13 @@ def migrate_etf_targets(path, *, validate_live=False, fetcher=fetch):
                 "strategies": list(replacement["strategies"]),
             }
         )
+    if not migrated:
+        return {
+            "changed": False,
+            "version": current["version"],
+            "migrated": [],
+            "skipped": skipped,
+        }
     version = save_configuration(
         path,
         updated,
@@ -613,4 +676,9 @@ def migrate_etf_targets(path, *, validate_live=False, fetcher=fetch):
         fetcher=fetcher,
         validate_new=validate_live,
     )
-    return {"changed": True, "version": version, "migrated": migrated}
+    return {
+        "changed": True,
+        "version": version,
+        "migrated": migrated,
+        "skipped": skipped,
+    }

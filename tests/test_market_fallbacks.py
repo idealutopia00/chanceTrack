@@ -200,14 +200,15 @@ def test_watchlist_etf_targets_and_validation_rules():
     )
     by_id = {entry["id"]: entry for entry in watchlist}
     assert {"gold_etf_518800", "star_chinext50_etf_159603"}.issubset(by_id)
-    assert by_id["gold_etf_518800"]["provider"] == "eastmoney"
-    assert by_id["gold_etf_518800"]["fallbacks"] == [
-        {"provider": "sse", "code": "518800", "expected_name": "黄金基金"}
-    ]
-    assert by_id["star_chinext50_etf_159603"]["provider"] == "eastmoney"
-    assert by_id["star_chinext50_etf_159603"]["fallbacks"] == [
-        {"provider": "szse", "code": "159603", "expected_name": "科创创业ETF天弘"}
-    ]
+    assert by_id["gold_etf_518800"]["provider"] == "sse"
+    assert by_id["gold_etf_518800"]["expected_name"] == "黄金基金"
+    assert by_id["gold_etf_518800"]["fallbacks"] == []
+    assert by_id["star_chinext50_etf_159603"]["provider"] == "szse"
+    assert by_id["star_chinext50_etf_159603"]["expected_name"] == "科创创业ETF天弘"
+    assert by_id["star_chinext50_etf_159603"]["fallbacks"] == []
+    assert "eastmoney" not in json.dumps(
+        [by_id["gold_etf_518800"], by_id["star_chinext50_etf_159603"]]
+    )
     assert "symbol" not in json.dumps(watchlist)
     for bad_provider, extra in (
         ("tencent", {"symbol": "sh518800"}),
@@ -608,7 +609,9 @@ def test_b4_short_primary_and_empty_szse_picupdata_do_not_abort_chain(monkeypatc
         raise AssertionError(url)
 
     _patch_http(monkeypatch, handler_short)
-    snap = data.fetch(_etf_asset(), "2026-11-25", now=datetime(2026, 11, 25, 16, 0, tzinfo=TZ))
+    snap = data.fetch(
+        _etf_asset(), "2026-11-26", now=datetime(2026, 11, 26, 9, 0, tzinfo=TZ)
+    )
     assert snap["provider"] == "sse" and snap["fetch_status"] == "fallback_ok"
     assert [a["status"] for a in snap["attempts"]] == ["insufficient_history", "ok"]
 
@@ -649,7 +652,9 @@ def test_b5_cooldown_isolation_and_rotation_tracks_real_requests(tmp_path, monke
 
     bars = _sample_series(140, "2026-11-25")
     sse_dayk, sse_snap = _sse_payloads("518800", "黄金基金", bars)
-    szse_hist, szse_time = _szse_payloads("159603", "科创创业ETF天弘", bars)
+    szse_hist, szse_time = _szse_payloads(
+        "159603", "科创创业ETF天弘", bars, time_bar=bars[-1], market_time="15:30:00"
+    )
 
     a1 = _etf_asset(asset_id="gold_etf_518800", code="518800", secid="1.518800")
     a2 = _etf_asset(
@@ -719,9 +724,12 @@ def test_b6_per_candidate_timeout_preserves_attempts_and_lets_next_run(monkeypat
         ]
     )
     # Bypass exchange validation to test a 3-source multi-candidate budget cleanly
-    monkeypatch.setattr(data, "_asset_exchange", lambda _spec: None)
+    monkeypatch.setattr(data, "_asset_exchange", lambda _spec: "sh")
 
     seen_providers = []
+    szse_hist_518800, szse_time_518800 = _szse_payloads(
+        "518800", "黄金基金", bars, time_bar=bars[-1], market_time="15:30:00"
+    )
 
     async def slow_handler(url, params, headers, kwargs):
         req = httpx.Request("GET", url, params=params)
@@ -732,8 +740,8 @@ def test_b6_per_candidate_timeout_preserves_attempts_and_lets_next_run(monkeypat
         if "szse.cn" in url:
             seen_providers.append("szse")
             if "getHistoryData" in url:
-                return httpx.Response(200, request=req, json=_szse_payloads("518800", "黄金基金", bars)[0])
-            return httpx.Response(200, request=req, json={"data": {}})
+                return httpx.Response(200, request=req, json=szse_hist_518800)
+            return httpx.Response(200, request=req, json=szse_time_518800)
         raise AssertionError(url)
 
     _patch_http(monkeypatch, slow_handler)
@@ -764,25 +772,23 @@ def test_b7_historical_quote_provider_and_no_backfill_notifications(tmp_path, mo
     _reset_cooldowns()
     bars = _sample_series(140, "2026-11-25", cross_on_last=True)
     sse_dayk, sse_snap = _sse_payloads("518800", "黄金基金", bars)
-    asset = _etf_asset()
+    dual = _etf_asset(asset_id="etf_dual")
     missing = _etf_asset(asset_id="no_history", code="518880", secid="1.518880", expected_name="黄金ETF")
 
     db_path = tmp_path / "provider-history.sqlite3"
     cfg = load_configuration(db_path)
     updated_assets = [
         {**a, "enabled": False, "strategies": []}
-        if a["id"] != "gold_etf_518800"
-        else {**a, "enabled": True, "strategies": ["macd"]}
         for a in cfg["assets"]
     ]
-    updated_assets.append(missing)
+    updated_assets.extend([dual, missing])
     save_configuration(
         db_path,
         {"assets": updated_assets, "strategies": cfg["strategies"]},
         cfg["version"],
         validate_new=False,
     )
-    asset = next(a for a in updated_assets if a["id"] == "gold_etf_518800")
+    asset = next(a for a in updated_assets if a["id"] == "etf_dual")
     asset["activated"] = {"macd": "2026-11-24T00:00:00+08:00"}
 
     fail_all = [False]
@@ -818,7 +824,8 @@ def test_b7_historical_quote_provider_and_no_backfill_notifications(tmp_path, mo
     notified_after_r1 = storage.notified_event_keys(db_path)
     assert len(notified_after_r1) == 1
 
-    # Re-running with Eastmoney back up returns primary_ok without duplicating notification
+    # Re-running with Eastmoney back up next morning (2026-11-25 already settled)
+    # returns primary_ok without duplicating notification and preserves ETF volume_unit
     def recover_handler(url, params, headers, kwargs):
         req = httpx.Request("GET", url, params=params)
         if "push2his.eastmoney.com" in url:
@@ -844,8 +851,13 @@ def test_b7_historical_quote_provider_and_no_backfill_notifications(tmp_path, mo
     # Recover via eastmoney after sse -> same event key is already notified, zero duplicate alert
     fail_all[0] = False
     _patch_http(monkeypatch, recover_handler)
-    r3 = run(db_path, [asset], send=True, now=now + timedelta(minutes=5), sender=sender)
-    assert storage.report(db_path, r3)["items"][0]["provider"] == "eastmoney"
+    next_morning = datetime(2026, 11, 26, 9, 0, tzinfo=TZ)
+    r3 = run(db_path, [asset], send=True, now=next_morning, sender=sender)
+    rep3_item = storage.report(db_path, r3)["items"][0]
+    assert rep3_item["provider"] == "eastmoney"
+    assert rep3_item["snapshot"]["volume_unit"] == "手"
+    assert rep3_item["result"]["chart"]["volume_unit"] == "手"
+    assert rep3_item["result"]["chart"]["candles"][-1]["volume"] == 125000
     assert "新增确认提醒 0 项" in sent[-1][1]
     assert "已确认 · 已提醒" in sent[-1][1]
     assert storage.notified_event_keys(db_path) == notified_after_r1
@@ -881,3 +893,328 @@ def test_close_only_fallback_skipped_intraday(monkeypatch):
         data.fetch(asset, "2026-11-25", now=datetime(2026, 11, 25, 14, 36, tzinfo=TZ))
     assert exc_info.value.fetch_status == "stale"
     assert [a["status"] for a in exc_info.value.attempts] == ["error", "stale"]
+
+
+def test_same_day_etf_paths_require_closing_evidence_and_single_observation(tmp_path, monkeypatch):
+    _reset_cooldowns()
+    bars = _sample_series(140, "2026-11-25", cross_on_last=True)
+    at_1506 = datetime(2026, 11, 25, 15, 6, tzinfo=TZ)
+
+    # 1) Eastmoney ETF has no per-bar closing timestamp -> stays provisional at 15:06, zero confirmed notifications
+    em_asset = _etf_asset(fallbacks=[])
+    em_payload = _eastmoney_payload("518800", "黄金ETF国泰", 1, bars)
+    em_snap = parse_eastmoney(em_payload, em_asset, "2026-11-25", now=at_1506)
+    assert em_snap["provisional_date"] == "2026-11-25"
+    assert em_snap["session"]["closing_evidence_missing"] is True
+    assert em_snap["volume_unit"] == "手"
+    with pytest.raises(data.StaleMarketSnapshot):
+        data.verify_session_freshness(em_snap, em_asset, "2026-11-25", now=at_1506)
+    db_em = tmp_path / "em-unconfirmed.sqlite3"
+    run(db_em, [em_asset], send=True, now=at_1506, fetcher=lambda *_: em_snap, sender=lambda *_: None)
+    assert storage.notified_event_keys(db_em) == set()
+
+    # 2) SZSE history already containing today MUST still fetch getTimeData; replayed 10:16 bar cannot confirm at 15:06
+    sz_asset = {
+        "id": "star_chinext50_etf_159603",
+        "label": "科创创业ETF天弘",
+        "ticker": "159603",
+        "code": "159603",
+        "provider": "szse",
+        "expected_name": "科创创业ETF天弘",
+        "kind": "etf",
+        "enabled": True,
+        "archived": False,
+        "session_profile": "cn_equity",
+        "strategies": ["macd"],
+        "fallbacks": [],
+    }
+    sz_hist, sz_time_1016 = _szse_payloads(
+        "159603", "科创创业ETF天弘", bars, time_bar=bars[-1], market_time="10:16:00"
+    )
+    # Without getTimeData at 15:06 -> stays provisional and fails freshness
+    sz_no_time = parse_szse(sz_hist, sz_asset, "2026-11-25", now=at_1506, time_payload=None)
+    assert sz_no_time["provisional_date"] == "2026-11-25"
+    assert sz_no_time["session"]["closing_evidence_missing"] is True
+    db_sz = tmp_path / "sz-unconfirmed.sqlite3"
+    run(db_sz, [sz_asset], send=True, now=at_1506, fetcher=lambda *_: sz_no_time, sender=lambda *_: None)
+    assert storage.notified_event_keys(db_sz) == set()
+
+    # End-to-end SZSE fetch always calls getTimeData even when picupdata already has today
+    requested = []
+
+    def sz_handler(url, params, headers, kwargs):
+        requested.append(url)
+        req = httpx.Request("GET", url, params=params)
+        if "getHistoryData" in url:
+            return httpx.Response(200, request=req, json=sz_hist)
+        if "getTimeData" in url:
+            return httpx.Response(200, request=req, json=sz_time_1016)
+        raise AssertionError(url)
+
+    _patch_http(monkeypatch, sz_handler)
+    with pytest.raises(MarketFetchError) as sz_exc:
+        data.fetch(sz_asset, "2026-11-25", now=at_1506)
+    assert sz_exc.value.fetch_status == "stale"
+    assert any("getTimeData" in url for url in requested)
+
+    # 3) SSE: dayk close 1.450 (cross) vs 15:00 snap close 1.038 (no cross) -> uses snap OHLC + snap time together
+    non_cross_bar = ("2026-11-25", 1.03, 1.05, 1.02, 1.038, 125000)
+    sse_dayk, sse_snap = _sse_payloads(
+        "518800", "黄金基金", bars, snap_bar=non_cross_bar, snap_time="150000"
+    )
+    sse_asset = {
+        "id": "gold_etf_518800",
+        "label": "黄金ETF国泰",
+        "ticker": "518800",
+        "code": "518800",
+        "provider": "sse",
+        "expected_name": "黄金基金",
+        "kind": "etf",
+        "enabled": True,
+        "archived": False,
+        "session_profile": "cn_equity",
+        "strategies": ["macd"],
+        "fallbacks": [],
+    }
+    sse_parsed = parse_sse(sse_dayk, sse_snap, sse_asset, "2026-11-25", now=at_1506)
+    assert sse_parsed["rows"][-1]["close"] == pytest.approx(1.038)
+    assert sse_parsed["provisional_date"] is None
+    assert analyze(sse_parsed, "2026-11-25")["event"] is None
+    db_sse = tmp_path / "sse-consistent.sqlite3"
+    run(db_sse, [sse_asset], send=True, now=at_1506, fetcher=lambda *_: sse_parsed, sender=lambda *_: None)
+    assert storage.notified_event_keys(db_sse) == set()
+
+
+def test_unknown_exchange_rejected_in_validation_and_runtime(monkeypatch):
+    _reset_cooldowns()
+    bad_asset = _etf_asset(
+        code="518800",
+        secid="2.518800",
+        fallbacks=[{"provider": "sse", "code": "518800", "expected_name": "黄金基金"}],
+    )
+    with pytest.raises(ValueError, match="交易所"):
+        validate_configuration({"assets": [bad_asset], "strategies": []})
+
+    requested = []
+
+    def handler(url, params, headers, kwargs):
+        requested.append(url)
+        return httpx.Response(503, request=httpx.Request("GET", url))
+
+    _patch_http(monkeypatch, handler)
+    with pytest.raises(MarketFetchError) as exc_info:
+        data.fetch(bad_asset, "2026-11-25", now=datetime(2026, 11, 25, 16, 0, tzinfo=TZ))
+    assert len(requested) == 1 and "push2his.eastmoney.com" in requested[0]
+    assert [a["status"] for a in exc_info.value.attempts] == ["error", "identity_mismatch"]
+
+
+def test_migration_verifies_instrument_reconciles_fallbacks_and_preserves_priority(tmp_path):
+    now = datetime(2026, 11, 25, 16, 0, tzinfo=TZ)
+    base_strategies = [
+        {"id": "macd", "name": "MACD 默认", "kind": "macd", "group": "趋势", "params": {"fast": 12, "slow": 26, "signal": 9}}
+    ]
+    legacy_gold = {
+        "id": "gold",
+        "label": "黄金",
+        "ticker": "Au99.99",
+        "code": "AU9999",
+        "secid": "118.AU9999",
+        "expected_name": "Au9999",
+        "provider": "eastmoney",
+        "kind": "spot",
+        "market": "上金所",
+        "currency": "元/克",
+        "enabled": True,
+        "archived": False,
+        "session_profile": "sge_gold",
+        "strategies": ["macd"],
+    }
+
+    def seed_db(name, assets):
+        db_path = tmp_path / name
+        storage.initialize(db_path)
+        payload = {"assets": assets, "strategies": base_strategies}
+        with storage.connect(db_path) as db:
+            db.execute("BEGIN IMMEDIATE")
+            from chance_track import configuration_store
+
+            cur = db.execute(
+                "INSERT INTO configuration_versions(created_at, payload) VALUES(?, ?)",
+                (now.isoformat(), json.dumps(payload, ensure_ascii=False)),
+            )
+            configuration_store.write_current(db, payload, cur.lastrowid)
+        return db_path
+
+    # Case 1: Pre-existing gold_etf_518800 holding a different instrument (515450) -> refused, legacy kept active
+    db_conflict = seed_db(
+        "conflict.sqlite3",
+        [
+            legacy_gold,
+            {
+                "id": "gold_etf_518800",
+                "label": "误占ID",
+                "code": "515450",
+                "provider": "sse",
+                "expected_name": "红利50",
+                "kind": "etf",
+                "enabled": True,
+                "archived": False,
+                "session_profile": "cn_equity",
+                "strategies": [],
+            },
+        ],
+    )
+    res_conflict = migrate_etf_targets(db_conflict)
+    assert res_conflict["changed"] is False
+    assert len(res_conflict["skipped"]) == 1
+    after_conflict = {a["id"]: a for a in load_configuration(db_conflict)["assets"]}
+    assert after_conflict["gold"]["enabled"] is True and after_conflict["gold"]["archived"] is False
+    assert after_conflict["gold_etf_518800"]["code"] == "515450"
+
+    # Case 2: Pre-existing 518800 under gold_etf_518800 on eastmoney with empty fallbacks -> reconciles sse fallback
+    db_reconcile = seed_db(
+        "reconcile.sqlite3",
+        [
+            legacy_gold,
+            {
+                "id": "gold_etf_518800",
+                "label": "黄金ETF国泰",
+                "code": "518800",
+                "secid": "1.518800",
+                "provider": "eastmoney",
+                "expected_name": "黄金ETF国泰",
+                "kind": "etf",
+                "enabled": True,
+                "archived": False,
+                "session_profile": "cn_equity",
+                "strategies": [],
+                "fallbacks": [],
+            },
+        ],
+    )
+    res_reconcile = migrate_etf_targets(db_reconcile)
+    assert res_reconcile["changed"] is True
+    after_reconcile = {a["id"]: a for a in load_configuration(db_reconcile)["assets"]}
+    assert after_reconcile["gold"]["archived"] is True
+    assert after_reconcile["gold_etf_518800"]["fallbacks"] == [
+        {"provider": "sse", "code": "518800", "expected_name": "黄金基金"}
+    ]
+    assert "priority" not in after_reconcile["gold_etf_518800"]
+
+    # Case 3: Manually added 518800 under custom ID -> reused, no duplicate monitor, absent priority stays absent
+    db_manual = seed_db(
+        "manual.sqlite3",
+        [
+            legacy_gold,
+            {
+                "id": "asset_manual_518800",
+                "label": "手动黄金ETF",
+                "code": "518800",
+                "provider": "sse",
+                "expected_name": "黄金基金",
+                "kind": "etf",
+                "enabled": True,
+                "archived": False,
+                "session_profile": "cn_equity",
+                "strategies": [],
+            },
+        ],
+    )
+    res_manual = migrate_etf_targets(db_manual)
+    assert res_manual["changed"] is True
+    after_manual = load_configuration(db_manual)["assets"]
+    enabled_518800 = [a for a in after_manual if a["code"] == "518800" and a["enabled"] and not a["archived"]]
+    assert [a["id"] for a in enabled_518800] == ["asset_manual_518800"]
+    assert enabled_518800[0]["strategies"] == ["macd"]
+    assert "priority" not in enabled_518800[0]
+
+
+def test_unrelated_scheduled_retry_preserves_provider_probe_rotation(tmp_path, monkeypatch):
+    _reset_cooldowns()
+    bars = _sample_series(140, "2026-11-25")
+    em_gold = _etf_asset(asset_id="gold_etf_518800", code="518800", secid="1.518800", fallbacks=[])
+    em_star = _etf_asset(
+        asset_id="star_chinext50_etf_159603",
+        code="159603",
+        secid="0.159603",
+        expected_name="科创创业ETF天弘",
+        fallbacks=[],
+    )
+    yahoo_spx = {
+        "id": "sp500",
+        "label": "标普500",
+        "ticker": "SPX",
+        "code": "^GSPC",
+        "provider": "yahoo",
+        "kind": "index",
+        "enabled": True,
+        "archived": False,
+        "session_profile": "us_equity",
+        "strategies": ["macd"],
+    }
+
+    fail_yahoo = [True]
+    probed_em = []
+
+    def fetcher(asset, day, now=None):
+        if asset["provider"] == "yahoo":
+            if fail_yahoo[0]:
+                raise httpx.ConnectError("yahoo temporary failure")
+            return {
+                "rows": [
+                    {"date": d, "open": o, "high": h, "low": l, "close": c, "volume": v}
+                    for d, o, h, l, c, v in bars
+                ],
+                "source": "yahoo",
+                "name": "SP500",
+                "code": "^GSPC",
+                "basis": "market_ohlc",
+                "provider": "yahoo",
+                "provisional_date": "2026-11-25",
+            }
+        probed_em.append(asset["id"])
+        return {
+            "rows": [
+                {"date": d, "open": o, "high": h, "low": l, "close": c, "volume": v}
+                for d, o, h, l, c, v in bars
+            ],
+            "source": "eastmoney",
+            "name": asset["expected_name"],
+            "code": asset["code"],
+            "basis": "market_ohlc",
+            "provider": "eastmoney",
+            "provisional_date": "2026-11-25",
+        }
+
+    db_path = tmp_path / "retry-rotation.sqlite3"
+    t1 = datetime(2026, 11, 25, 14, 36, tzinfo=TZ)
+    run(db_path, [yahoo_spx, em_gold, em_star], scheduled=True, send=False, now=t1, fetcher=fetcher)
+    assert probed_em == ["gold_etf_518800", "star_chinext50_etf_159603"]
+
+    # Scheduled retry fetches ONLY failed yahoo asset -> zero eastmoney probes, must preserve eastmoney order
+    fail_yahoo[0] = False
+    probed_em.clear()
+    r2 = run(
+        db_path,
+        [yahoo_spx, em_gold, em_star],
+        scheduled=True,
+        send=False,
+        now=t1 + timedelta(minutes=6),
+        fetcher=fetcher,
+    )
+    assert probed_em == []
+    assert storage.report(db_path, r2)["probe_order"]["eastmoney"] == [
+        "gold_etf_518800",
+        "star_chinext50_etf_159603",
+    ]
+
+    # Next full check must rotate eastmoney to probe star first
+    run(
+        db_path,
+        [yahoo_spx, em_gold, em_star],
+        scheduled=False,
+        send=False,
+        now=t1 + timedelta(minutes=12),
+        fetcher=fetcher,
+    )
+    assert probed_em == ["star_chinext50_etf_159603", "gold_etf_518800"]

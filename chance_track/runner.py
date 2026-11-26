@@ -271,7 +271,9 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                 market_snapshot(active_by_id[asset_id])
             except Exception:
                 pass
-    recorded_probe_order = {}
+    recorded_probe_order = {
+        provider: list(ids) for provider, ids in prior_order.items() if ids
+    }
     for provider, planned_ids in probe_order.items():
         probed = [
             aid for aid in planned_ids if _actually_probed(market_cache.get(aid), provider)
@@ -406,6 +408,22 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
                     last_quote=last_quote,
                 )
         report["items"].append(item)
+    for asset in assets:
+        provider = asset.get("provider")
+        aid = asset["id"]
+        if not provider or provider in probe_order or not asset.get("enabled"):
+            continue
+        old = previous_items.get(aid)
+        if old and old["status"] in ("ok", "warning"):
+            continue
+        if _actually_probed(market_cache.get(aid), provider):
+            existing = recorded_probe_order.get(provider) or []
+            recorded_probe_order[provider] = [
+                aid,
+                *(other for other in existing if other != aid),
+            ]
+    if recorded_probe_order:
+        report["probe_order"] = recorded_probe_order
     report_id, _ = storage.save_report(db_path, report)
     if send:
         deliver(db_path, report_id, sender)

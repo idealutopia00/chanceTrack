@@ -36,12 +36,21 @@ def main():
     elif args.command == "migrate-etf-targets":
         result = migrate_etf_targets(args.db, validate_live=args.validate_live)
         if not result["changed"]:
-            print(f"无需切换：未发现待替换的旧标的（版本 {result['version']}）")
+            if result.get("skipped"):
+                reasons = "；".join(item["reason"] for item in result["skipped"])
+                print(f"未切换（版本 {result['version']}）：{reasons}")
+            else:
+                print(f"无需切换：未发现待替换的旧标的（版本 {result['version']}）")
         else:
             pairs = "，".join(
                 f"{item['from_code']}->{item['to_code']}" for item in result["migrated"]
             )
-            print(f"已切换标的：{pairs}（版本 {result['version']}）")
+            suffix = (
+                "；已跳过：" + "；".join(item["reason"] for item in result["skipped"])
+                if result.get("skipped")
+                else ""
+            )
+            print(f"已切换标的：{pairs}（版本 {result['version']}）{suffix}")
     else:
         import uvicorn
 

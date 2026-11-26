@@ -312,7 +312,10 @@ def create_app(db_path):
         if not secrets.compare_digest(csrf, token):
             raise HTTPException(403, "请刷新页面后重试")
         try:
-            migrate_etf_targets(db_path)
+            result = migrate_etf_targets(db_path)
+            if not result["changed"] and result.get("skipped"):
+                reasons = "；".join(item["reason"] for item in result["skipped"])
+                raise ValueError(reasons)
         except (ValueError, KeyError, TypeError, httpx.HTTPError) as exc:
             return management_page(
                 request,

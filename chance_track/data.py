@@ -132,7 +132,12 @@ def parse_eastmoney(payload, asset, as_of, now=None):
                 "volume": volume,
             }
         )
-    session = apply_sessions(rows, asset.get("session_profile", "cn_equity"), now)
+    session = apply_sessions(
+        rows,
+        asset.get("session_profile", "cn_equity"),
+        now,
+        require_same_day_quote_at=(asset.get("kind") == "etf"),
+    )
     validate_rows(session["rows"])
     return {
         **session,
@@ -144,7 +149,7 @@ def parse_eastmoney(payload, asset, as_of, now=None):
             {"volume_unit": "千克", "volume_multiplier": 0.01}
             if asset["secid"] == "118.AU9999"
             and asset.get("session_profile") == "sge_gold"
-            else {}
+            else _etf_volume_meta(asset, 1)
         ),
     }
 
@@ -248,30 +253,31 @@ def parse_sse(dayk_payload, snap_payload, asset, as_of, now=None):
     if snap_payload.get("date") is not None:
         snap_day = _yyyymmdd_to_iso(snap_payload["date"])
         snap_quote_at = _parse_sse_quote_at(snap_day, snap_payload.get("time"))
-        if (
-            (not rows or snap_day > rows[-1]["date"])
-            and snap_quote_at is not None
-            and _valid_positive_ohlc(snap[2], snap[3], snap[4], snap[5])
+        if snap_quote_at is not None and _valid_positive_ohlc(
+            snap[2], snap[3], snap[4], snap[5]
         ):
-            rows.append(
-                {
-                    "date": snap_day,
-                    "open": snap[2],
-                    "high": snap[3],
-                    "low": snap[4],
-                    "close": snap[5],
-                    "volume": snap[8],
-                }
-            )
-            latest_quote_at = snap_quote_at
-        elif rows and snap_day == rows[-1]["date"] and snap_quote_at is not None:
-            latest_quote_at = snap_quote_at
+            snap_row = {
+                "date": snap_day,
+                "open": snap[2],
+                "high": snap[3],
+                "low": snap[4],
+                "close": snap[5],
+                "volume": snap[8],
+            }
+            if not rows or snap_day > rows[-1]["date"]:
+                rows.append(snap_row)
+                latest_quote_at = snap_quote_at
+            elif rows and snap_day == rows[-1]["date"]:
+                # Keep OHLC and quote timestamp from the same snapshot observation.
+                rows[-1] = snap_row
+                latest_quote_at = snap_quote_at
     now = (now or datetime.now(TZ)).astimezone(TZ)
     session = apply_sessions(
         rows,
         asset.get("session_profile", "cn_equity"),
         now,
         latest_quote_at=latest_quote_at,
+        require_same_day_quote_at=True,
     )
     validate_rows(session["rows"])
     return {
@@ -322,23 +328,24 @@ def parse_szse(hist_payload, asset, as_of, now=None, time_payload=None):
             )
         except ValueError:
             quote_dt = None
-        if quote_dt is not None:
+        if quote_dt is not None and _valid_positive_ohlc(
+            tdata.get("open"), tdata.get("high"), tdata.get("low"), tdata.get("now")
+        ):
             tday = quote_dt.date().isoformat()
-            if (not rows or tday > rows[-1]["date"]) and _valid_positive_ohlc(
-                tdata.get("open"), tdata.get("high"), tdata.get("low"), tdata.get("now")
-            ):
-                rows.append(
-                    {
-                        "date": tday,
-                        "open": tdata["open"],
-                        "high": tdata["high"],
-                        "low": tdata["low"],
-                        "close": tdata["now"],
-                        "volume": tdata.get("volume"),
-                    }
-                )
+            time_row = {
+                "date": tday,
+                "open": tdata["open"],
+                "high": tdata["high"],
+                "low": tdata["low"],
+                "close": tdata["now"],
+                "volume": tdata.get("volume"),
+            }
+            if not rows or tday > rows[-1]["date"]:
+                rows.append(time_row)
                 latest_quote_at = quote_dt
             elif rows and tday == rows[-1]["date"]:
+                # Keep OHLC and marketTime from the same getTimeData observation.
+                rows[-1] = time_row
                 latest_quote_at = quote_dt
     now = (now or datetime.now(TZ)).astimezone(TZ)
     session = apply_sessions(
@@ -346,6 +353,7 @@ def parse_szse(hist_payload, asset, as_of, now=None, time_payload=None):
         asset.get("session_profile", "cn_equity"),
         now,
         latest_quote_at=latest_quote_at,
+        require_same_day_quote_at=True,
     )
     validate_rows(session["rows"])
     return {
@@ -404,7 +412,10 @@ def verify_session_freshness(
                 raise StaleMarketSnapshot(
                     f"该备用源仅支持收盘后核对，{active_day} 尚未收盘确认"
                 )
-    quote_at_raw = (snapshot.get("session") or {}).get("quote_at")
+    session_meta = snapshot.get("session") or {}
+    if session_meta.get("closing_evidence_missing"):
+        raise StaleMarketSnapshot("缺少当日收盘时间戳，尚不能确认为收盘行情")
+    quote_at_raw = session_meta.get("quote_at")
     if quote_at_raw:
         quote_at = datetime.fromisoformat(quote_at_raw)
         latest_bounds = session_bounds(profile, latest_bar)
@@ -488,11 +499,11 @@ def source_specs(asset):
         else:
             entry_exchange = _asset_exchange(spec)
             if (
-                primary_exchange
-                and entry_exchange
-                and primary_exchange != entry_exchange
+                not primary_exchange
+                or not entry_exchange
+                or primary_exchange != entry_exchange
             ):
-                mismatch = "备用源交易所与主标的不一致"
+                mismatch = "备用源交易所无法验证或与主标的不一致"
         if mismatch:
             spec["identity_error"] = mismatch
         specs.append(spec)
@@ -553,11 +564,7 @@ async def _fetch_single_source(client, asset, as_of, now):
         hist_json = hist_resp.json()
         time_json = None
         active_day = active_trading_day(asset.get("session_profile", "cn_equity"), now)
-        pic = (hist_json.get("data") or {}).get("picupdata") or []
-        last_hist_date = (
-            pic[-1][0] if pic and isinstance(pic[-1], list) and pic[-1] else None
-        )
-        if active_day and (not last_hist_date or str(last_hist_date) < active_day):
+        if active_day:
             time_url = "https://www.szse.cn/api/market/ssjjhq/getTimeData"
             time_resp = await get_market_response(
                 client,

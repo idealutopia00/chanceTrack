@@ -71,7 +71,15 @@ def session_bounds(profile, day, provider_period=None):
     }
 
 
-def apply_sessions(rows, profile, now, provider_period=None, latest_quote_at=None):
+def apply_sessions(
+    rows,
+    profile,
+    now,
+    provider_period=None,
+    latest_quote_at=None,
+    *,
+    require_same_day_quote_at=False,
+):
     if profile not in PROFILES:
         raise ValueError(f"未知交易时段配置：{profile}")
     selected = []
@@ -94,6 +102,15 @@ def apply_sessions(rows, profile, now, provider_period=None, latest_quote_at=Non
         if latest_quote_at is not None
         else None
     )
+    if quote_at is not None and quote_at.date().isoformat() != selected[-1]["date"]:
+        quote_at = None
+    same_day = selected[-1]["date"] == now.astimezone(tz).date().isoformat()
+    missing_closing_evidence = (
+        require_same_day_quote_at
+        and same_day
+        and now >= latest["confirm_after"]
+        and quote_at is None
+    )
     if quote_at is not None and quote_at < latest["close"]:
         provisional = True
         phase = next(
@@ -101,6 +118,10 @@ def apply_sessions(rows, profile, now, provider_period=None, latest_quote_at=Non
             "break",
         )
         label = "盘中快照（未收盘）"
+    elif missing_closing_evidence:
+        provisional = True
+        phase = "unconfirmed"
+        label = "当日行情（缺少收盘时间证明）"
     else:
         provisional = now < latest["confirm_after"]
         if not provisional:
@@ -129,6 +150,8 @@ def apply_sessions(rows, profile, now, provider_period=None, latest_quote_at=Non
     }
     if quote_at is not None:
         session["quote_at"] = quote_at.isoformat()
+    if missing_closing_evidence:
+        session["closing_evidence_missing"] = True
     return {
         "rows": selected,
         "provisional_date": selected[-1]["date"] if provisional else None,

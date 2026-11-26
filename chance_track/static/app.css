@@ -2509,7 +2509,7 @@ td {
   color: var(--muted);
 }
 
-.management button:not(.save-button):not(.rule-row button) {
+:where(.management) button:not(.save-button) {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--line);

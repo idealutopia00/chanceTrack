@@ -403,7 +403,8 @@
     render();
     updateLifecycle();
     if (restoreFocus && closedId) {
-      document.querySelector(`#strategy-${CSS.escape(closedId)} button`)?.focus();
+      (document.querySelector(`#strategy-${CSS.escape(closedId)} button`)
+        ?? byId("add-strategy"))?.focus();
     }
   });
   saveRule.onclick = () => {

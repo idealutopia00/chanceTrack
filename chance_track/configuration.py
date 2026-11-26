@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import configuration_store, storage
-from .data import TZ, fetch
+from .data import TZ, _asset_exchange, fetch, resolve_asset_kind
 from .market_sessions import PROFILES
 
 DEFAULT_STRATEGIES = [
@@ -83,10 +83,12 @@ def load_configuration(path):
             (Path(__file__).resolve().parent.parent / "watchlist.json").read_text()
         )
         for asset in assets:
+            bound = list(asset.get("strategies", ["macd"]))
+            now_iso = datetime.now(TZ).isoformat()
             asset.update(
-                strategies=["macd"],
+                strategies=bound,
                 archived=False,
-                activated={"macd": datetime.now(TZ).isoformat()},
+                activated={sid: now_iso for sid in bound},
             )
         payload = {
             "assets": assets,
@@ -193,18 +195,71 @@ def validate_configuration(config):
         else:
             raise ValueError("未知策略类型")
     assets_by_id = {asset["id"]: asset for asset in config["assets"]}
+    valid_providers = ("yahoo", "eastmoney", "sse", "szse")
+
+    def validate_source(spec, session_profile, default_code=None):
+        provider = spec.get("provider")
+        if provider not in valid_providers or session_profile not in PROFILES:
+            raise ValueError("未知数据源或市场时段")
+        if (provider == "yahoo") != (session_profile == "us_equity"):
+            raise ValueError("数据源与市场时段不匹配")
+        if session_profile == "sge_gold" and provider != "eastmoney":
+            raise ValueError("数据源与市场时段不匹配")
+        code = spec.get("code") or default_code
+        if provider == "eastmoney":
+            if not spec.get("secid") or not spec.get("expected_name"):
+                raise ValueError("东方财富需要secid和精确名称")
+            if spec["secid"].split(".")[-1] != code:
+                raise ValueError("东方财富须填写匹配的市场代码")
+            if session_profile == "sge_gold" and not str(spec["secid"]).startswith(
+                "118."
+            ):
+                raise ValueError("上金所黄金时段仅支持 118. 开头的上金所现货 secid")
+            if session_profile == "cn_equity" and str(spec["secid"]).startswith("118."):
+                raise ValueError("中国股市时段不支持上金所黄金现货 secid")
+        elif provider in ("sse", "szse"):
+            if not code or not spec.get("expected_name"):
+                raise ValueError("交易所数据源需要标的代码和精确名称")
+        if spec.get("mode") not in (None, "full", "close_only"):
+            raise ValueError("未知备用源可用时段模式")
+
     for a in config["assets"]:
         if (
-            a.get("provider") not in ("yahoo", "eastmoney")
+            not a.get("label")
+            or not a.get("code")
             or a.get("session_profile") not in PROFILES
         ):
-            raise ValueError("未知数据源或市场时段")
-        if (a["provider"] == "yahoo") != (a["session_profile"] == "us_equity"):
-            raise ValueError("数据源与市场时段不匹配")
-        if a["provider"] == "eastmoney" and (
-            not a.get("secid") or not a.get("expected_name")
-        ):
-            raise ValueError("东方财富需要secid和精确名称")
+            raise ValueError("标的名称、代码、交易时段不能为空")
+        if a.get("kind") not in (None, "index", "spot", "etf"):
+            raise ValueError("未知标的类型")
+        if a["session_profile"] == "sge_gold" and a.get("kind") == "etf":
+            raise ValueError("上金所黄金时段不支持场内 ETF 品种")
+        if a["session_profile"] == "us_equity" and a.get("kind") == "etf":
+            raise ValueError("美国指数数据源暂不支持场内 ETF 品种")
+        if a["session_profile"] != "sge_gold" and a.get("kind") == "spot":
+            raise ValueError("现货品种仅支持上金所黄金时段")
+        validate_source(a, a["session_profile"])
+        fallbacks = a.get("fallbacks", [])
+        if not isinstance(fallbacks, list):
+            raise ValueError("备用行情源须为列表")
+        seen_providers = {a["provider"]}
+        primary_exchange = _asset_exchange(a)
+        for entry in fallbacks:
+            if not isinstance(entry, dict):
+                raise ValueError("备用行情源配置无效")
+            if entry.get("code") is not None and entry.get("code") != a["code"]:
+                raise ValueError("备用行情源标的代码须与主标的一致")
+            validate_source(entry, a["session_profile"], default_code=a["code"])
+            entry_exchange = _asset_exchange(entry)
+            if (
+                not primary_exchange
+                or not entry_exchange
+                or primary_exchange != entry_exchange
+            ):
+                raise ValueError("备用行情源交易所须可验证且与主标的一致")
+            if entry["provider"] in seen_providers:
+                raise ValueError("备用行情源须使用与主源及其他备用源不同的独立来源")
+            seen_providers.add(entry["provider"])
         if any(sid not in strategies for sid in a.get("strategies", [])):
             raise ValueError("绑定了不存在的策略")
         for sid in a.get("strategies", []):
@@ -223,14 +278,6 @@ def validate_configuration(config):
                     )
                 ):
                     raise ValueError("相对强弱须绑定同市场的另一只美元指数基准")
-        if (
-            not a.get("label")
-            or not a.get("code")
-            or a.get("session_profile") not in PROFILES
-        ):
-            raise ValueError("标的名称、代码、交易时段不能为空")
-        if a["provider"] == "eastmoney" and a["secid"].split(".")[-1] != a["code"]:
-            raise ValueError("东方财富须填写匹配的市场代码")
         if len(a.get("strategies", [])) != len(set(a.get("strategies", []))):
             raise ValueError("策略不能重复绑定")
     return config
@@ -321,7 +368,9 @@ class ConfigurationConflict(ValueError):
     pass
 
 
-def save_configuration(path, config, expected_version, fetcher=fetch, *, lifecycle=None):
+def save_configuration(
+    path, config, expected_version, fetcher=fetch, *, lifecycle=None, validate_new=True
+):
     previous = load_configuration(path)
     if previous["version"] != expected_version:
         raise ConfigurationConflict("配置已被修改，请重新加载后保存")
@@ -363,11 +412,19 @@ def save_configuration(path, config, expected_version, fetcher=fetch, *, lifecyc
         raise ValueError("已有策略请解除绑定，不可删除")
     for a in config["assets"]:
         old = old_assets.get(a["id"])
-        identity = ("provider", "code", "secid", "expected_name", "session_profile")
+        identity = (
+            "provider",
+            "code",
+            "secid",
+            "expected_name",
+            "session_profile",
+        )
         if old and any(a.get(k) != old.get(k) for k in identity):
             raise ValueError("已有标的身份不可修改；请归档后使用新ID添加")
+        a["kind"] = resolve_asset_kind(a)
         if (
-            a.get("enabled")
+            validate_new
+            and a.get("enabled")
             and not a.get("archived")
             and (not old or not old.get("enabled") or old.get("archived"))
         ):
@@ -384,7 +441,6 @@ def save_configuration(path, config, expected_version, fetcher=fetch, *, lifecyc
             ):
                 raise ValueError("行情时区与选定市场时段不匹配")
             a["validated_at"] = now.isoformat()
-        a["kind"] = "spot" if a["session_profile"] == "sge_gold" else "index"
         activations = dict(old.get("activated", {})) if old else {}
         if lifecycle is not None:
             activations.pop(lifecycle[0], None)
@@ -457,3 +513,188 @@ def configuration_version(path, version):
             if row
             else None
         )
+
+
+LEGACY_ETF_REPLACEMENTS = (
+    ("gold", "AU9999", "gold_etf_518800"),
+    ("star_chinext50", "931643", "star_chinext50_etf_159603"),
+)
+
+
+def legacy_etf_targets(config):
+    assets = {asset["id"]: asset for asset in config.get("assets", [])}
+    pending = []
+    for legacy_id, legacy_code, replacement_id in LEGACY_ETF_REPLACEMENTS:
+        old = assets.get(legacy_id)
+        if (
+            old
+            and old.get("code") == legacy_code
+            and not old.get("archived")
+            and old.get("enabled", True)
+        ):
+            pending.append(
+                {
+                    "legacy_id": legacy_id,
+                    "legacy_code": legacy_code,
+                    "legacy_label": old.get("label", legacy_id),
+                    "replacement_id": replacement_id,
+                }
+            )
+    return pending
+
+
+def _matches_verified_instrument(asset, preset):
+    target_exchange = _asset_exchange(preset)
+    return (
+        asset.get("code") == preset["code"]
+        and asset.get("session_profile") == preset["session_profile"]
+        and target_exchange is not None
+        and _asset_exchange(asset) == target_exchange
+    )
+
+
+def _reconcile_etf_fallbacks(existing, preset):
+    fallbacks = list(existing.get("fallbacks") or [])
+    seen = {existing.get("provider"), *(entry.get("provider") for entry in fallbacks)}
+    # If an existing ETF entry still uses another primary (e.g. legacy eastmoney),
+    # ensure the verified official exchange source is present in its fallback chain.
+    if preset.get("provider") not in seen:
+        fallbacks.append(
+            {
+                "provider": preset["provider"],
+                "code": preset["code"],
+                "expected_name": preset["expected_name"],
+            }
+        )
+        seen.add(preset["provider"])
+    for entry in preset.get("fallbacks") or []:
+        if entry.get("provider") not in seen:
+            fallbacks.append(deepcopy(entry))
+            seen.add(entry.get("provider"))
+    existing["fallbacks"] = fallbacks
+
+
+def migrate_etf_targets(path, *, validate_live=False, fetcher=fetch):
+    current = load_configuration(path)
+    pending = legacy_etf_targets(current)
+    if not pending:
+        return {
+            "changed": False,
+            "version": current["version"],
+            "migrated": [],
+            "skipped": [],
+        }
+    presets = {
+        asset["id"]: asset
+        for asset in json.loads(
+            (Path(__file__).resolve().parent.parent / "watchlist.json").read_text()
+        )
+    }
+    updated = {
+        "assets": deepcopy(current["assets"]),
+        "strategies": deepcopy(current["strategies"]),
+    }
+    assets_by_id = {asset["id"]: asset for asset in updated["assets"]}
+    strategy_ids = {rule["id"] for rule in updated["strategies"]}
+    migrated = []
+    skipped = []
+    for entry in pending:
+        old = assets_by_id[entry["legacy_id"]]
+        replacement_id = entry["replacement_id"]
+        preset = deepcopy(presets[replacement_id])
+        same_id = assets_by_id.get(replacement_id)
+        if same_id is not None and not _matches_verified_instrument(same_id, preset):
+            skipped.append(
+                {
+                    "legacy_id": old["id"],
+                    "legacy_code": old["code"],
+                    "reason": (
+                        f"已存在 ID 为 {replacement_id} 但标的代码/交易所不匹配的记录"
+                        f"（当前为 {same_id.get('code')}），已保留原标的未迁移"
+                    ),
+                }
+            )
+            continue
+        matches = [
+            asset
+            for asset in updated["assets"]
+            if asset["id"] != old["id"] and _matches_verified_instrument(asset, preset)
+        ]
+        if len(matches) > 1:
+            skipped.append(
+                {
+                    "legacy_id": old["id"],
+                    "legacy_code": old["code"],
+                    "reason": (
+                        f"存在多条 {preset['code']} 同交易所记录"
+                        f"（{', '.join(a['id'] for a in matches)}），身份不明确，已保留原标的未迁移"
+                    ),
+                }
+            )
+            continue
+        carried = [sid for sid in old.get("strategies", []) if sid in strategy_ids]
+        old["archived"] = True
+        old["enabled"] = False
+        if len(matches) == 1:
+            existing = matches[0]
+            existing["kind"] = preset["kind"]
+            if not existing.get("market") or existing.get("market") == "中国指数":
+                existing["market"] = preset["market"]
+            if not existing.get("currency") or existing.get("currency") == "点":
+                existing["currency"] = preset["currency"]
+            existing["archived"] = False
+            existing["enabled"] = True
+            existing["watchlisted"] = existing.get("watchlisted", True) or old.get(
+                "watchlisted", True
+            )
+            if "priority" not in existing and "priority" in old:
+                existing["priority"] = old["priority"]
+            existing["strategies"] = list(
+                dict.fromkeys([*(existing.get("strategies") or []), *carried])
+            )
+            _reconcile_etf_fallbacks(existing, preset)
+            replacement = existing
+        else:
+            preset["strategies"] = carried
+            preset["enabled"] = True
+            preset["archived"] = False
+            preset["watchlisted"] = old.get(
+                "watchlisted", preset.get("watchlisted", True)
+            )
+            if "priority" in old:
+                preset["priority"] = old["priority"]
+            else:
+                preset.pop("priority", None)
+            insert_at = updated["assets"].index(old) + 1
+            updated["assets"].insert(insert_at, preset)
+            assets_by_id[replacement_id] = preset
+            replacement = preset
+        migrated.append(
+            {
+                "from_id": old["id"],
+                "from_code": old["code"],
+                "to_id": replacement["id"],
+                "to_code": replacement["code"],
+                "strategies": list(replacement["strategies"]),
+            }
+        )
+    if not migrated:
+        return {
+            "changed": False,
+            "version": current["version"],
+            "migrated": [],
+            "skipped": skipped,
+        }
+    version = save_configuration(
+        path,
+        updated,
+        current["version"],
+        fetcher=fetcher,
+        validate_new=validate_live,
+    )
+    return {
+        "changed": True,
+        "version": version,
+        "migrated": migrated,
+        "skipped": skipped,
+    }

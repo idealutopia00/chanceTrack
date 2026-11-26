@@ -3,20 +3,148 @@
 This module does not fetch prices, compute indicators, write history or send notifications.
 """
 
+from .data import provider_label
+
+ATTEMPT_STATUS_LABELS = {
+    "ok": "成功",
+    "cooling_down": "同源冷却未请求",
+    "disconnected": "请求断连",
+    "stale": "行情未更新",
+    "insufficient_history": "历史样本不足",
+    "identity_mismatch": "身份不符",
+    "error": "失败",
+}
+
+
+def fetch_state_summary(item):
+    asset = item["asset"]
+    snapshot = item.get("snapshot") or {}
+    result = item.get("result") or {}
+    last_quote = item.get("last_quote")
+    attempts = item.get("attempts") or snapshot.get("attempts") or []
+    provider = item.get("provider") or snapshot.get("provider") or asset.get("provider")
+    source_label = (
+        item.get("provider_label")
+        or snapshot.get("provider_label")
+        or provider_label(provider)
+    )
+    attempt_notes = [
+        f"{entry.get('provider_label') or provider_label(entry.get('provider'))}（{ATTEMPT_STATUS_LABELS.get(entry.get('status'), '失败')}）"
+        for entry in attempts
+    ]
+    if item.get("status") == "disabled":
+        return {
+            "code": "disabled",
+            "label": "未启用",
+            "reason_label": "未启用",
+            "snapshot_label": "未启用",
+            "provider_label": source_label,
+            "bar_date": "—",
+            "confirmation": "未启用",
+            "fetched_at": None,
+            "detail": item.get("error", ""),
+        }
+    if item.get("status") == "error":
+        code = item.get("fetch_status")
+        if code not in (
+            "cooling_down",
+            "disconnected",
+            "stale",
+            "insufficient_history",
+            "error",
+        ):
+            err = item.get("error", "")
+            if "SourceCoolingDown" in err:
+                code = "cooling_down"
+            elif any(token in err for token in ("RemoteProtocolError", "Connect", "Timeout")):
+                code = "disconnected"
+            elif "StaleMarketSnapshot" in err:
+                code = "stale"
+            elif "InsufficientMarketHistory" in err:
+                code = "insufficient_history"
+            else:
+                code = "error"
+        reason_label = {
+            "cooling_down": "同源冷却未请求",
+            "disconnected": "请求断连",
+            "stale": "行情未更新",
+            "insufficient_history": "历史样本不足",
+            "error": "采集失败",
+        }[code]
+        snapshot_label = (
+            f"仅有历史快照（{last_quote['bar_date']}）" if last_quote else "暂无行情"
+        )
+        confirmation = (
+            "盘中待确认快照"
+            if last_quote and last_quote.get("is_provisional") == 1
+            else ("已收盘快照" if last_quote else "暂无行情")
+        )
+        if last_quote:
+            error_source_label = (
+                provider_label(last_quote["provider"])
+                if last_quote.get("provider")
+                else "历史未记录"
+            )
+        else:
+            error_source_label = "暂无行情"
+        return {
+            "code": code,
+            "label": f"{reason_label} · {snapshot_label}",
+            "reason_label": reason_label,
+            "snapshot_label": snapshot_label,
+            "provider_label": error_source_label,
+            "bar_date": last_quote["bar_date"] if last_quote else "—",
+            "confirmation": confirmation,
+            "fetched_at": last_quote.get("fetched_at") if last_quote else None,
+            "detail": "；".join(attempt_notes) if attempt_notes else item.get("error", ""),
+        }
+    fallback_used = (
+        item.get("fetch_status") == "fallback_ok"
+        or snapshot.get("fetch_status") == "fallback_ok"
+        or snapshot.get("fallback_used")
+    )
+    code = "fallback_ok" if fallback_used else "primary_ok"
+    label = "备用源成功" if fallback_used else "主源正常"
+    confirmation = (
+        "未收盘 · 待确认"
+        if result.get("is_provisional")
+        else ("已收盘 · 已确认" if result.get("bar_date") or result.get("nav_date") else "—")
+    )
+    return {
+        "code": code,
+        "label": label,
+        "reason_label": label,
+        "snapshot_label": label,
+        "provider_label": source_label,
+        "bar_date": result.get("bar_date") or result.get("nav_date") or "—",
+        "confirmation": confirmation,
+        "fetched_at": snapshot.get("fetched_at"),
+        "detail": "；".join(attempt_notes),
+    }
+
 
 def signal_rows(report):
     """Keep market confirmation separate from report time and delivery history."""
     rows = []
     for item in report["items"]:
         asset, result = item["asset"], item.get("result", {})
+        summary = fetch_state_summary(item)
         base = {
             "asset_id": asset["id"],
             "asset": asset["label"],
             "section": "current",
             "ticker": asset.get("ticker") or asset.get("code") or "",
+            "fetch_status": summary["code"],
+            "fetch_label": summary["label"],
+            "provider_label": summary["provider_label"],
         }
         day = result.get("bar_date") or result.get("nav_date") or "—"
         if item["status"] in ("error", "disabled"):
+            detail = (
+                f"{summary['label']} · {summary['detail']}"
+                if item["status"] == "error" and summary["detail"]
+                else (summary["label"] if item["status"] == "error" else item.get("error", ""))
+            )
             rows.append(
                 {
                     **base,
@@ -24,7 +152,7 @@ def signal_rows(report):
                     "signal": "无法判断",
                     "state": item["status"],
                     "status": "采集失败" if item["status"] == "error" else "未启用",
-                    "detail": item.get("error", ""),
+                    "detail": detail,
                 }
             )
             continue

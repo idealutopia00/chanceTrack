@@ -166,12 +166,19 @@
         ["market", "市场说明"],
         ["currency", "单位"],
         ["secid", "东方财富 secid"],
-        ["expected_name", "东方财富精确名称"],
+        ["expected_name", "数据源精确名称"],
       ])
         field(card, label, a, key);
       field(card, "数据源", a, "provider", [
         ["yahoo", "Yahoo 指数"],
-        ["eastmoney", "东方财富指数 / 黄金"],
+        ["sse", "上海证券交易所"],
+        ["szse", "深圳证券交易所"],
+        ["eastmoney", "东方财富"],
+      ]);
+      field(card, "品种类型", a, "kind", [
+        ["index", "指数"],
+        ["etf", "场内 ETF"],
+        ["spot", "现货"],
       ]);
       field(card, "市场时段", a, "session_profile", [
         ["us_equity", "美国指数 · 纽约时区"],

@@ -1,5 +1,6 @@
 {% for item in report['items'] %}
     {% set r = item.get('result') %}
+    {% set fetch_info = fetch_state_summary(item) %}
     <section class="asset-detail"
              data-detail="{{ item.asset.id }}"{% if not loop.first %} hidden{% endif %}>
         <div class="panel signal-panel">
@@ -61,7 +62,7 @@
                         <div>
                             <dt>行情来源</dt>
                             <dd>
-                                {{ 'Yahoo Finance' if item.snapshot.provider == 'yahoo' else '东方财富' }}
+                                {{ fetch_info.provider_label }}
                             </dd>
                         </div>
                     {% endif %}
@@ -83,14 +84,30 @@
                     <p class="warning">{{ warning }}</p>
                 {% endfor %}
             {% else %}
-                <p class="warning">{% if item.status == 'error' %}本次更新失败 · {% endif %}{{ item.error }}</p>
+                <p class="warning">{% if item.status == 'error' %}本次更新失败 · {{ fetch_info.reason_label }} · {% endif %}{{ item.error }}</p>
                 {% if item.status == 'error' %}
                     {% if item.last_quote %}
-                        <p>行情交易日 {{ item.last_quote.bar_date }} · 上次价格 {{ item.last_quote.close }} · <a href="/reports/{{ item.last_quote.report_id }}">查看来源报告</a></p>
-                    {% else %}<p>无可用行情</p>{% endif %}
+                        <p>仅有历史快照 · 行情交易日 {{ item.last_quote.bar_date }} · 上次价格 {{ item.last_quote.close }} · <a href="/reports/{{ item.last_quote.report_id }}">查看来源报告</a></p>
+                    {% else %}<p>暂无行情（无可用行情）</p>{% endif %}
                 {% endif %}
             {% endif %}
             <dl class="signal-facts update-times">
+                <div>
+                    <dt>行情来源</dt>
+                    <dd>{{ fetch_info.provider_label }}</dd>
+                </div>
+                <div>
+                    <dt>采集状态</dt>
+                    <dd>{{ fetch_info.label }}</dd>
+                </div>
+                <div>
+                    <dt>行情交易日</dt>
+                    <dd>{{ fetch_info.bar_date }}</dd>
+                </div>
+                <div>
+                    <dt>确认状态</dt>
+                    <dd>{{ fetch_info.confirmation }}</dd>
+                </div>
                 <div>
                     <dt>最近检查</dt>
                     <dd>
@@ -117,8 +134,11 @@
         </div>
     {% endif %}
     </dl>
+    {% if fetch_info.detail %}
+        <p class="small-note">采集链路：{{ fetch_info.detail }}</p>
+    {% endif %}
     <p class="small-note">
-        {% if item.asset.kind == "spot" %}黄金使用 Au99.99 现货行情，单位为元/克。{% elif report.rule.basis == "market_ohlc" %}基于指数真实日线，不使用基金净值替代。{% else %}历史报告使用基金净值。{% endif %}
+        {% if item.asset.kind == "spot" %}黄金使用 Au99.99 现货行情，单位为元/克。{% elif item.asset.kind == "etf" %}基于场内 ETF 真实日线成交数据，不使用基金净值替代。{% elif report.rule.basis == "market_ohlc" %}基于指数真实日线，不使用基金净值替代。{% else %}历史报告使用基金净值。{% endif %}
     </p>
     </div>
     <div class="panel decision-panel">

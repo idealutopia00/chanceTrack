@@ -180,11 +180,13 @@
   const nextEventButton = document.getElementById("chart-next-event");
   const latestButton = document.getElementById("chart-latest");
   const crosshairReadings = document.getElementById("chart-crosshair-readings");
-  const number = (value) =>
+  const number = (value, decimals = 2) =>
     Number(value).toLocaleString("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
     });
+  const priceDecimals = () =>
+    selected?.asset?.kind === "etf" || selected?.asset?.currency === "元" ? 3 : 2;
   const dayKey = (time) =>
     typeof time === "string"
       ? time
@@ -234,7 +236,7 @@
       const span = document.createElement("span");
       span.textContent = name;
       const value = document.createElement("b");
-      value.textContent = number(row[key]);
+      value.textContent = number(row[key], priceDecimals());
       span.append(value);
       target.append(span);
     }
@@ -242,7 +244,7 @@
       const reading = document.createElement("span");
       const unit = selected?.result?.chart?.volume_unit;
       reading.textContent = unit && Number.isFinite(row.volume) ?
-        `VOL ${number(row.volume)} ${unit}${selected.result.is_provisional && row.time === selected.result.bar_date ? "（截至当前累计）" : ""}` :
+        `VOL ${number(row.volume, unit === "手" ? 0 : 2)} ${unit}${selected.result.is_provisional && row.time === selected.result.bar_date ? "（截至当前累计）" : ""}` :
         "暂无成交量";
       target.append(reading);
     }
@@ -497,7 +499,7 @@
       );
     if (price != null)
       readings.push(
-        `${event.provisional === true ? "盘中价" : event.provisional === false ? "收盘价" : "价格"} ${number(price)}`,
+        `${event.provisional === true ? "盘中价" : event.provisional === false ? "收盘价" : "价格"} ${number(price, priceDecimals())}`,
       );
     return readings.join("｜");
   }
@@ -1165,23 +1167,34 @@
       price == null ? "—" : price.toLocaleString("zh-CN", { maximumFractionDigits: 4 });
     document.getElementById("chart-quote-date").textContent =
       tradeDate ? `交易日 ${tradeDate}` : "";
+    const fetchSummary = selected.fetch_summary;
+    const providerNote = fetchSummary?.provider_label ? ` · ${fetchSummary.provider_label}` : "";
     document.getElementById("chart-quote-time").textContent =
-      fetchedAt ? `采集 ${fetchedAt.replace("T", " ")}` : "";
+      fetchedAt ? `采集 ${fetchedAt.replace("T", " ")}${providerNote}` : "";
     const warning = document.getElementById("chart-quote-warning");
     const warnings = selected.result?.warnings ?? [];
-    if (selected.status === "error")
-      warning.textContent = selected.mode === "exploration"
-        ? `正式检查失败 · 探索行情截至 ${tradeDate || "未知日期"}`
-        : lastQuote
-          ? `本次未能更新，当前显示 ${tradeDate} ${lastQuote.is_provisional === 0 ? "收盘数据" : "行情"}`
-          : "本次未能更新，暂无可用行情";
-    else if (warnings.length)
+    if (selected.status === "error") {
+      if (selected.mode === "exploration") {
+        warning.textContent = `正式检查失败 · 探索行情截至 ${tradeDate || "未知日期"}`;
+      } else if (lastQuote) {
+        const reason = fetchSummary?.reason_label ? `${fetchSummary.reason_label} · ` : "";
+        const snapshotState = lastQuote.is_provisional === 0 ? "收盘数据" : "行情";
+        warning.textContent = `${reason}本次未能更新，当前显示 ${tradeDate} ${snapshotState}（仅有历史快照）`;
+      } else {
+        const reason = fetchSummary?.reason_label ? `${fetchSummary.reason_label} · ` : "";
+        warning.textContent = `${reason}本次未能更新，暂无行情`;
+      }
+    } else if (warnings.length) {
       warning.textContent = `行情截至 ${tradeDate || "未知日期"} · ${warnings.join("；")}`;
-    else if (selected.carried_forward)
+    } else if (fetchSummary?.code === "fallback_ok") {
+      warning.textContent = `备用源成功（${fetchSummary.provider_label}）· 行情截至 ${tradeDate || "未知日期"}${selected.carried_forward ? " · 沿用上次采集" : ""}`;
+    } else if (selected.carried_forward) {
       warning.textContent = `沿用上次采集 · 行情截至 ${tradeDate || "未知日期"}`;
-    else if (document.body.dataset.historical === "true" && tradeDate)
+    } else if (document.body.dataset.historical === "true" && tradeDate) {
       warning.textContent = `历史快照 · 行情截至 ${tradeDate}`;
-    else warning.textContent = "";
+    } else {
+      warning.textContent = "";
+    }
     warning.hidden = !warning.textContent;
     if (!content) {
       resetEventPanel();
@@ -1208,6 +1221,14 @@
     }
     try {
       if (!chart) initialize();
+      const decimals = priceDecimals();
+      candles.applyOptions({
+        priceFormat: {
+          type: "price",
+          precision: decimals,
+          minMove: decimals === 3 ? 0.001 : 0.01,
+        },
+      });
       candles.setData(displayedBars.map((bar) => ({ ...bar })));
       setVolume();
       for (const entry of overlaySeries) chart.removeSeries(entry.series);

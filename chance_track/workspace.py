@@ -17,6 +17,7 @@ from .configuration import (
     validate_configuration,
 )
 from .data import TZ, fetch
+from .presentation import fetch_state_summary
 from .runner import next_regular_check
 from .strategies import benchmark_context, chart_events, evaluate
 
@@ -33,11 +34,15 @@ def tables(db):
     """)
 
 
-def catalog(path, query=""):
-    config = load_configuration(path)
-    known = json.loads(
+def _known_catalog():
+    return json.loads(
         (Path(__file__).resolve().parent.parent / "watchlist.json").read_text()
     )
+
+
+def catalog(path, query=""):
+    config = load_configuration(path)
+    known = _known_catalog()
     by_id = {a["id"]: a for a in known}
     by_id.update({a["id"]: a for a in config["assets"]})
     q = query.strip().casefold()
@@ -46,7 +51,10 @@ def catalog(path, query=""):
         for a in by_id.values()
         if q
         in " ".join(
-            str(a.get(k, "")) for k in ("label", "code", "ticker", "market")
+            [
+                *(str(a.get(k, "")) for k in ("label", "code", "ticker", "market")),
+                *(str(alias) for alias in a.get("aliases", [])),
+            ]
         ).casefold()
     ]
 
@@ -117,6 +125,7 @@ def preview(path, source, asset_id, strategies):
         "mode": "exploration",
         "status": item.get("status"),
         "carried_forward": item.get("carried_forward", False),
+        "fetch_summary": fetch_state_summary(item),
         "source": source,
         "checked_at": checked_at,
         "fetched_at": snapshot.get("fetched_at"),
@@ -194,30 +203,46 @@ def edit(path, payload, fetcher=fetch):
                 old.update(enabled=True, archived=False, watchlisted=True)
             selected = old["id"]
         else:
-            candidate = {
-                k: v
-                for k, v in candidate.items()
-                if k
-                in (
-                    "label",
-                    "ticker",
-                    "code",
-                    "provider",
-                    "session_profile",
-                    "secid",
-                    "expected_name",
-                    "market",
-                    "currency",
-                )
-            }
-            candidate.update(
-                id="asset_" + uuid4().hex[:12],
-                enabled=True,
-                archived=False,
-                strategies=[],
+            preset = next(
+                (a for a in _known_catalog() if a["id"] == candidate.get("id")), None
             )
-            config["assets"].append(candidate)
-            selected = candidate["id"]
+            if preset:
+                new_asset = deepcopy(preset)
+                new_asset.update(
+                    enabled=True,
+                    archived=False,
+                    watchlisted=True,
+                    strategies=[],
+                )
+            else:
+                new_asset = {
+                    k: v
+                    for k, v in candidate.items()
+                    if k
+                    in (
+                        "label",
+                        "ticker",
+                        "code",
+                        "provider",
+                        "session_profile",
+                        "secid",
+                        "expected_name",
+                        "market",
+                        "currency",
+                        "kind",
+                        "group",
+                        "fallbacks",
+                    )
+                    and v not in ("", None)
+                }
+                new_asset.update(
+                    id="asset_" + uuid4().hex[:12],
+                    enabled=True,
+                    archived=False,
+                    strategies=[],
+                )
+            config["assets"].append(new_asset)
+            selected = new_asset["id"]
     elif action == "asset":
         a = next(a for a in config["assets"] if a["id"] == payload["asset_id"])
         for key in ("priority", "watchlisted"):

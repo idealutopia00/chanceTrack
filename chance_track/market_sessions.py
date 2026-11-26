@@ -71,7 +71,15 @@ def session_bounds(profile, day, provider_period=None):
     }
 
 
-def apply_sessions(rows, profile, now, provider_period=None):
+def apply_sessions(
+    rows,
+    profile,
+    now,
+    provider_period=None,
+    latest_quote_at=None,
+    *,
+    require_same_day_quote_at=False,
+):
     if profile not in PROFILES:
         raise ValueError(f"未知交易时段配置：{profile}")
     selected = []
@@ -84,33 +92,69 @@ def apply_sessions(rows, profile, now, provider_period=None):
         latest = bounds
     if not selected:
         raise ValueError("没有已开始交易的日线")
-    provisional = now < latest["confirm_after"]
-    if not provisional:
-        phase, label = "closed", "已收盘"
-    elif now >= latest["close"]:
-        phase, label = "settling", "收盘确认中"
-    else:
+    tz = ZoneInfo(latest["timezone"])
+    quote_at = (
+        (
+            latest_quote_at.replace(tzinfo=tz)
+            if latest_quote_at.tzinfo is None
+            else latest_quote_at.astimezone(tz)
+        )
+        if latest_quote_at is not None
+        else None
+    )
+    if quote_at is not None and quote_at.date().isoformat() != selected[-1]["date"]:
+        quote_at = None
+    same_day = selected[-1]["date"] == now.astimezone(tz).date().isoformat()
+    missing_closing_evidence = (
+        require_same_day_quote_at
+        and same_day
+        and now >= latest["confirm_after"]
+        and quote_at is None
+    )
+    if quote_at is not None and quote_at < latest["close"]:
+        provisional = True
         phase = next(
-            (kind for start, end, kind in latest["intervals"] if start <= now < end),
+            (kind for start, end, kind in latest["intervals"] if start <= quote_at < end),
             "break",
         )
-        label = {"day": "交易中", "night": "夜盘交易中", "break": "休市间隔"}[phase]
+        label = "盘中快照（未收盘）"
+    elif missing_closing_evidence:
+        provisional = True
+        phase = "unconfirmed"
+        label = "当日行情（缺少收盘时间证明）"
+    else:
+        provisional = now < latest["confirm_after"]
+        if not provisional:
+            phase, label = "closed", "已收盘"
+        elif now >= latest["close"]:
+            phase, label = "settling", "收盘确认中"
+        else:
+            phase = next(
+                (kind for start, end, kind in latest["intervals"] if start <= now < end),
+                "break",
+            )
+            label = {"day": "交易中", "night": "夜盘交易中", "break": "休市间隔"}[phase]
+    session = {
+        "profile": profile,
+        "timezone": latest["timezone"],
+        "phase": phase,
+        "label": label,
+        "trading_day": selected[-1]["date"],
+        "open_at": latest["open"].isoformat(),
+        "close_at": latest["close"].isoformat(),
+        "close_at_beijing": latest["close"]
+        .astimezone(ZoneInfo("Asia/Shanghai"))
+        .isoformat(),
+        "confirm_after": latest["confirm_after"].isoformat(),
+        "schedule_source": latest["source"],
+    }
+    if quote_at is not None:
+        session["quote_at"] = quote_at.isoformat()
+    if missing_closing_evidence:
+        session["closing_evidence_missing"] = True
     return {
         "rows": selected,
         "provisional_date": selected[-1]["date"] if provisional else None,
         "session_policy": "market_sessions_v1",
-        "session": {
-            "profile": profile,
-            "timezone": latest["timezone"],
-            "phase": phase,
-            "label": label,
-            "trading_day": selected[-1]["date"],
-            "open_at": latest["open"].isoformat(),
-            "close_at": latest["close"].isoformat(),
-            "close_at_beijing": latest["close"]
-            .astimezone(ZoneInfo("Asia/Shanghai"))
-            .isoformat(),
-            "confirm_after": latest["confirm_after"].isoformat(),
-            "schedule_source": latest["source"],
-        },
+        "session": session,
     }

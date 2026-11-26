@@ -19,12 +19,14 @@ from .configuration import (
     DuplicateStrategy,
     configuration_history,
     configuration_version,
+    legacy_etf_targets,
     load_configuration,
+    migrate_etf_targets,
     save_configuration,
 )
 from .data import TZ
 from .notifications import NOTIFICATION_TITLE, build_message
-from .presentation import signal_rows
+from .presentation import fetch_state_summary, signal_rows
 from .runner import CheckInProgress, is_running, revision, run
 from .workspace import preview, register_routes
 
@@ -64,6 +66,7 @@ def create_app(db_path):
     templates.env.filters["investment_markdown"] = lambda raw: Markup(
         markdown.render(raw)
     )
+    templates.env.globals["fetch_state_summary"] = fetch_state_summary
     token = secrets.token_urlsafe(32)
     register_routes(app, db_path, token)
 
@@ -88,6 +91,7 @@ def create_app(db_path):
                 "status": item["status"],
                 "last_quote": item.get("last_quote"),
                 "carried_forward": item.get("carried_forward", False),
+                "fetch_summary": fetch_state_summary(item),
             }
             for item in items
         ]
@@ -293,6 +297,7 @@ def create_app(db_path):
                     rule["id"] for rule in saved["strategies"]
                 ],
                 "conflict": status == 409,
+                "legacy_etf_targets": legacy_etf_targets(saved),
                 "versions": configuration_history(db_path),
                 "token": token,
                 "error": error,
@@ -301,6 +306,33 @@ def create_app(db_path):
             },
             status_code=status,
         )
+
+    @app.post("/manage/migrate-etf-targets")
+    def migrate_legacy_etf_targets(request: Request, csrf: str = Form()):
+        if not secrets.compare_digest(csrf, token):
+            raise HTTPException(403, "请刷新页面后重试")
+        try:
+            result = migrate_etf_targets(db_path)
+            if result.get("skipped"):
+                reasons = "；".join(item["reason"] for item in result["skipped"])
+                if result["changed"]:
+                    pairs = "，".join(
+                        f"{item['from_code']}->{item['to_code']}"
+                        for item in result["migrated"]
+                    )
+                    return management_page(
+                        request,
+                        ValueError(f"已切换 {pairs}；以下标的未迁移：{reasons}"),
+                        200,
+                    )
+                raise ValueError(reasons)
+        except (ValueError, KeyError, TypeError, httpx.HTTPError) as exc:
+            return management_page(
+                request,
+                exc,
+                409 if isinstance(exc, ConfigurationConflict) else 400,
+            )
+        return RedirectResponse("/manage", status_code=303)
 
     @app.get("/configuration/{version}")
     def historical_configuration(version: int):

@@ -1498,3 +1498,144 @@ def test_migrate_etf_targets_normalizes_legacy_market_and_currency_defaults(tmp_
     assert saved["custom_159603"]["kind"] == "etf"
     assert saved["custom_159603"]["market"] == "自定义深市板块"
     assert saved["custom_159603"]["currency"] == "RMB"
+
+
+def test_direct_parsers_reject_mismatched_session_profile_and_kind():
+    bars = _sample_series(140, "2026-11-25")
+    gold_payload = _eastmoney_payload("AU9999", "AU9999", 118, bars)
+    etf_payload = _eastmoney_payload("518800", "黄金ETF国泰", 1, bars)
+    now = datetime(2026, 11, 25, 14, 35, tzinfo=TZ)
+
+    # 118.AU9999 with sge_gold + kind="etf"
+    with pytest.raises(IdentityMismatch):
+        parse_eastmoney(
+            gold_payload,
+            {
+                "code": "AU9999",
+                "secid": "118.AU9999",
+                "expected_name": "AU9999",
+                "session_profile": "sge_gold",
+                "kind": "etf",
+            },
+            "2026-11-25",
+            now=now,
+        )
+
+    # 1.518800 with cn_equity + kind="spot"
+    with pytest.raises(IdentityMismatch):
+        parse_eastmoney(
+            etf_payload,
+            {
+                "code": "518800",
+                "secid": "1.518800",
+                "expected_name": "黄金ETF国泰",
+                "session_profile": "cn_equity",
+                "kind": "spot",
+            },
+            "2026-11-25",
+            now=now,
+        )
+
+    # 118.AU9999 with us_equity
+    with pytest.raises(IdentityMismatch):
+        parse_eastmoney(
+            gold_payload,
+            {
+                "code": "AU9999",
+                "secid": "118.AU9999",
+                "expected_name": "AU9999",
+                "session_profile": "us_equity",
+            },
+            "2026-11-25",
+            now=now,
+        )
+
+    # 118.AU9999 with omitted session_profile (defaults to cn_equity -> rejected)
+    with pytest.raises(IdentityMismatch):
+        parse_eastmoney(
+            gold_payload,
+            {
+                "code": "AU9999",
+                "secid": "118.AU9999",
+                "expected_name": "AU9999",
+            },
+            "2026-11-25",
+            now=now,
+        )
+
+    # 1.518800 with sge_gold
+    with pytest.raises(IdentityMismatch):
+        parse_eastmoney(
+            etf_payload,
+            {
+                "code": "518800",
+                "secid": "1.518800",
+                "expected_name": "黄金ETF国泰",
+                "session_profile": "sge_gold",
+            },
+            "2026-11-25",
+            now=now,
+        )
+
+    # SSE / SZSE reject non-cn_equity or kind="spot"
+    sse_dayk, sse_snap = _sse_payloads("518800", "黄金基金", bars)
+    with pytest.raises(IdentityMismatch):
+        parse_sse(
+            sse_dayk,
+            sse_snap,
+            {
+                "code": "518800",
+                "expected_name": "黄金基金",
+                "session_profile": "sge_gold",
+            },
+            "2026-11-25",
+            now=now,
+        )
+    with pytest.raises(IdentityMismatch):
+        parse_sse(
+            sse_dayk,
+            sse_snap,
+            {
+                "code": "518800",
+                "expected_name": "黄金基金",
+                "session_profile": "cn_equity",
+                "kind": "spot",
+            },
+            "2026-11-25",
+            now=now,
+        )
+    sz_hist, _ = _szse_payloads("159603", "科创创业ETF天弘", bars)
+    with pytest.raises(IdentityMismatch):
+        parse_szse(
+            sz_hist,
+            {
+                "code": "159603",
+                "expected_name": "科创创业ETF天弘",
+                "session_profile": "us_equity",
+            },
+            "2026-11-25",
+            now=now,
+        )
+    with pytest.raises(IdentityMismatch):
+        data.parse_yahoo(
+            {},
+            {
+                "code": "^GSPC",
+                "label": "标普500",
+                "session_profile": "cn_equity",
+            },
+            "2026-11-25",
+            now=now,
+        )
+    with pytest.raises(IdentityMismatch):
+        data.parse_yahoo(
+            {},
+            {
+                "code": "^GSPC",
+                "label": "标普500",
+                "session_profile": "us_equity",
+                "kind": "etf",
+            },
+            "2026-11-25",
+            now=now,
+        )

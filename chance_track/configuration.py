@@ -234,6 +234,8 @@ def validate_configuration(config):
             raise ValueError("未知标的类型")
         if a["session_profile"] == "sge_gold" and a.get("kind") == "etf":
             raise ValueError("上金所黄金时段不支持场内 ETF 品种")
+        if a["session_profile"] == "us_equity" and a.get("kind") == "etf":
+            raise ValueError("美国指数数据源暂不支持场内 ETF 品种")
         if a["session_profile"] != "sge_gold" and a.get("kind") == "spot":
             raise ValueError("现货品种仅支持上金所黄金时段")
         validate_source(a, a["session_profile"])

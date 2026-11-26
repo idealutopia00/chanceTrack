@@ -127,15 +127,44 @@ def _asset_exchange(spec):
     return None
 
 
+def _validate_parser_asset(asset, provider):
+    default_profile = "us_equity" if provider == "yahoo" else "cn_equity"
+    profile = asset.get("session_profile", default_profile)
+    kind = asset.get("kind")
+    if kind not in (None, "index", "spot", "etf"):
+        raise IdentityMismatch("未知标的类型")
+    if provider == "yahoo":
+        if profile != "us_equity":
+            raise IdentityMismatch("Yahoo 数据源仅支持美国指数时段")
+        if kind in ("spot", "etf"):
+            raise IdentityMismatch("Yahoo 指数数据源不支持现货或场内 ETF 品种")
+        return profile
+    if provider in ("sse", "szse"):
+        if profile != "cn_equity":
+            raise IdentityMismatch("交易所数据源仅支持中国股市时段")
+        if kind == "spot":
+            raise IdentityMismatch("交易所数据源不支持现货品种")
+        return profile
+    if provider == "eastmoney":
+        if profile not in ("cn_equity", "sge_gold"):
+            raise IdentityMismatch("东方财富数据源仅支持中国股市或上金所黄金时段")
+        secid = str(asset.get("secid") or "")
+        if profile == "sge_gold":
+            if not secid.startswith("118."):
+                raise IdentityMismatch("上金所黄金时段仅支持上金所现货市场代码")
+            if kind == "etf":
+                raise IdentityMismatch("上金所黄金时段不支持场内 ETF 品种")
+        else:
+            if secid.startswith("118."):
+                raise IdentityMismatch("中国股市时段不支持上金所现货市场代码")
+            if kind == "spot":
+                raise IdentityMismatch("现货品种仅支持上金所黄金时段")
+        return profile
+    raise IdentityMismatch(f"未知数据源：{provider}")
+
+
 def parse_eastmoney(payload, asset, as_of, now=None):
-    if asset.get("session_profile") == "sge_gold" and not str(
-        asset.get("secid") or ""
-    ).startswith("118."):
-        raise IdentityMismatch("上金所黄金时段仅支持上金所现货市场代码")
-    if asset.get("session_profile") == "cn_equity" and str(
-        asset.get("secid") or ""
-    ).startswith("118."):
-        raise IdentityMismatch("中国股市时段不支持上金所现货市场代码")
+    profile = _validate_parser_asset(asset, "eastmoney")
     data = payload.get("data")
     if (
         not data
@@ -163,7 +192,7 @@ def parse_eastmoney(payload, asset, as_of, now=None):
         )
     session = apply_sessions(
         rows,
-        asset.get("session_profile", "cn_equity"),
+        profile,
         now,
         require_same_day_quote_at=(resolve_asset_kind(asset) == "etf"),
     )
@@ -184,6 +213,7 @@ def parse_eastmoney(payload, asset, as_of, now=None):
 
 
 def parse_yahoo(payload, asset, as_of, now=None):
+    profile = _validate_parser_asset(asset, "yahoo")
     chart = payload.get("chart", {})
     if chart.get("error") or not chart.get("result"):
         raise ValueError(f"行情源返回错误：{chart.get('error')}")
@@ -213,9 +243,7 @@ def parse_yahoo(payload, asset, as_of, now=None):
             }
         )
     period = meta.get("currentTradingPeriod", {}).get("regular")
-    session = apply_sessions(
-        rows, asset.get("session_profile", "us_equity"), now, period
-    )
+    session = apply_sessions(rows, profile, now, period)
     validate_rows(session["rows"])
     return {
         **session,
@@ -250,6 +278,7 @@ def _parse_sse_quote_at(day_iso, raw_time):
 
 
 def parse_sse(dayk_payload, snap_payload, asset, as_of, now=None):
+    profile = _validate_parser_asset(asset, "sse")
     if (
         not isinstance(dayk_payload, dict)
         or not isinstance(snap_payload, dict)
@@ -303,7 +332,7 @@ def parse_sse(dayk_payload, snap_payload, asset, as_of, now=None):
     now = (now or datetime.now(TZ)).astimezone(TZ)
     session = apply_sessions(
         rows,
-        asset.get("session_profile", "cn_equity"),
+        profile,
         now,
         latest_quote_at=latest_quote_at,
         require_same_day_quote_at=True,
@@ -320,6 +349,7 @@ def parse_sse(dayk_payload, snap_payload, asset, as_of, now=None):
 
 
 def parse_szse(hist_payload, asset, as_of, now=None, time_payload=None):
+    profile = _validate_parser_asset(asset, "szse")
     data = hist_payload.get("data") if isinstance(hist_payload, dict) else None
     if (
         not isinstance(data, dict)
@@ -379,7 +409,7 @@ def parse_szse(hist_payload, asset, as_of, now=None, time_payload=None):
     now = (now or datetime.now(TZ)).astimezone(TZ)
     session = apply_sessions(
         rows,
-        asset.get("session_profile", "cn_equity"),
+        profile,
         now,
         latest_quote_at=latest_quote_at,
         require_same_day_quote_at=True,

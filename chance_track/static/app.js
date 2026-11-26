@@ -507,8 +507,9 @@
     if (eventSummaryBox.hidden) return;
     const bounds = container.getBoundingClientRect();
     const header = document.querySelector(".workspace-header")?.getBoundingClientRect();
+    const headerBottom = Math.max(0, header?.bottom ?? 0);
     const height = eventSummaryBox.offsetHeight;
-    const first = Math.max(4, (header?.bottom ?? 0) + 4 - bounds.top);
+    const first = Math.max(4, headerBottom + 4 - bounds.top);
     const last = Math.min(bounds.height, window.innerHeight - bounds.top) - height - 4;
     let top = Math.min(last, first);
     const bar = displayedBars.find((row) => row.time === displayedDay.get(eventSelection?.date));
@@ -1210,7 +1211,7 @@
         "暂无可用 K 线",
         selected.result
           ? "这份历史报告采用基金净值，保留原始结果，不生成虚构 OHLC。"
-          : "该标的行情未成功采集，请查看右侧说明。",
+          : "该标的行情未成功采集，请查看下方正式信号与采集说明。",
       );
       return;
     }

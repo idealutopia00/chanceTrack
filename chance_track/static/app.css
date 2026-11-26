@@ -1770,9 +1770,16 @@ td {
 }
 .workbench-chart .chart-heading {
   padding: 15px 20px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 20px;
+}
+.workbench-chart .chart-heading > div:first-of-type {
+  margin-right: auto;
 }
 .workbench-chart .chart-heading h2 {
-  font-size: 23px;
+  font-size: 22px;
+  margin-top: 3px;
 }
 .workbench-chart .chart-panel {
   overflow: hidden;
@@ -2076,8 +2083,16 @@ td {
   }
 }
 @media (max-width: 720px) {
+  .workspace-header {
+    position: static;
+    gap: 8px 10px;
+    padding: 10px 12px;
+  }
   .workbench-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .chart-quote-warning {
+    margin: 0 12px 12px;
   }
   .watchlist-panel {
     position: static;
@@ -2172,7 +2187,22 @@ td {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.chart-period label {
+  display: inline-flex;
+  align-items: center;
   gap: 0.4rem;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+#chart-period {
+  display: inline-block;
+  width: auto;
+  margin-top: 0;
+  padding: 5px 8px;
+  font-size: 12px;
 }
 .chart-period small {
   color: var(--muted);
@@ -2196,17 +2226,29 @@ td {
 .primary-nav {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 0.45rem;
 }
 
 .primary-nav a {
   padding: 0.4rem 0.65rem;
   border-radius: 0.4rem;
+  white-space: nowrap;
 }
 
 .primary-nav a[aria-current="page"] {
   background: var(--selected);
   font-weight: 700;
+}
+
+#workspace-theme {
+  display: inline-block;
+  width: auto;
+  margin-top: 0;
+  padding: 0.35rem 0.65rem;
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: 6px;
 }
 
 .chart-quote {
@@ -2218,18 +2260,25 @@ td {
 }
 
 #chart-price {
-  font-size: clamp(1.4rem, 3vw, 2rem);
+  font-size: clamp(1.5rem, 3vw, 2.05rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
 }
 
 #chart-quote-date {
   color: var(--text);
+  font-size: 13px;
 }
 
 .chart-quote-warning {
   margin: 0 22px 14px;
-  padding: 7px 10px;
+  padding: 9px 13px;
   border-inline-start: 3px solid var(--gold);
+  border-radius: 6px;
+  background: var(--warning-surface);
   color: var(--gold);
+  font-weight: 500;
+  line-height: 1.5;
 }
 
 .chart-panel > .ohlc {

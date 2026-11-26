@@ -59,7 +59,7 @@
   const draftKey = (id) =>
     `chanceTrack.exploration.${boot.report_id || "live"}.${id}`;
   const persist = () => {
-    state.selected = selected;
+    if (selected !== undefined) state.selected = selected;
     write(viewKey, state);
   };
   function saveDraft() {

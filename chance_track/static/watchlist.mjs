@@ -42,7 +42,9 @@ export function renderWatchlist(
     if (
       asset.archived ||
       asset.watchlisted === false ||
-      !`${asset.label} ${asset.code}`.toLowerCase().includes(filter)
+      !`${asset.label} ${asset.code} ${(asset.aliases || []).join(" ")}`
+        .toLowerCase()
+        .includes(filter)
     )
       continue;
     const item = originals.get(asset.id);

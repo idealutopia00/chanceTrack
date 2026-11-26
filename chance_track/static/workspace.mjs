@@ -923,11 +923,25 @@
       toggle.checked = asset.strategies.includes(strategy.id);
       label.append(toggle, document.createTextNode(describeRule(strategy)));
       const usage = config.assets.filter((entry) => entry.strategies.includes(strategy.id));
-      const state = text("small", toggle.checked
-        ? (asset.enabled && !asset.archived ? "已开启" : "已绑定 · 标的停用")
-        : "未开启");
+      const state = text(
+        "small",
+        toggle.checked
+          ? asset.enabled && !asset.archived
+            ? "已开启"
+            : "已绑定 · 标的停用"
+          : "未开启",
+        `monitor-state ${toggle.checked && asset.enabled && !asset.archived ? "is-active" : ""}`,
+      );
       row.append(label, state);
-      row.append(text("small", usage.map((entry) => entry.label).join("、") || "未用于标的监测"));
+      row.append(
+        text(
+          "small",
+          usage.length
+            ? `影响标的：${usage.map((entry) => entry.label).join("、")}`
+            : "未用于标的监测",
+          "monitor-usage",
+        ),
+      );
       if (toggle.checked) row.append(button("调整参数", () => editMonitoring(asset, strategy)));
       toggle.addEventListener("change", async () => {
         const enabled = toggle.checked;

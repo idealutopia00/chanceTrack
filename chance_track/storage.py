@@ -644,6 +644,31 @@ def latest_run_items_by_asset(path):
         return out
 
 
+def latest_signals_by_asset(path):
+    """Return the most recent persisted signal_event per asset (event_date DESC, id DESC)."""
+    with connect(path) as db:
+        rows = db.execute(
+            """SELECT e.*
+               FROM (
+                 SELECT e.*,
+                        row_number() OVER (
+                          PARTITION BY e.asset_id
+                          ORDER BY e.event_date DESC, e.id DESC
+                        ) AS rn
+                 FROM signal_events e
+               ) e
+               WHERE e.rn = 1"""
+        ).fetchall()
+        out = {}
+        for r in rows:
+            d = dict(r)
+            d.pop("rn", None)
+            d["is_provisional"] = bool(d["is_provisional"])
+            d["historical_reference"] = bool(d["historical_reference"])
+            out[d["asset_id"]] = d
+        return out
+
+
 def list_signals(path, *, asset_id=None, strategy_id=None, limit=200):
     clauses = []
     params = []

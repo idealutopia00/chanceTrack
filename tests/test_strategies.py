@@ -319,3 +319,38 @@ def test_relative_strength_requires_completed_same_currency_benchmark():
     assert ready.iloc[-2] and "^GSPC" in reasons[-2] and "比值 SMA2" in reasons[-2]
     benchmark["quote_currency"] = "EUR"
     assert not any(relative_strength(snapshot, closes, params)[0])
+
+
+def test_event_direction_covers_bullish_bearish_and_legacy_labels():
+    from chance_track.strategies import event_direction
+
+    for ev in (
+        "金叉",
+        "金叉 · 买入观察",
+        "盘中金叉 · 待收盘确认",
+        "向上突破上轨",
+        "下轨外回归轨内",
+        "向上突破",
+        "短线回调",
+        "回调修复",
+        "释放 · 向上",
+        "相对转强",
+    ):
+        assert event_direction(ev) == "bullish", ev
+
+    for ev in (
+        "死叉",
+        "死叉 · 卖出观察",
+        "盘中死叉 · 待收盘确认",
+        "向下突破下轨",
+        "上轨外回归轨内",
+        "通道退出",
+        "趋势失效",
+        "跟踪退出",
+        "释放 · 向下",
+    ):
+        assert event_direction(ev) == "bearish", ev
+
+    assert event_direction("释放 · 方向未定") == "neutral"
+    assert event_direction("") == "neutral"
+    assert event_direction(None) == "neutral"

@@ -18,6 +18,7 @@ from . import storage, workspace
 from .configuration import ConfigurationConflict, DuplicateStrategy, load_configuration
 from .data import TZ, fetch
 from .runner import CheckInProgress, is_running, next_regular_check, revision, run
+from .strategies import event_direction
 
 logger = logging.getLogger(__name__)
 DIST_DIR = Path(__file__).parent / "static" / "dist"
@@ -229,11 +230,12 @@ def create_app(db_path, *, allow_testserver=None):
 
     @app.get("/api/v1/signals")
     def api_signals(asset_id: str | None = None, strategy_id: str | None = None, limit: int = 200):
+        rows = storage.list_signals(
+            db_path, asset_id=asset_id, strategy_id=strategy_id, limit=min(max(limit, 1), 500)
+        )
         return {
             "total": storage.count_signals(db_path, asset_id=asset_id, strategy_id=strategy_id),
-            "signals": storage.list_signals(
-                db_path, asset_id=asset_id, strategy_id=strategy_id, limit=min(max(limit, 1), 500)
-            ),
+            "signals": [{**s, "direction": event_direction(s["event_kind"])} for s in rows],
         }
 
     @app.get("/api/v1/runs")

@@ -12,6 +12,7 @@ import {
   type SeriesMarker,
   type Time,
 } from "lightweight-charts";
+import { getChartDirectionColor, resolveEventDirection } from "../lib/signals";
 import { aggregateWeekly } from "../lib/weekly";
 import type {
   AssetChartPayload,
@@ -223,13 +224,7 @@ export function CandleChart({
         if (!evDate) continue;
         const mapped = computed.dayToWeekTime.get(evDate) ?? evDate;
         if (!barSet.has(mapped)) continue;
-        const dir =
-          ev.direction ??
-          (/金叉|向上突破|下轨外回归|短线回调|回调修复|释放 · 向上|相对转强/.test(ev.event)
-            ? "bullish"
-            : /死叉|向下突破|上轨外回归|退出|失效|释放 · 向下/.test(ev.event)
-              ? "bearish"
-              : "neutral");
+        const dir = resolveEventDirection(ev.event, ev.direction);
         const isBull = dir === "bullish";
         const isBear = dir === "bearish";
         markers.push({
@@ -237,11 +232,7 @@ export function CandleChart({
           position: isBull ? "belowBar" : "aboveBar",
           color: ev.provisional
             ? warnCol
-            : isBull
-              ? upCol
-              : isBear
-                ? downCol
-                : blueCol,
+            : getChartDirectionColor(dir, pal),
           shape: isBull ? "arrowUp" : isBear ? "arrowDown" : "circle",
           text: ev.event.slice(0, 6),
         });

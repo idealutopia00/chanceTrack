@@ -288,3 +288,84 @@ def test_notes_optimistic_lock_title_preservation_decision_validation_and_run_lo
     with check_lock(db_path):
         busy = client.post("/api/v1/runs", headers=headers, json={"async": False})
         assert busy.status_code == 409
+
+
+def test_asset_summaries_latest_signal_per_asset_past_100_and_direction(tmp_path):
+    from datetime import date, timedelta
+
+    db_path = tmp_path / "per_asset_signals.sqlite3"
+    storage.initialize(db_path)
+    cfg = load_configuration(db_path)
+    assert len(cfg["assets"]) >= 4
+
+    asset_a = cfg["assets"][0]["id"]  # sp500
+    asset_b = cfg["assets"][1]["id"]  # nasdaq100
+    asset_c = cfg["assets"][2]["id"]  # csi300
+    asset_empty = cfg["assets"][3]["id"]  # gold_sge (no signal events)
+
+    with storage.connect(db_path) as db:
+        db.execute("DELETE FROM signal_events")
+        # Asset A: 1 older persisted bullish event on 2026-11-13
+        db.execute(
+            """INSERT INTO signal_events (
+                 dedup_key, asset_id, strategy_id, strategy_name, strategy_group,
+                 strategy_version, event_date, event_kind, detail, is_provisional,
+                 historical_reference, first_run_id, created_at
+               ) VALUES (?, ?, 'macd', 'MACD 12/26/9', '趋势', 'macd:v1',
+                         '2026-11-13', '金叉 · 买入观察', '旧记录', 0, 0, NULL, '2026-11-13T15:00:00+08:00')""",
+            (f"{asset_a}:2026-11-13:macd:v1:金叉 · 买入观察", asset_a),
+        )
+        # Asset B: 101 newer events (exceeding old global LIMIT 100), latest is bearish 向下突破下轨
+        base_day = date(2026, 11, 14)
+        for idx in range(101):
+            ev_day = (base_day + timedelta(days=idx // 10)).isoformat()
+            ev_kind = "向下突破下轨" if idx == 100 else "金叉"
+            db.execute(
+                """INSERT INTO signal_events (
+                     dedup_key, asset_id, strategy_id, strategy_name, strategy_group,
+                     strategy_version, event_date, event_kind, detail, is_provisional,
+                     historical_reference, first_run_id, created_at
+                   ) VALUES (?, ?, 'boll_break', '布林突破', '通道', 'boll_break:v1',
+                             ?, ?, ?, 0, 0, NULL, ?)""",
+                (
+                    f"{asset_b}:{ev_day}:idx{idx}:{ev_kind}",
+                    asset_b,
+                    ev_day,
+                    ev_kind,
+                    f"第 {idx + 1} 条",
+                    f"{ev_day}T15:00:00+08:00",
+                ),
+            )
+        # Asset C: bearish 死叉 event
+        db.execute(
+            """INSERT INTO signal_events (
+                 dedup_key, asset_id, strategy_id, strategy_name, strategy_group,
+                 strategy_version, event_date, event_kind, detail, is_provisional,
+                 historical_reference, first_run_id, created_at
+               ) VALUES (?, ?, 'macd', 'MACD 12/26/9', '趋势', 'macd:v1',
+                         '2026-11-24', '死叉', '偏空测试', 0, 0, NULL, '2026-11-24T15:00:00+08:00')""",
+            (f"{asset_c}:2026-11-24:macd:v1:死叉", asset_c),
+        )
+
+    client = TestClient(create_app(db_path))
+    bs = client.get("/api/v1/bootstrap").json()
+    by_id = {a["id"]: a for a in bs["assets"]}
+
+    assert by_id[asset_a]["latest_signal"] == {
+        "event_date": "2026-11-13",
+        "event_kind": "金叉 · 买入观察",
+        "direction": "bullish",
+        "strategy_name": "MACD 12/26/9",
+        "is_provisional": False,
+    }
+    assert by_id[asset_b]["latest_signal"]["event_kind"] == "向下突破下轨"
+    assert by_id[asset_b]["latest_signal"]["direction"] == "bearish"
+    assert by_id[asset_c]["latest_signal"]["event_kind"] == "死叉"
+    assert by_id[asset_c]["latest_signal"]["direction"] == "bearish"
+    assert by_id[asset_empty]["latest_signal"] is None
+
+    sigs = client.get("/api/v1/signals?limit=200").json()["signals"]
+    dirs_by_kind = {s["event_kind"]: s["direction"] for s in sigs}
+    assert dirs_by_kind["金叉 · 买入观察"] == "bullish"
+    assert dirs_by_kind["向下突破下轨"] == "bearish"
+    assert dirs_by_kind["死叉"] == "bearish"

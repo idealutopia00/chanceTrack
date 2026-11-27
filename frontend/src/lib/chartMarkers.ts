@@ -65,10 +65,17 @@ export interface RenderedMarkerGeometry {
   hitRect: { x: number; y: number; w: number; h: number };
 }
 
+export interface RenderedDecisionGeometry {
+  barTime: string;
+  action: DecisionRecord["action"];
+  rect: { x: number; y: number; w: number; h: number };
+}
+
 export interface MarkerLayoutSummary {
   visibleCount: number;
   foldedCount: number;
   rendered: RenderedMarkerGeometry[];
+  decisions?: RenderedDecisionGeometry[];
 }
 
 const BULLISH_RE =
@@ -692,20 +699,26 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
         ctx.restore();
       }
 
-      // 6. Decision badges (positioned below actual strategy arrow/pill bottom to avoid overlap)
+      // 6. Decision badges (positioned to avoid ALL horizontally overlapping strategy pills, arrows, and sibling badges)
+      const renderedDecisions: RenderedDecisionGeometry[] = [];
       if (this.showDecisions && this.decisions.length > 0) {
-        const belowBottomByBar = new Map<string, number>();
+        const obstacles: { x: number; y: number; w: number; h: number }[] = [];
         for (const r of rendered) {
-          if (r.side !== "below") continue;
-          const bottom = r.pillRect ? r.pillRect.y + r.pillRect.h : r.baseY;
-          const prev = belowBottomByBar.get(r.barTime) ?? -Infinity;
-          if (bottom > prev) belowBottomByBar.set(r.barTime, bottom);
+          obstacles.push({
+            x: r.x - ARROW_HALF_W - 2,
+            y: Math.min(r.tipY, r.baseY) - 2,
+            w: ARROW_HALF_W * 2 + 4,
+            h: ARROW_H + 4,
+          });
+          if (r.pillRect) {
+            obstacles.push(r.pillRect);
+          }
         }
         ctx.save();
         ctx.font = '700 9.5px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        const seenDecBars = new Map<string, number>();
+        const size = 15;
         for (const d of this.decisions) {
           const bar = this.barMap.get(d.barTime);
           if (!bar) continue;
@@ -713,15 +726,49 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
           if (x === null || x < -16 || x > width + 16) continue;
           const lowY = series.priceToCoordinate(bar.low);
           if (lowY === null) continue;
-          const stack = seenDecBars.get(d.barTime) ?? 0;
-          seenDecBars.set(d.barTime, stack + 1);
-          const size = 15;
-          const belowBottom = belowBottomByBar.get(d.barTime);
-          const baseCenterY =
-            belowBottom !== undefined
-              ? Math.max(lowY + 14, belowBottom + 4 + size / 2)
-              : lowY + 14;
-          const cy = Math.min(height - 10, baseCenterY + stack * 18);
+          const bx = Math.max(2, Math.min(width - size - 2, x - size / 2));
+
+          // Push downward past any overlapping pill, arrow, or prior decision badge
+          let by = lowY + 14 - size / 2;
+          let placed = false;
+          for (let guard = 0; guard < 24; guard++) {
+            if (by + size > height - 3) break;
+            const rect = { x: bx, y: by, w: size, h: size };
+            const hit = obstacles.find((ob) => rectsOverlap(ob, rect, 3));
+            if (!hit) {
+              placed = true;
+              break;
+            }
+            by = hit.y + hit.h + 4;
+          }
+
+          // Fallback: if bottom edge is full, try placing above candle high avoiding obstacles
+          if (!placed) {
+            const highY = series.priceToCoordinate(bar.high);
+            if (highY !== null) {
+              let upY = highY - 14 - size / 2;
+              for (let guard = 0; guard < 24; guard++) {
+                if (upY < 3) break;
+                const rect = { x: bx, y: upY, w: size, h: size };
+                const hit = obstacles.find((ob) => rectsOverlap(ob, rect, 3));
+                if (!hit) {
+                  by = upY;
+                  placed = true;
+                  break;
+                }
+                upY = hit.y - size - 4;
+              }
+            }
+          }
+
+          if (!placed) {
+            by = Math.max(3, Math.min(height - size - 3, by));
+          }
+
+          const finalRect = { x: bx, y: by, w: size, h: size };
+          obstacles.push(finalRect);
+          renderedDecisions.push({ barTime: d.barTime, action: d.action, rect: finalRect });
+
           const col =
             d.action === "买入"
               ? pal.up
@@ -730,14 +777,14 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
                 : d.action === "持有"
                   ? pal.accent
                   : pal.blue;
-          drawRoundedRect(ctx, x - size / 2, cy - size / 2, size, size, 3.5);
+          drawRoundedRect(ctx, bx, by, size, size, 3.5);
           ctx.strokeStyle = pal.panel;
           ctx.lineWidth = 2.5;
           ctx.stroke();
           ctx.fillStyle = col;
           ctx.fill();
           ctx.fillStyle = "#ffffff";
-          ctx.fillText(d.shortText, x, cy + 0.5);
+          ctx.fillText(d.shortText, bx + size / 2, by + size / 2 + 0.5);
         }
         ctx.restore();
       }
@@ -746,6 +793,7 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
         visibleCount: rendered.length,
         foldedCount,
         rendered,
+        decisions: renderedDecisions,
       };
       this.lastLayout = next;
       this.onLayoutChange?.(next);

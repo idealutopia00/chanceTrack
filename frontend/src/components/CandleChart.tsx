@@ -789,36 +789,45 @@ export function CandleChart({
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
-            {sameDayEvents.length > 1 && (
-              <div
-                data-testid="inspector-same-day-switcher"
-                className="inline-flex items-center gap-1 mr-1"
-              >
-                <span className="text-[10.5px]" style={{ color: "var(--app-muted)" }}>
-                  同日 {sameDayEvents.length} 项:
-                </span>
-                {sameDayEvents.map((ev) => {
-                  const active = ev.eventKey === selectedEvent.eventKey;
-                  const dupName =
-                    sameDayEvents.filter((item) => item.event === ev.event).length > 1;
-                  return (
-                    <button
-                      key={ev.eventKey}
-                      type="button"
-                      onClick={() => selectIndexedEvent(ev)}
-                      className="px-1.5 py-0.5 rounded border text-[10.5px] cursor-pointer"
-                      style={{
-                        background: active ? "var(--app-btn)" : "var(--app-bg)",
-                        borderColor: active ? "var(--app-btn)" : "var(--app-border)",
-                        color: active ? "var(--app-btn-text)" : "var(--app-text)",
-                      }}
-                    >
-                      {dupName && ev.name ? `${ev.name} · ${ev.event}` : ev.event}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+            {sameDayEvents.length > 1 && (() => {
+              const multiDates =
+                new Set(sameDayEvents.map((item) => item.date || item.time || "")).size > 1;
+              return (
+                <div
+                  data-testid="inspector-same-day-switcher"
+                  className="inline-flex items-center gap-1 mr-1"
+                >
+                  <span className="text-[10.5px]" style={{ color: "var(--app-muted)" }}>
+                    {multiDates ? `同周 ${sameDayEvents.length} 项:` : `同日 ${sameDayEvents.length} 项:`}
+                  </span>
+                  {sameDayEvents.map((ev) => {
+                    const active = ev.eventKey === selectedEvent.eventKey;
+                    const dupName =
+                      sameDayEvents.filter((item) => item.event === ev.event).length > 1;
+                    const baseLabel =
+                      dupName && ev.name ? `${ev.name} · ${ev.event}` : ev.event;
+                    const shortDate = (ev.date || ev.time || "").slice(5);
+                    const btnLabel =
+                      multiDates && shortDate ? `${baseLabel} (${shortDate})` : baseLabel;
+                    return (
+                      <button
+                        key={ev.eventKey}
+                        type="button"
+                        onClick={() => selectIndexedEvent(ev)}
+                        className="px-1.5 py-0.5 rounded border text-[10.5px] cursor-pointer"
+                        style={{
+                          background: active ? "var(--app-btn)" : "var(--app-bg)",
+                          borderColor: active ? "var(--app-btn)" : "var(--app-border)",
+                          color: active ? "var(--app-btn-text)" : "var(--app-text)",
+                        }}
+                      >
+                        {btnLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
             <button
               type="button"
               onClick={() => stepSelectedEvent(-1)}

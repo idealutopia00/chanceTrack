@@ -171,7 +171,7 @@ export function WorkspaceView({
         ? delta < 0
           ? strategyEvents.length - 1
           : 0
-        : Math.max(0, Math.min(strategyEvents.length - 1, eventCursor + delta));
+        : (eventCursor + delta + strategyEvents.length) % strategyEvents.length;
     setEventCursor(nextIdx);
     const target = strategyEvents[nextIdx];
     const targetDate = target.date || target.time || null;

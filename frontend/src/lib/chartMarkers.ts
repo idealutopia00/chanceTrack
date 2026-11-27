@@ -166,14 +166,23 @@ function directionGlyph(dir: MarkerDirection, provisional: boolean): string {
   return provisional ? "◇" : "◆";
 }
 
+function getClusterPrimary(
+  cluster: MarkerCluster,
+  selectedEventKey: string | null,
+): { primary: IndexedChartEvent; selectedEv: IndexedChartEvent | null } {
+  const selectedEv = selectedEventKey
+    ? cluster.events.find((e) => e.eventKey === selectedEventKey) ?? null
+    : null;
+  // Default to the latest event in the cluster (relevant in weekly view with mixed days)
+  const primary = selectedEv ?? cluster.events[cluster.events.length - 1];
+  return { primary, selectedEv };
+}
+
 function formatClusterLabel(
   cluster: MarkerCluster,
   selectedEventKey: string | null,
 ): string {
-  const selectedEv = selectedEventKey
-    ? cluster.events.find((e) => e.eventKey === selectedEventKey)
-    : null;
-  const primary = selectedEv ?? cluster.events[0];
+  const { primary, selectedEv } = getClusterPrimary(cluster, selectedEventKey);
   const prefix = primary.provisional ? "盘中·" : "";
   const name = primary.event;
   if (cluster.events.length > 1) {
@@ -402,6 +411,7 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
 
         interface Candidate {
           cluster: MarkerCluster;
+          provisional: boolean;
           x: number;
           wickY: number;
           tipY: number;
@@ -410,6 +420,7 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
           selected: boolean;
           labelText: string;
           pillW: number;
+          arrowRect: { x: number; y: number; w: number; h: number };
         }
 
         const candidates: Candidate[] = [];
@@ -426,12 +437,15 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
           const tipY = Math.max(10, Math.min(height - 10, rawTipY));
           const baseY = tipY + dirSign * ARROW_H;
           const selected = cluster.id === this.selectedClusterId;
+          const { primary } = getClusterPrimary(cluster, selected ? this.selectedEventKey : null);
+          const effectiveProvisional = Boolean(primary.provisional);
           const labelText = formatClusterLabel(cluster, selected ? this.selectedEventKey : null);
-          const glyph = directionGlyph(cluster.direction, cluster.provisional);
+          const glyph = directionGlyph(cluster.direction, effectiveProvisional);
           const textW = ctx.measureText(`${glyph} ${labelText}`).width;
           const pillW = Math.ceil(textW + 12);
           candidates.push({
             cluster,
+            provisional: effectiveProvisional,
             x,
             wickY,
             tipY,
@@ -440,6 +454,12 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
             selected,
             labelText,
             pillW,
+            arrowRect: {
+              x: x - ARROW_HALF_W - 2,
+              y: Math.min(tipY, baseY) - 2,
+              w: ARROW_HALF_W * 2 + 4,
+              h: ARROW_H + 4,
+            },
           });
         }
 
@@ -449,7 +469,7 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
           return b.x - a.x;
         });
 
-        const placedPills: { side: "above" | "below"; rect: { x: number; y: number; w: number; h: number } }[] = [];
+        const placedPills: { rect: { x: number; y: number; w: number; h: number } }[] = [];
         const geometryById = new Map<string, RenderedMarkerGeometry>();
 
         for (const cand of ordered) {
@@ -475,13 +495,16 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
               }
               for (const desiredX of xCandidates) {
                 const rect = { x: desiredX, y: topY, w: cand.pillW, h: PILL_H };
-                const collides = placedPills.some(
-                  (p) => p.side === cand.cluster.side && rectsOverlap(p.rect, rect, 5),
+                const collidesWithPill = placedPills.some((p) => rectsOverlap(p.rect, rect, 5));
+                const collidesWithArrow = candidates.some(
+                  (other) =>
+                    other.cluster.id !== cand.cluster.id &&
+                    rectsOverlap(other.arrowRect, rect, 2),
                 );
-                if (!collides) {
+                if (!collidesWithPill && !collidesWithArrow) {
                   chosenRect = rect;
                   chosenTier = tier;
-                  placedPills.push({ side: cand.cluster.side, rect });
+                  placedPills.push({ rect });
                   break;
                 }
               }
@@ -503,7 +526,7 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
             barTime: cand.cluster.barTime,
             side: cand.cluster.side,
             direction: cand.cluster.direction,
-            provisional: cand.cluster.provisional,
+            provisional: cand.provisional,
             eventCount: cand.cluster.events.length,
             x: cand.x,
             wickY: cand.wickY,
@@ -578,10 +601,10 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
           drawDirectionShape(ctx, cand.x, cand.tipY, cand.baseY, ARROW_HALF_W, cand.cluster.direction);
           // Outer contrast halo separates marker from same-color candles & overlays
           ctx.strokeStyle = pal.panel;
-          ctx.lineWidth = cand.cluster.provisional ? 4.5 : 3.6;
+          ctx.lineWidth = cand.provisional ? 4.5 : 3.6;
           ctx.stroke();
 
-          if (cand.cluster.provisional) {
+          if (cand.provisional) {
             // Hollow outlined marker for provisional / intraday events
             ctx.fillStyle = pal.panel;
             ctx.fill();
@@ -645,7 +668,7 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
             ctx.fillStyle = pal.pillBg;
             ctx.fill();
 
-            if (cand.cluster.provisional) {
+            if (cand.provisional) {
               ctx.setLineDash([3.5, 2.5]);
             }
             ctx.strokeStyle = cand.selected ? pal.focusRing : col;
@@ -653,7 +676,7 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
             ctx.stroke();
             ctx.setLineDash([]);
 
-            const glyph = directionGlyph(cand.cluster.direction, cand.cluster.provisional);
+            const glyph = directionGlyph(cand.cluster.direction, cand.provisional);
             ctx.font = FONT_SPEC;
             ctx.textBaseline = "middle";
             ctx.textAlign = "left";
@@ -669,11 +692,15 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
         ctx.restore();
       }
 
-      // 6. Decision badges (kept distinct from strategy arrows with square rounded tags)
+      // 6. Decision badges (positioned below actual strategy arrow/pill bottom to avoid overlap)
       if (this.showDecisions && this.decisions.length > 0) {
-        const eventBelowByBar = new Set(
-          rendered.filter((r) => r.side === "below").map((r) => r.barTime),
-        );
+        const belowBottomByBar = new Map<string, number>();
+        for (const r of rendered) {
+          if (r.side !== "below") continue;
+          const bottom = r.pillRect ? r.pillRect.y + r.pillRect.h : r.baseY;
+          const prev = belowBottomByBar.get(r.barTime) ?? -Infinity;
+          if (bottom > prev) belowBottomByBar.set(r.barTime, bottom);
+        }
         ctx.save();
         ctx.font = '700 9.5px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
         ctx.textAlign = "center";
@@ -688,8 +715,13 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
           if (lowY === null) continue;
           const stack = seenDecBars.get(d.barTime) ?? 0;
           seenDecBars.set(d.barTime, stack + 1);
-          const extraOffset = eventBelowByBar.has(d.barTime) ? 46 : 12;
-          const cy = Math.min(height - 10, lowY + extraOffset + stack * 18);
+          const size = 15;
+          const belowBottom = belowBottomByBar.get(d.barTime);
+          const baseCenterY =
+            belowBottom !== undefined
+              ? Math.max(lowY + 14, belowBottom + 4 + size / 2)
+              : lowY + 14;
+          const cy = Math.min(height - 10, baseCenterY + stack * 18);
           const col =
             d.action === "买入"
               ? pal.up
@@ -698,7 +730,6 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
                 : d.action === "持有"
                   ? pal.accent
                   : pal.blue;
-          const size = 15;
           drawRoundedRect(ctx, x - size / 2, cy - size / 2, size, size, 3.5);
           ctx.strokeStyle = pal.panel;
           ctx.lineWidth = 2.5;

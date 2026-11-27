@@ -242,6 +242,8 @@ export function CandleChart({
   selectEventRef.current = selectIndexedEvent;
   const selectedKeyRef = useRef(selectedEventKey);
   selectedKeyRef.current = selectedEventKey;
+  const showEventsRef = useRef(showEvents);
+  showEventsRef.current = showEvents;
 
   // Build & populate charts when data / period / volume toggle / range changes
   useEffect(() => {
@@ -373,6 +375,7 @@ export function CandleChart({
       downPt = { x: e.clientX, y: e.clientY };
     };
     const onMainClick = (e: MouseEvent) => {
+      if (!showEventsRef.current) return;
       if (downPt && Math.hypot(e.clientX - downPt.x, e.clientY - downPt.y) > 6) {
         return;
       }

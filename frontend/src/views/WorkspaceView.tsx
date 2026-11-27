@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import { CandleChart } from "../components/CandleChart";
+import { sortEventsChronologically } from "../lib/chartMarkers";
 import {
   hasRecordedSignal,
   resolveEventDirection,
@@ -171,7 +172,10 @@ export function WorkspaceView({
     return Array.from(groups.entries());
   }, [activeAssets, wlSearch, wlFilter]);
 
-  const strategyEvents = chartData?.result?.chart?.strategy_events ?? [];
+  const strategyEvents = useMemo(
+    () => sortEventsChronologically(chartData?.result?.chart?.strategy_events ?? []),
+    [chartData?.result?.chart?.strategy_events],
+  );
 
   function jumpEvent(delta: number) {
     if (!strategyEvents.length) return;
@@ -180,7 +184,7 @@ export function WorkspaceView({
         ? delta < 0
           ? strategyEvents.length - 1
           : 0
-        : Math.max(0, Math.min(strategyEvents.length - 1, eventCursor + delta));
+        : (eventCursor + delta + strategyEvents.length) % strategyEvents.length;
     setEventCursor(nextIdx);
     const target = strategyEvents[nextIdx];
     const targetDate = target.date || target.time || null;
@@ -993,6 +997,8 @@ export function WorkspaceView({
               showDecisions={showDecisions}
               resolvedTheme={resolvedTheme}
               focusDate={focusDate}
+              selectedEventIndex={eventCursor}
+              onSelectEventIndex={setEventCursor}
             />
           ) : null}
         </div>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -7,12 +7,18 @@ import {
   LineSeries,
   LineStyle,
   createChart,
-  createSeriesMarkers,
   type IChartApi,
-  type SeriesMarker,
   type Time,
 } from "lightweight-charts";
-import { getChartDirectionColor, resolveEventDirection } from "../lib/signals";
+import { ChevronLeft, ChevronRight, Layers, X } from "lucide-react";
+import {
+  buildMarkerClusters,
+  indexChartEvents,
+  StrategyMarkersPrimitive,
+  type IndexedChartEvent,
+  type MarkerLayoutSummary,
+  type MarkerThemePalette,
+} from "../lib/chartMarkers";
 import { aggregateWeekly } from "../lib/weekly";
 import type {
   AssetChartPayload,
@@ -30,6 +36,8 @@ interface CandleChartProps {
   showDecisions: boolean;
   resolvedTheme: "dark" | "light";
   focusDate: string | null;
+  selectedEventIndex?: number;
+  onSelectEventIndex?: (index: number) => void;
   onSelectEvent?: (ev: ChartEvent | null) => void;
 }
 
@@ -41,30 +49,42 @@ const OVERLAY_PALETTE = [
   "#d97a73",
 ];
 
-const CHART_PALETTE = {
+const CHART_PALETTE: Record<"dark" | "light", MarkerThemePalette & { grid: string }> = {
   dark: {
     up: "#e26d65",
     down: "#3da67a",
     panel: "#15181e",
     text: "#8b93a2",
+    muted: "#8b93a2",
     grid: "rgba(255,255,255,0.05)",
     border: "rgba(255,255,255,0.08)",
     warn: "#d9a45b",
     blue: "#6aa1d8",
     accent: "#3da67a",
+    pillBg: "rgba(21, 24, 30, 0.94)",
+    pillText: "#f2f4f8",
+    focusRing: "#f2f4f8",
+    solidRim: "rgba(255, 255, 255, 0.42)",
+    stem: "rgba(236, 239, 244, 0.45)",
   },
   light: {
     up: "#c8463e",
     down: "#277d5b",
     panel: "#ffffff",
     text: "#67625a",
+    muted: "#67625a",
     grid: "rgba(31,29,26,0.06)",
     border: "rgba(31,29,26,0.09)",
     warn: "#9a6319",
     blue: "#386b9c",
     accent: "#2d6a53",
+    pillBg: "rgba(255, 255, 255, 0.96)",
+    pillText: "#1f1d1a",
+    focusRing: "#1f1d1a",
+    solidRim: "rgba(31, 29, 26, 0.28)",
+    stem: "rgba(31, 29, 26, 0.45)",
   },
-} as const;
+};
 
 const EMPTY_CANDLES: CandleBar[] = [];
 const EMPTY_OVERLAYS: NonNullable<NonNullable<AssetChartPayload["result"]>["chart"]["overlays"]> = [];
@@ -81,13 +101,23 @@ export function CandleChart({
   showDecisions,
   resolvedTheme,
   focusDate,
+  selectedEventIndex = -1,
+  onSelectEventIndex,
+  onSelectEvent,
 }: CandleChartProps) {
   const mainContainerRef = useRef<HTMLDivElement | null>(null);
   const macdContainerRef = useRef<HTMLDivElement | null>(null);
   const mainChartRef = useRef<IChartApi | null>(null);
   const macdChartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ReturnType<IChartApi["addSeries"]> | null>(null);
+  const markerPrimitiveRef = useRef<StrategyMarkersPrimitive | null>(null);
   const [hoverBar, setHoverBar] = useState<CandleBar | null>(null);
+  const [compactLabels, setCompactLabels] = useState(false);
+  const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null);
+  const [layoutCounts, setLayoutCounts] = useState<{ visible: number; folded: number }>({
+    visible: 0,
+    folded: 0,
+  });
 
   const chart = data.result?.chart;
   const rawCandles = chart?.candles ?? EMPTY_CANDLES;
@@ -110,10 +140,112 @@ export function CandleChart({
     };
   }, [period, rawCandles, rawOverlays, rawMacd]);
 
+  const barSet = useMemo(() => new Set(computed.candles.map((c) => c.time)), [computed.candles]);
+  const indexedEvents = useMemo(
+    () => indexChartEvents(rawEvents, computed.dayToWeekTime, barSet),
+    [rawEvents, computed.dayToWeekTime, barSet],
+  );
+  const markerClusters = useMemo(() => buildMarkerClusters(indexedEvents), [indexedEvents]);
+
+  // Sync external stepper index -> selectedEventKey
+  useEffect(() => {
+    if (selectedEventIndex >= 0 && selectedEventIndex < indexedEvents.length) {
+      setSelectedEventKey(indexedEvents[selectedEventIndex].eventKey);
+    } else if (selectedEventIndex < 0) {
+      // Clear selection when asset changes / resets
+      setSelectedEventKey((prev) =>
+        prev && indexedEvents.some((e) => e.eventKey === prev) ? prev : null,
+      );
+    }
+  }, [selectedEventIndex, indexedEvents]);
+
+  // Reset selected event when switching assets
+  useEffect(() => {
+    setSelectedEventKey(null);
+  }, [data.asset.id]);
+
+  const selectedEvent: IndexedChartEvent | null = useMemo(() => {
+    if (!selectedEventKey) return null;
+    return indexedEvents.find((e) => e.eventKey === selectedEventKey) ?? null;
+  }, [selectedEventKey, indexedEvents]);
+
+  const selectedClusterId = useMemo(() => {
+    if (!selectedEvent) return null;
+    const side = selectedEvent.resolvedDirection === "bullish" ? "below" : "above";
+    return `${selectedEvent.mappedTime}:${side}`;
+  }, [selectedEvent]);
+
+  const sameDayEvents = useMemo(() => {
+    if (!selectedEvent) return [];
+    return indexedEvents.filter((e) => e.mappedTime === selectedEvent.mappedTime);
+  }, [selectedEvent, indexedEvents]);
+
+  const selectIndexedEvent = useCallback(
+    (ev: IndexedChartEvent | null) => {
+      setSelectedEventKey(ev?.eventKey ?? null);
+      onSelectEvent?.(ev);
+      if (ev && onSelectEventIndex) {
+        const idx = indexedEvents.findIndex((item) => item.eventKey === ev.eventKey);
+        if (idx >= 0) onSelectEventIndex(idx);
+      } else if (!ev && onSelectEventIndex) {
+        onSelectEventIndex(-1);
+      }
+    },
+    [indexedEvents, onSelectEvent, onSelectEventIndex],
+  );
+
+  const stepSelectedEvent = useCallback(
+    (delta: number) => {
+      if (!indexedEvents.length) return;
+      const cur = selectedEvent
+        ? indexedEvents.findIndex((e) => e.eventKey === selectedEvent.eventKey)
+        : -1;
+      const nextIdx =
+        cur < 0
+          ? delta < 0
+            ? indexedEvents.length - 1
+            : 0
+          : (cur + delta + indexedEvents.length) % indexedEvents.length;
+      const next = indexedEvents[nextIdx];
+      selectIndexedEvent(next);
+      if (mainChartRef.current) {
+        const barIdx = computed.candles.findIndex((c) => c.time >= next.mappedTime);
+        if (barIdx >= 0) {
+          const span = 45;
+          mainChartRef.current.timeScale().setVisibleLogicalRange({
+            from: Math.max(0, barIdx - span),
+            to: Math.min(computed.candles.length + 3, barIdx + span),
+          });
+        }
+      }
+    },
+    [indexedEvents, selectedEvent, selectIndexedEvent, computed.candles],
+  );
+
   const hasMacd = computed.macd.length > 0;
   const displayBar = hoverBar ?? computed.candles[computed.candles.length - 1] ?? null;
 
-  // Build & populate charts when data / period / toggles change (theme updates smoothly without destroying range!)
+  const handleLayoutChange = useCallback((summary: MarkerLayoutSummary) => {
+    const el = mainContainerRef.current as (HTMLDivElement & { __ctMarkers?: MarkerLayoutSummary }) | null;
+    if (el) el.__ctMarkers = summary;
+    setLayoutCounts((prev) =>
+      prev.visible === summary.visibleCount && prev.folded === summary.foldedCount
+        ? prev
+        : { visible: summary.visibleCount, folded: summary.foldedCount },
+    );
+  }, []);
+
+  // Keep refs fresh for click listener without recreating chart
+  const clustersRef = useRef(markerClusters);
+  clustersRef.current = markerClusters;
+  const selectEventRef = useRef(selectIndexedEvent);
+  selectEventRef.current = selectIndexedEvent;
+  const selectedKeyRef = useRef(selectedEventKey);
+  selectedKeyRef.current = selectedEventKey;
+  const showEventsRef = useRef(showEvents);
+  showEventsRef.current = showEvents;
+
+  // Build & populate charts when data / period / volume toggle / range changes
   useEffect(() => {
     const mainEl = mainContainerRef.current;
     if (!mainEl || !computed.candles.length) return;
@@ -127,7 +259,6 @@ export function CandleChart({
     const borderCol = pal.border;
     const warnCol = pal.warn;
     const blueCol = pal.blue;
-    const accentCol = pal.accent;
 
     const baseOpts = {
       layout: {
@@ -142,8 +273,11 @@ export function CandleChart({
         horzLines: { color: gridCol },
       },
       crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: borderCol },
-      timeScale: { borderColor: borderCol, rightOffset: 4 },
+      rightPriceScale: {
+        borderColor: borderCol,
+        scaleMargins: { top: 0.16, bottom: showVolume ? 0.26 : 0.16 },
+      },
+      timeScale: { borderColor: borderCol, rightOffset: 5 },
       autoSize: true,
     };
 
@@ -201,7 +335,7 @@ export function CandleChart({
         lastValueVisible: false,
       });
       mainChart.priceScale("volume").applyOptions({
-        scaleMargins: { top: 0.8, bottom: 0 },
+        scaleMargins: { top: 0.82, bottom: 0 },
       });
       volSeries.setData(
         computed.candles
@@ -214,63 +348,66 @@ export function CandleChart({
       );
     }
 
-    // Build combined markers: Strategy Events + User Decisions on Candles
-    const barSet = new Set(computed.candles.map((c) => c.time));
-    const markers: SeriesMarker<Time>[] = [];
+    // Attach custom high-contrast Strategy & Decision markers primitive on top layer
+    const primitive = new StrategyMarkersPrimitive(pal, (summary) => {
+      const host = mainContainerRef.current as (HTMLDivElement & { __ctMarkers?: MarkerLayoutSummary }) | null;
+      if (host) host.__ctMarkers = summary;
+      handleLayoutChange(summary);
+    });
+    candleSeries.attachPrimitive(primitive);
+    markerPrimitiveRef.current = primitive;
+    primitive.updateData({
+      clusters: markerClusters,
+      decisions,
+      candles: computed.candles,
+      dayToWeekTime: computed.dayToWeekTime,
+      showEvents,
+      showDecisions,
+      compactLabels,
+      selectedClusterId,
+      selectedEventKey,
+      palette: pal,
+    });
 
-    if (showEvents) {
-      for (const ev of rawEvents) {
-        const evDate = ev.date || ev.time;
-        if (!evDate) continue;
-        const mapped = computed.dayToWeekTime.get(evDate) ?? evDate;
-        if (!barSet.has(mapped)) continue;
-        const dir = resolveEventDirection(ev.event, ev.direction);
-        const isBull = dir === "bullish";
-        const isBear = dir === "bearish";
-        markers.push({
-          time: mapped as Time,
-          position: isBull ? "belowBar" : "aboveBar",
-          color: ev.provisional
-            ? warnCol
-            : getChartDirectionColor(dir, pal),
-          shape: isBull ? "arrowUp" : isBear ? "arrowDown" : "circle",
-          text: ev.event.slice(0, 6),
-        });
+    // Reliable direct click handler on main chart container (never swallowed after clicking external buttons)
+    let downPt: { x: number; y: number } | null = null;
+    const onPointerDown = (e: PointerEvent) => {
+      downPt = { x: e.clientX, y: e.clientY };
+    };
+    const onMainClick = (e: MouseEvent) => {
+      if (!showEventsRef.current) return;
+      if (downPt && Math.hypot(e.clientX - downPt.x, e.clientY - downPt.y) > 6) {
+        return;
       }
-    }
+      const canvas = mainEl.querySelector("canvas");
+      const rect = (canvas ?? mainEl).getBoundingClientRect();
+      const rx = e.clientX - rect.left;
+      const ry = e.clientY - rect.top;
+      if (rx < 0 || ry < 0 || rx > rect.width || ry > rect.height) return;
 
-    if (showDecisions) {
-      const actionShort: Record<DecisionRecord["action"], string> = {
-        买入: "买",
-        卖出: "卖",
-        持有: "持",
-        观望: "观",
-      };
-      for (const d of decisions) {
-        const mapped = computed.dayToWeekTime.get(d.bar_date) ?? d.bar_date;
-        if (!barSet.has(mapped)) continue;
-        const col =
-          d.action === "买入"
-            ? upCol
-            : d.action === "卖出"
-              ? downCol
-              : d.action === "持有"
-                ? accentCol
-                : blueCol;
-        markers.push({
-          time: mapped as Time,
-          position: "belowBar",
-          color: col,
-          shape: "circle",
-          text: actionShort[d.action],
-        });
+      let targetCluster: (typeof clustersRef.current)[number] | undefined;
+      const hit = primitive.hitTest(rx, ry);
+      if (hit) {
+        targetCluster = clustersRef.current.find((c) => c.id === hit.externalId);
       }
-    }
-
-    markers.sort((a, b) => String(a.time).localeCompare(String(b.time)));
-    if (markers.length) {
-      createSeriesMarkers(candleSeries, markers);
-    }
+      if (!targetCluster) {
+        const t = mainChart.timeScale().coordinateToTime(rx);
+        if (t !== null) {
+          const ts = String(t);
+          targetCluster = clustersRef.current.find((c) => c.barTime === ts);
+        }
+      }
+      if (targetCluster && targetCluster.events.length > 0) {
+        const curIdx = targetCluster.events.findIndex((ev) => ev.eventKey === selectedKeyRef.current);
+        const nextEv =
+          curIdx >= 0
+            ? targetCluster.events[(curIdx + 1) % targetCluster.events.length]
+            : targetCluster.events[0];
+        selectEventRef.current(nextEv);
+      }
+    };
+    mainEl.addEventListener("pointerdown", onPointerDown);
+    mainEl.addEventListener("click", onMainClick);
 
     // Crosshair OHLC sync
     const barByTime = new Map(computed.candles.map((c) => [c.time, c]));
@@ -288,7 +425,8 @@ export function CandleChart({
     if (hasMacd && macdContainerRef.current) {
       macdChart = createChart(macdContainerRef.current, {
         ...baseOpts,
-        timeScale: { borderColor: borderCol, rightOffset: 4, visible: true },
+        rightPriceScale: { borderColor: borderCol },
+        timeScale: { borderColor: borderCol, rightOffset: 5, visible: true },
       });
       macdChartRef.current = macdChart;
 
@@ -342,11 +480,15 @@ export function CandleChart({
       const barsCount = period === "week" ? Math.ceil(Number(range) / 5) : Number(range);
       mainChart.timeScale().setVisibleLogicalRange({
         from: Math.max(0, total - barsCount),
-        to: total + 3,
+        to: total + 4,
       });
     }
 
     return () => {
+      mainEl.removeEventListener("pointerdown", onPointerDown);
+      mainEl.removeEventListener("click", onMainClick);
+      candleSeries.detachPrimitive(primitive);
+      markerPrimitiveRef.current = null;
       mainChart.remove();
       mainChartRef.current = null;
       candleSeriesRef.current = null;
@@ -355,7 +497,35 @@ export function CandleChart({
         macdChartRef.current = null;
       }
     };
-  }, [computed, showVolume, showEvents, showDecisions, rawEvents, decisions, hasMacd, period, range]);
+  }, [computed, showVolume, hasMacd, period, range]);
+
+  // Update marker primitive state WITHOUT rebuilding chart or losing zoom/pan!
+  useEffect(() => {
+    const primitive = markerPrimitiveRef.current;
+    if (!primitive) return;
+    primitive.updateData({
+      clusters: markerClusters,
+      decisions,
+      candles: computed.candles,
+      dayToWeekTime: computed.dayToWeekTime,
+      showEvents,
+      showDecisions,
+      compactLabels,
+      selectedClusterId,
+      selectedEventKey,
+      palette: CHART_PALETTE[resolvedTheme],
+    });
+  }, [
+    markerClusters,
+    decisions,
+    computed,
+    showEvents,
+    showDecisions,
+    compactLabels,
+    selectedClusterId,
+    selectedEventKey,
+    resolvedTheme,
+  ]);
 
   // Smooth theme re-styling WITHOUT resetting chart visible range!
   useEffect(() => {
@@ -379,6 +549,7 @@ export function CandleChart({
       wickUpColor: pal.up,
       wickDownColor: pal.down,
     });
+    markerPrimitiveRef.current?.updatePalette(pal);
   }, [resolvedTheme]);
 
   // Jump viewport to focusDate when user clicks a signal or historical decision
@@ -414,15 +585,29 @@ export function CandleChart({
   }
 
   const lastMacd = computed.macd[computed.macd.length - 1];
+  const selectedDirColor = selectedEvent
+    ? selectedEvent.resolvedDirection === "bullish"
+      ? "var(--app-up)"
+      : selectedEvent.resolvedDirection === "bearish"
+        ? "var(--app-down)"
+        : "var(--app-blue)"
+    : "var(--app-muted)";
+  const selectedDirLabel = selectedEvent
+    ? selectedEvent.resolvedDirection === "bullish"
+      ? "偏多"
+      : selectedEvent.resolvedDirection === "bearish"
+        ? "偏空"
+        : "中性"
+    : "";
 
   return (
     <div className="flex-1 min-h-0 flex flex-col gap-1.5">
       <div
-        className="flex items-center justify-between px-1 text-xs tabular"
+        className="flex items-center justify-between gap-2 flex-wrap px-1 text-xs tabular"
         style={{ color: "var(--app-muted)" }}
       >
         {displayBar ? (
-          <div className="flex items-center gap-3 flex-wrap font-mono text-[11px]">
+          <div className="flex items-center gap-2.5 flex-wrap font-mono text-[11px]">
             <span>{displayBar.time}</span>
             <span>开 {displayBar.open.toFixed(2)}</span>
             <span>高 {displayBar.high.toFixed(2)}</span>
@@ -448,10 +633,234 @@ export function CandleChart({
         ) : (
           <span>移动十字线查看开高低收</span>
         )}
-        <span className="text-[11px] hidden sm:inline">
-          {period === "week" ? "周线视图 · 信号仍按日线" : "日线视图"}
-        </span>
+
+        {showEvents && indexedEvents.length > 0 && (
+          <div
+            data-testid="chart-marker-legend"
+            className="flex items-center gap-2 flex-wrap text-[10.5px]"
+            style={{ color: "var(--app-muted)" }}
+          >
+            <span className="inline-flex items-center gap-1 whitespace-nowrap">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                <polygon points="5,1 9,9 1,9" fill="var(--app-up)" />
+              </svg>
+              偏多
+            </span>
+            <span className="inline-flex items-center gap-1 whitespace-nowrap">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                <polygon points="5,9 9,1 1,1" fill="var(--app-down)" />
+              </svg>
+              偏空
+            </span>
+            <span className="inline-flex items-center gap-1 whitespace-nowrap">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                <polygon points="5,1 9,9 1,9" fill="currentColor" />
+              </svg>
+              实心已确认
+            </span>
+            <span className="inline-flex items-center gap-1 whitespace-nowrap">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                <polygon
+                  points="5,1.5 8.5,8.5 1.5,8.5"
+                  fill="var(--app-panel)"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                />
+              </svg>
+              空心盘中
+            </span>
+            <button
+              type="button"
+              data-testid="toggle-compact-labels"
+              onClick={() => setCompactLabels((v) => !v)}
+              className="px-1.5 py-0.5 rounded border text-[10.5px] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              style={{
+                background: compactLabels ? "var(--app-elev)" : "transparent",
+                borderColor: compactLabels ? "var(--app-border-strong)" : "var(--app-border)",
+                color: compactLabels ? "var(--app-text)" : "var(--app-muted)",
+              }}
+              title="密集时可收拢标签，点击标记或使用前后按钮逐条查看"
+            >
+              <Layers className="w-3 h-3" />
+              {compactLabels
+                ? "展开标签"
+                : layoutCounts.folded > 0
+                  ? `收拢标签 (已收拢 ${layoutCounts.folded})`
+                  : "收拢标签"}
+            </button>
+          </div>
+        )}
       </div>
+
+      {/* In-viewport selected event inspector (works even when labels are dense/folded) */}
+      {showEvents && selectedEvent && (
+        <div
+          data-testid="chart-event-inspector"
+          role="region"
+          aria-label="选中事件详情"
+          className="px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-2 flex-wrap text-xs"
+          style={{
+            background: "var(--app-elev)",
+            borderColor: "var(--app-border-strong)",
+          }}
+        >
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <span
+              className="inline-flex items-center gap-1 font-semibold shrink-0"
+              style={{ color: selectedDirColor }}
+            >
+              <svg width="11" height="11" viewBox="0 0 10 10" aria-hidden="true">
+                {selectedEvent.resolvedDirection === "bullish" ? (
+                  <polygon
+                    points="5,1 9,9 1,9"
+                    fill={selectedEvent.provisional ? "var(--app-panel)" : "currentColor"}
+                    stroke="currentColor"
+                    strokeWidth={selectedEvent.provisional ? "1.6" : "0"}
+                  />
+                ) : selectedEvent.resolvedDirection === "bearish" ? (
+                  <polygon
+                    points="5,9 9,1 1,1"
+                    fill={selectedEvent.provisional ? "var(--app-panel)" : "currentColor"}
+                    stroke="currentColor"
+                    strokeWidth={selectedEvent.provisional ? "1.6" : "0"}
+                  />
+                ) : (
+                  <polygon
+                    points="5,1 9,5 5,9 1,5"
+                    fill={selectedEvent.provisional ? "var(--app-panel)" : "currentColor"}
+                    stroke="currentColor"
+                    strokeWidth={selectedEvent.provisional ? "1.6" : "0"}
+                  />
+                )}
+              </svg>
+              <span data-testid="inspector-event-name">{selectedEvent.event}</span>
+            </span>
+
+            {selectedEvent.name && (
+              <span
+                className="text-[11px] px-1.5 py-0.5 rounded"
+                style={{ background: "var(--app-bg)", color: "var(--app-muted)" }}
+              >
+                {selectedEvent.name}
+              </span>
+            )}
+
+            <span
+              data-testid="inspector-event-date"
+              className="font-mono tabular text-[11px]"
+              style={{ color: "var(--app-text)" }}
+            >
+              {selectedEvent.date || selectedEvent.time}
+            </span>
+
+            <span
+              className="text-[10.5px] px-1.5 py-0.5 rounded border"
+              style={{
+                borderColor: "var(--app-border-strong)",
+                color: "var(--app-text)",
+              }}
+            >
+              {selectedDirLabel}
+            </span>
+
+            <span
+              data-testid="inspector-event-status"
+              className="text-[10.5px] px-1.5 py-0.5 rounded font-medium"
+              style={{
+                background: selectedEvent.provisional ? "var(--app-panel)" : "var(--app-accent-soft)",
+                color: selectedEvent.provisional ? "var(--app-text)" : "var(--app-accent)",
+                border: selectedEvent.provisional
+                  ? "1px dashed var(--app-border-strong)"
+                  : "1px solid transparent",
+              }}
+            >
+              {selectedEvent.provisional ? "盘中暂态 · 待收盘确认" : "收盘已确认"}
+            </span>
+
+            {selectedEvent.detail && (
+              <span
+                className="text-[11px] truncate max-w-[360px]"
+                style={{ color: "var(--app-muted)" }}
+                title={selectedEvent.detail}
+              >
+                {selectedEvent.detail}
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1 flex-wrap min-w-0 max-w-full">
+            {sameDayEvents.length > 1 && (() => {
+              const multiDates =
+                new Set(sameDayEvents.map((item) => item.date || item.time || "")).size > 1;
+              return (
+                <div
+                  data-testid="inspector-same-day-switcher"
+                  className="inline-flex items-center gap-1 flex-wrap mr-1 max-w-full"
+                >
+                  <span className="text-[10.5px]" style={{ color: "var(--app-muted)" }}>
+                    {multiDates ? `同周 ${sameDayEvents.length} 项:` : `同日 ${sameDayEvents.length} 项:`}
+                  </span>
+                  {sameDayEvents.map((ev) => {
+                    const active = ev.eventKey === selectedEvent.eventKey;
+                    const dupName =
+                      sameDayEvents.filter((item) => item.event === ev.event).length > 1;
+                    const baseLabel =
+                      dupName && ev.name ? `${ev.name} · ${ev.event}` : ev.event;
+                    const shortDate = (ev.date || ev.time || "").slice(5);
+                    const btnLabel =
+                      multiDates && shortDate ? `${baseLabel} (${shortDate})` : baseLabel;
+                    return (
+                      <button
+                        key={ev.eventKey}
+                        type="button"
+                        onClick={() => selectIndexedEvent(ev)}
+                        className="px-1.5 py-0.5 rounded border text-[10.5px] cursor-pointer"
+                        style={{
+                          background: active ? "var(--app-btn)" : "var(--app-bg)",
+                          borderColor: active ? "var(--app-btn)" : "var(--app-border)",
+                          color: active ? "var(--app-btn-text)" : "var(--app-text)",
+                        }}
+                      >
+                        {btnLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+            <button
+              type="button"
+              onClick={() => stepSelectedEvent(-1)}
+              title="查看上一条事件"
+              aria-label="查看上一条事件"
+              className="p-1 rounded border cursor-pointer"
+              style={{ borderColor: "var(--app-border)", color: "var(--app-muted)" }}
+            >
+              <ChevronLeft className="w-3 h-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() => stepSelectedEvent(1)}
+              title="查看下一条事件"
+              aria-label="查看下一条事件"
+              className="p-1 rounded border cursor-pointer"
+              style={{ borderColor: "var(--app-border)", color: "var(--app-muted)" }}
+            >
+              <ChevronRight className="w-3 h-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() => selectIndexedEvent(null)}
+              title="关闭事件详情"
+              aria-label="关闭事件详情"
+              className="p-1 rounded border cursor-pointer"
+              style={{ borderColor: "var(--app-border)", color: "var(--app-muted)" }}
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      )}
 
       <div
         className="flex-1 min-h-0 flex flex-col rounded-lg border overflow-hidden"
@@ -465,6 +874,9 @@ export function CandleChart({
           className="w-full relative"
           style={{ flex: hasMacd ? "7 1 0%" : "1 1 0%", minHeight: 220 }}
           data-testid="main-chart"
+          data-visible-markers={layoutCounts.visible}
+          data-folded-markers={layoutCounts.folded}
+          data-label-mode={compactLabels ? "compact" : "auto"}
         />
         {hasMacd && (
           <div

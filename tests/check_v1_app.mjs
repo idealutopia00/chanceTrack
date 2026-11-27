@@ -78,11 +78,14 @@ try {
   await page.click('button[aria-label="切换主题"]');
   await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
 
-  // 4. Event stepper navigates strategy events cleanly
+  // 4. Event stepper navigates strategy events cleanly & opens in-viewport inspector
   const prevEventBtn = page.locator('button[title="上一策略事件"]');
   if (await prevEventBtn.count()) {
     await prevEventBtn.click();
     await page.getByText(/^\d+\/\d+$/).waitFor();
+    await page.locator('[data-testid="chart-event-inspector"]').waitFor();
+    const legendVisible = await page.locator('[data-testid="chart-marker-legend"]').isVisible();
+    assert.equal(legendVisible, true, "Chart marker legend must be visible when events exist");
   }
 
   // 5. Indicator exploration preview & restore

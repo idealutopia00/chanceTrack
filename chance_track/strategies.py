@@ -515,9 +515,40 @@ BEARISH_EVENTS = frozenset(
 
 
 def event_direction(event):
+    if not event:
+        return "neutral"
     if event in BULLISH_EVENTS:
         return "bullish"
     if event in BEARISH_EVENTS:
+        return "bearish"
+    # Match legacy/analysis labels such as "金叉 · 买入观察" or "死叉 · 卖出观察"
+    if any(
+        token in event
+        for token in (
+            "金叉",
+            "买入观察",
+            "向上突破",
+            "下轨外回归",
+            "短线回调",
+            "回调修复",
+            "释放 · 向上",
+            "相对转强",
+        )
+    ):
+        return "bullish"
+    if any(
+        token in event
+        for token in (
+            "死叉",
+            "卖出观察",
+            "向下突破",
+            "上轨外回归",
+            "通道退出",
+            "趋势失效",
+            "跟踪退出",
+            "释放 · 向下",
+        )
+    ):
         return "bearish"
     return "neutral"
 

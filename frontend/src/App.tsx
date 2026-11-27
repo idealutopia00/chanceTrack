@@ -15,6 +15,7 @@ import {
 import { api } from "./api";
 import { AddAssetModal } from "./components/AddAssetModal";
 import { PinnedNoteModal } from "./components/PinnedNoteModal";
+import { hasRecordedSignal } from "./lib/signals";
 import type { BootstrapPayload, ThemePref, ViewKey } from "./types";
 import { NotesView } from "./views/NotesView";
 import { SignalsView } from "./views/SignalsView";
@@ -189,7 +190,7 @@ export function App() {
   }
 
   const signalCount =
-    bootstrap?.assets.filter((a) => !a.archived && a.latest_signal).length ?? 0;
+    bootstrap?.assets.filter(hasRecordedSignal).length ?? 0;
 
   return (
     <div className="h-dvh w-full flex flex-col overflow-hidden" style={{ background: "var(--app-bg)" }}>
@@ -362,6 +363,11 @@ export function App() {
                 type="button"
                 onClick={() => navigate(key)}
                 aria-current={active ? "page" : undefined}
+                title={
+                  key === "signals" && badge > 0
+                    ? `信号流（${badge} 个自选标的已有信号记录）`
+                    : label
+                }
                 className="relative w-12 h-11 rounded-lg flex flex-col items-center justify-center gap-0.5 text-[10px] whitespace-nowrap cursor-pointer"
                 style={{
                   background: active ? "var(--app-accent-soft)" : "transparent",
@@ -373,8 +379,9 @@ export function App() {
                 <span>{label}</span>
                 {badge > 0 && (
                   <span
-                    className="absolute top-1 right-1 min-w-[14px] h-3.5 px-1 rounded-full text-[9px] font-bold flex items-center justify-center"
-                    style={{ background: "var(--app-up)", color: "#fff" }}
+                    data-testid="nav-signal-record-count"
+                    className="absolute top-1 right-1 min-w-[14px] h-3.5 px-1 rounded-full text-[9px] font-bold tabular flex items-center justify-center"
+                    style={{ background: "var(--app-btn)", color: "var(--app-btn-text)" }}
                   >
                     {badge}
                   </span>

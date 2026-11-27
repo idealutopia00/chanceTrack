@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowUpRight, CheckCircle2, Clock, AlertCircle } from "lucide-react";
 import { api } from "../api";
+import { resolveEventDirection, SIGNAL_DIRECTION_STYLES } from "../lib/signals";
 import type { CheckRunSummary, SignalEventRecord } from "../types";
 
 interface SignalsViewProps {
@@ -198,7 +199,15 @@ export function SignalsView({ onJumpToAsset }: SignalsViewProps) {
                       </span>
                     </td>
                     <td className="py-2.5 px-4">{s.strategy_name || s.strategy_version}</td>
-                    <td className="py-2.5 px-4 font-semibold" style={{ color: "var(--app-up)" }}>
+                    <td
+                      className="py-2.5 px-4 font-semibold"
+                      style={{
+                        color:
+                          SIGNAL_DIRECTION_STYLES[
+                            resolveEventDirection(s.event_kind, s.direction)
+                          ].text,
+                      }}
+                    >
                       {s.event_kind}
                     </td>
                     <td className="py-2.5 px-4 max-w-xs truncate" style={{ color: "var(--app-muted)" }}>

@@ -1,5 +1,6 @@
 export type ThemePref = "system" | "dark" | "light";
 export type ViewKey = "workspace" | "signals" | "strategies" | "notes";
+export type SignalDirection = "bullish" | "bearish" | "neutral";
 
 export interface StrategyRule {
   id: string;
@@ -44,6 +45,7 @@ export interface AssetSummary {
   latest_signal: {
     event_date: string;
     event_kind: string;
+    direction?: SignalDirection;
     strategy_name: string;
     is_provisional: boolean;
   } | null;
@@ -216,6 +218,7 @@ export interface SignalEventRecord {
   strategy_version: string;
   event_date: string;
   event_kind: string;
+  direction?: SignalDirection;
   detail: string;
   is_provisional: boolean;
   historical_reference: boolean;

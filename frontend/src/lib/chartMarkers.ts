@@ -712,6 +712,13 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
           });
           if (r.pillRect) {
             obstacles.push(r.pillRect);
+          } else if (r.eventCount > 1) {
+            obstacles.push({
+              x: r.x + ARROW_HALF_W,
+              y: (r.tipY + r.baseY) / 2 - 7,
+              w: 14,
+              h: 14,
+            });
           }
         }
         ctx.save();
@@ -726,44 +733,53 @@ export class StrategyMarkersPrimitive implements ISeriesPrimitive<Time> {
           if (x === null || x < -16 || x > width + 16) continue;
           const lowY = series.priceToCoordinate(bar.low);
           if (lowY === null) continue;
-          const bx = Math.max(2, Math.min(width - size - 2, x - size / 2));
+          const highY = series.priceToCoordinate(bar.high);
+          const baseBx = Math.max(2, Math.min(width - size - 2, x - size / 2));
 
-          // Push downward past any overlapping pill, arrow, or prior decision badge
-          let by = lowY + 14 - size / 2;
-          let placed = false;
-          for (let guard = 0; guard < 24; guard++) {
-            if (by + size > height - 3) break;
-            const rect = { x: bx, y: by, w: size, h: size };
-            const hit = obstacles.find((ob) => rectsOverlap(ob, rect, 3));
-            if (!hit) {
-              placed = true;
-              break;
+          const tryPlaceAtX = (candX: number): number | null => {
+            // 1. Try pushing downward from below low wick
+            let by = Math.max(3, lowY + 14 - size / 2);
+            for (let guard = 0; guard < 24; guard++) {
+              if (by + size > height - 3) break;
+              const rect = { x: candX, y: by, w: size, h: size };
+              const hit = obstacles.find((ob) => rectsOverlap(ob, rect, 2));
+              if (!hit) return by;
+              by = hit.y + hit.h + 3;
             }
-            by = hit.y + hit.h + 4;
-          }
-
-          // Fallback: if bottom edge is full, try placing above candle high avoiding obstacles
-          if (!placed) {
-            const highY = series.priceToCoordinate(bar.high);
+            // 2. Try pushing upward from above high wick
             if (highY !== null) {
-              let upY = highY - 14 - size / 2;
+              let upY = Math.min(height - size - 3, highY - 14 - size / 2);
               for (let guard = 0; guard < 24; guard++) {
                 if (upY < 3) break;
-                const rect = { x: bx, y: upY, w: size, h: size };
-                const hit = obstacles.find((ob) => rectsOverlap(ob, rect, 3));
-                if (!hit) {
-                  by = upY;
-                  placed = true;
-                  break;
-                }
-                upY = hit.y - size - 4;
+                const rect = { x: candX, y: upY, w: size, h: size };
+                const hit = obstacles.find((ob) => rectsOverlap(ob, rect, 2));
+                if (!hit) return upY;
+                upY = hit.y - size - 3;
               }
             }
-          }
+            // 3. Scan any remaining clear vertical slot within pane at candX
+            for (let scanY = height - size - 3; scanY >= 3; scanY -= 6) {
+              const rect = { x: candX, y: scanY, w: size, h: size };
+              if (!obstacles.some((ob) => rectsOverlap(ob, rect, 2))) {
+                return scanY;
+              }
+            }
+            return null;
+          };
 
-          if (!placed) {
-            by = Math.max(3, Math.min(height - size - 3, by));
+          const xOffsets = [0, -(size + 4), size + 4, -(size + 4) * 2, (size + 4) * 2];
+          let bx = baseBx;
+          let by: number | null = null;
+          for (const dx of xOffsets) {
+            const candX = Math.max(2, Math.min(width - size - 2, baseBx + dx));
+            const foundY = tryPlaceAtX(candX);
+            if (foundY !== null) {
+              bx = candX;
+              by = foundY;
+              break;
+            }
           }
+          if (by === null) continue;
 
           const finalRect = { x: bx, y: by, w: size, h: size };
           obstacles.push(finalRect);

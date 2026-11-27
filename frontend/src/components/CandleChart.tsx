@@ -788,14 +788,14 @@ export function CandleChart({
             )}
           </div>
 
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-1 flex-wrap min-w-0 max-w-full">
             {sameDayEvents.length > 1 && (() => {
               const multiDates =
                 new Set(sameDayEvents.map((item) => item.date || item.time || "")).size > 1;
               return (
                 <div
                   data-testid="inspector-same-day-switcher"
-                  className="inline-flex items-center gap-1 mr-1"
+                  className="inline-flex items-center gap-1 flex-wrap mr-1 max-w-full"
                 >
                   <span className="text-[10.5px]" style={{ color: "var(--app-muted)" }}>
                     {multiDates ? `同周 ${sameDayEvents.length} 项:` : `同日 ${sameDayEvents.length} 项:`}

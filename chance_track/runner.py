@@ -10,7 +10,7 @@ import subprocess
 
 from chinese_calendar import is_workday
 
-from . import storage
+from . import storage, workspace
 from .analysis import RULE, analyze
 from .configuration import load_configuration, relative_benchmarks
 from .data import TZ, MarketFetchError, fetch, provider_label
@@ -434,6 +434,11 @@ def _run(db_path, watchlist, scheduled, send, now, fetcher, sender):
         "probe_order": recorded_probe_order,
     }
     run_id, _ = storage.save_check_run(db_path, run_record, items)
+    workspace.refresh_signal_summaries(
+        db_path,
+        asset_ids=[asset["id"] for asset in assets],
+        now=now,
+    )
     if send:
         notif_payload = {
             **run_record,

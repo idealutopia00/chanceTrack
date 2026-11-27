@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 from datetime import datetime
+import hashlib
+import json
 from uuid import uuid4
 
 from . import storage
@@ -172,9 +174,245 @@ def compute_asset_chart(path, asset_id, *, strategies_override=None):
     }
 
 
+def _strategy_fingerprint(asset, strategy, strategies_by_id, assets_by_id, bar_fps):
+    """Deterministic fingerprint of an asset's bars + one strategy (including deps & benchmarks)."""
+    deps = {}
+    benchmark_ids = set()
+    if strategy.get("kind") == "combination":
+        for role in ("trigger", "band"):
+            tid = strategy.get(role)
+            if tid and tid in strategies_by_id:
+                dep = strategies_by_id[tid]
+                deps[role] = {
+                    "id": dep["id"],
+                    "kind": dep["kind"],
+                    "name": dep["name"],
+                    "revision": dep.get("revision", 1),
+                    "params": dep.get("params") or {},
+                }
+                if dep["kind"] == "relative_strength" and (dep.get("params") or {}).get("benchmark"):
+                    benchmark_ids.add(dep["params"]["benchmark"])
+    elif strategy.get("kind") == "relative_strength":
+        bid = (strategy.get("params") or {}).get("benchmark")
+        if bid:
+            benchmark_ids.add(bid)
+
+    benchmarks = {}
+    for bid in sorted(benchmark_ids):
+        peer = assets_by_id.get(bid)
+        benchmarks[bid] = {
+            "code": peer.get("code") if peer else None,
+            "provider": peer.get("provider") if peer else None,
+            "session_profile": peer.get("session_profile") if peer else None,
+            "bars": bar_fps.get(bid),
+        }
+
+    payload = {
+        "asset": {
+            "id": asset["id"],
+            "code": asset.get("code"),
+            "provider": asset.get("provider"),
+            "session_profile": asset.get("session_profile"),
+        },
+        "bars": bar_fps.get(asset["id"]),
+        "strategy": {
+            "id": strategy["id"],
+            "kind": strategy["kind"],
+            "name": strategy["name"],
+            "revision": strategy.get("revision", 1),
+            "params": strategy.get("params") or {},
+            "filter": strategy.get("filter"),
+            "trigger": strategy.get("trigger"),
+            "band": strategy.get("band"),
+        },
+        "deps": deps,
+        "benchmarks": benchmarks,
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def refresh_signal_summaries(path, *, asset_ids=None, now=None):
+    """Recompute per-enabled-strategy summaries from persisted market_bars (zero network/notify/signal_events writes)."""
+    config = load_configuration(path)
+    assets_by_id = {a["id"]: a for a in config["assets"]}
+    strategies_by_id = {s["id"]: s for s in config["strategies"]}
+    bar_fps = storage.asset_bar_fingerprints(path)
+    now_iso = (
+        now.isoformat()
+        if isinstance(now, datetime)
+        else (str(now) if now else datetime.now(TZ).isoformat())
+    )
+
+    if asset_ids is None:
+        target_ids = [a["id"] for a in config["assets"] if not a.get("archived")]
+        prune_ids = [a["id"] for a in config["assets"] if a.get("archived")]
+    else:
+        expanded = set(asset_ids)
+        for a in config["assets"]:
+            if a.get("archived"):
+                continue
+            if relative_benchmarks(config["strategies"], a) & expanded:
+                expanded.add(a["id"])
+        target_ids = [
+            a["id"]
+            for a in config["assets"]
+            if a["id"] in expanded and not a.get("archived")
+        ]
+        prune_ids = [
+            aid
+            for aid in expanded
+            if aid not in assets_by_id or assets_by_id[aid].get("archived")
+        ]
+
+    summaries_by_asset = {}
+    total_rows = 0
+
+    for aid in target_ids:
+        asset = assets_by_id[aid]
+        enabled_sids = [sid for sid in asset.get("strategies") or [] if sid in strategies_by_id]
+        if not enabled_sids:
+            summaries_by_asset[aid] = []
+            continue
+
+        snapshot = storage.snapshot_from_bars(path, asset)
+        if not snapshot:
+            rows = []
+            for sid in enabled_sids:
+                rule = strategies_by_id[sid]
+                rows.append(
+                    {
+                        "asset_id": aid,
+                        "strategy_id": sid,
+                        "strategy_name": rule["name"],
+                        "strategy_kind": rule["kind"],
+                        "strategy_version": f"{sid}:v{rule.get('revision', 1)}",
+                        "bar_date": None,
+                        "bar_is_provisional": False,
+                        "event_date": None,
+                        "event_kind": None,
+                        "direction": None,
+                        "detail": "暂无已保存日线",
+                        "event_is_provisional": False,
+                        "state": "idle",
+                        "checked_event_kind": None,
+                        "checked_event_date": None,
+                        "checked_is_provisional": False,
+                        "source_fingerprint": _strategy_fingerprint(
+                            asset, rule, strategies_by_id, assets_by_id, bar_fps
+                        ),
+                        "refreshed_at": now_iso,
+                    }
+                )
+            summaries_by_asset[aid] = rows
+            total_rows += len(rows)
+            continue
+
+        day = snapshot["rows"][-1]["date"]
+        bar_is_provisional = bool(snapshot.get("provisional_date") == day)
+        enriched = _enrich_snapshot_benchmarks(
+            path, snapshot, config["strategies"], asset, assets_by_id
+        )
+        strat_results, _, computed = evaluate(enriched, config["strategies"], asset, day)
+        ev_list = chart_events(enriched, strat_results, computed)
+
+        latest_ev_by_sid = {}
+        for ev in ev_list:
+            sid = ev.get("strategy_id")
+            if sid:
+                latest_ev_by_sid[sid] = ev
+
+        strat_by_id = {s["id"]: s for s in strat_results}
+        rows = []
+        for sid in enabled_sids:
+            rule = strategies_by_id[sid]
+            s = strat_by_id.get(sid) or {}
+            latest_ev = latest_ev_by_sid.get(sid)
+            if s.get("preview_event"):
+                checked_kind = s["preview_event"]
+                checked_date = s.get("bar_date") or day
+                checked_prov = True
+            elif s.get("event"):
+                checked_kind = s["event"]
+                checked_date = s.get("event_date") or day
+                checked_prov = False
+            else:
+                checked_kind = None
+                checked_date = None
+                checked_prov = False
+
+            rows.append(
+                {
+                    "asset_id": aid,
+                    "strategy_id": sid,
+                    "strategy_name": s.get("name") or rule["name"],
+                    "strategy_kind": s.get("kind") or rule["kind"],
+                    "strategy_version": s.get("version") or f"{sid}:v{rule.get('revision', 1)}",
+                    "bar_date": day,
+                    "bar_is_provisional": bar_is_provisional,
+                    "event_date": latest_ev["date"] if latest_ev else None,
+                    "event_kind": latest_ev["event"] if latest_ev else None,
+                    "direction": latest_ev["direction"] if latest_ev else None,
+                    "detail": (
+                        latest_ev.get("detail")
+                        if latest_ev
+                        else (s.get("detail") or "")
+                    )
+                    or "",
+                    "event_is_provisional": bool(latest_ev.get("provisional")) if latest_ev else False,
+                    "state": s.get("state") or "ready",
+                    "checked_event_kind": checked_kind,
+                    "checked_event_date": checked_date,
+                    "checked_is_provisional": checked_prov,
+                    "source_fingerprint": _strategy_fingerprint(
+                        asset, rule, strategies_by_id, assets_by_id, bar_fps
+                    ),
+                    "refreshed_at": now_iso,
+                }
+            )
+        summaries_by_asset[aid] = rows
+        total_rows += len(rows)
+
+    storage.replace_asset_strategy_summaries(
+        path, summaries_by_asset, prune_asset_ids=prune_ids
+    )
+    return {
+        "refreshed_assets": len(summaries_by_asset),
+        "summary_rows": total_rows,
+        "refreshed_at": now_iso,
+    }
+
+
 def asset_summaries(path):
     """Build lightweight summary cards for every configured asset (used in /api/v1/bootstrap)."""
     config = load_configuration(path)
+    assets_by_id = {a["id"]: a for a in config["assets"]}
+    strategies_by_id = {s["id"]: s for s in config["strategies"]}
+    bar_fps = storage.asset_bar_fingerprints(path)
+    stored_summaries = storage.list_asset_strategy_summaries(path)
+
+    stale_ids = []
+    for asset in config["assets"]:
+        if asset.get("archived"):
+            if asset["id"] in stored_summaries:
+                stale_ids.append(asset["id"])
+            continue
+        aid = asset["id"]
+        expected_sids = [sid for sid in asset.get("strategies") or [] if sid in strategies_by_id]
+        existing = stored_summaries.get(aid, {})
+        if set(existing.keys()) != set(expected_sids):
+            stale_ids.append(aid)
+            continue
+        for sid in expected_sids:
+            fp = _strategy_fingerprint(asset, strategies_by_id[sid], strategies_by_id, assets_by_id, bar_fps)
+            if existing[sid].get("source_fingerprint") != fp:
+                stale_ids.append(aid)
+                break
+
+    if stale_ids:
+        refresh_signal_summaries(path, asset_ids=stale_ids)
+        stored_summaries = storage.list_asset_strategy_summaries(path)
+
     latest_items = storage.latest_run_items_by_asset(path)
     latest_sig_by_asset = storage.latest_signals_by_asset(path)
 
@@ -198,6 +436,12 @@ def asset_summaries(path):
             )
             run_item = latest_items.get(aid)
             sig = latest_sig_by_asset.get(aid)
+            per_strat_map = stored_summaries.get(aid, {})
+            strategy_summaries = [
+                {k: v for k, v in per_strat_map[sid].items() if k != "source_fingerprint"}
+                for sid in asset.get("strategies") or []
+                if sid in per_strat_map
+            ]
             summaries.append(
                 {
                     **asset,
@@ -208,6 +452,7 @@ def asset_summaries(path):
                     "fetched_at": latest_bar["fetched_at"] if latest_bar else None,
                     "status": run_item["status"] if run_item else ("ok" if latest_bar else "idle"),
                     "error": run_item.get("error") if run_item else None,
+                    "strategy_summaries": strategy_summaries,
                     "latest_signal": (
                         {
                             "event_date": sig["event_date"],
@@ -282,6 +527,7 @@ def add_asset(path, payload, *, fetcher=None):
         a = next(a for a in load_configuration(path)["assets"] if a["id"] == selected)
         snap = fetcher(a, datetime.now(TZ).date().isoformat())
         storage.save_bars(path, selected, snap)
+    refresh_signal_summaries(path, asset_ids=[selected])
     return {"version": new_version, "selected": selected}
 
 
@@ -317,6 +563,7 @@ def update_asset(path, asset_id, payload, *, fetcher=None):
     new_version = save_configuration(path, config, expected, fetcher=capture)
     if asset_id in captured:
         storage.save_bars(path, asset_id, captured[asset_id])
+    refresh_signal_summaries(path, asset_ids=[asset_id])
     return {"version": new_version, "asset_id": asset_id}
 
 
@@ -390,6 +637,9 @@ def update_asset_monitoring(path, asset_id, payload):
         raise ValueError("未知监测操作")
 
     new_version = save_configuration(path, config, expected, validate_new=False)
+    refresh_signal_summaries(
+        path, asset_ids=None if (action == "save" and payload.get("shared")) else [asset_id]
+    )
     return {"version": new_version, "strategy_id": saved_strategy_id}
 
 
@@ -421,4 +671,5 @@ def save_strategy_rule(path, payload):
     new_version = save_configuration(
         path, config, expected, lifecycle=lifecycle, validate_new=False
     )
+    refresh_signal_summaries(path)
     return {"version": new_version, "strategy_id": saved_id}

@@ -48,6 +48,24 @@ export function getChartDirectionColor(
   return palette.blue;
 }
 
+export function getDirectionGlyph(
+  direction: SignalDirection,
+  provisional = false,
+): string {
+  if (direction === "bullish") return provisional ? "△" : "▲";
+  if (direction === "bearish") return provisional ? "▽" : "▼";
+  return provisional ? "◇" : "◆";
+}
+
+export function hasAssetSignalSummary(asset: AssetSummary): boolean {
+  if (asset.archived || !asset.watchlisted) return false;
+  const rows = asset.strategy_summaries;
+  if (Array.isArray(rows)) {
+    return rows.some((s) => Boolean(s.event_kind && s.event_date));
+  }
+  return Boolean(asset.latest_signal);
+}
+
 export function hasRecordedSignal(asset: AssetSummary): boolean {
-  return !asset.archived && asset.watchlisted && Boolean(asset.latest_signal);
+  return hasAssetSignalSummary(asset);
 }

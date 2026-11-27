@@ -116,6 +116,14 @@ export const api = {
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return request<{ total?: number; signals: SignalEventRecord[] }>(`/api/v1/signals${suffix}`);
   },
+  refreshSummaries: (assetIds?: string[]) =>
+    request<{ refreshed_assets: number; summary_rows: number; refreshed_at: string }>(
+      "/api/v1/summaries/refresh",
+      {
+        method: "POST",
+        body: JSON.stringify(assetIds ? { asset_ids: assetIds } : {}),
+      },
+    ),
   runs: (limit = 30) =>
     request<{ running: boolean; runs: CheckRunSummary[] }>(`/api/v1/runs?limit=${limit}`),
   triggerRun: (asyncMode = false) =>

@@ -556,6 +556,7 @@ def event_direction(event):
 def chart_events(snapshot, strategies, calculated):
     return [
         {
+            "strategy_id": strategy["id"],
             "date": row["date"],
             "time": row["date"],
             "name": strategy["name"],

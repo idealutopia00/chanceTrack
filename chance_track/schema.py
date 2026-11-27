@@ -175,7 +175,37 @@ SCHEMA_STATEMENTS = (
       created_at TEXT NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_chart_templates_tid ON chart_templates(template_id, id DESC)",
+    """CREATE TABLE IF NOT EXISTS asset_strategy_summaries (
+      asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+      strategy_name TEXT NOT NULL DEFAULT '',
+      strategy_kind TEXT NOT NULL DEFAULT '',
+      strategy_version TEXT NOT NULL DEFAULT '',
+      bar_date TEXT,
+      bar_is_provisional INTEGER NOT NULL DEFAULT 0,
+      event_date TEXT,
+      event_kind TEXT,
+      direction TEXT,
+      detail TEXT NOT NULL DEFAULT '',
+      event_is_provisional INTEGER NOT NULL DEFAULT 0,
+      state TEXT NOT NULL DEFAULT 'idle',
+      checked_event_kind TEXT,
+      checked_event_date TEXT,
+      checked_is_provisional INTEGER NOT NULL DEFAULT 0,
+      source_fingerprint TEXT NOT NULL DEFAULT '',
+      refreshed_at TEXT NOT NULL,
+      PRIMARY KEY (asset_id, strategy_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_asset_strategy_summaries_asset ON asset_strategy_summaries(asset_id)",
 )
+
+V6_EXTENSION_STATEMENTS = SCHEMA_STATEMENTS[-2:]
+
+
+def ensure_v6_extensions(db):
+    """Idempotently ensure additive v6 tables/indexes exist on already-upgraded v6 databases."""
+    for stmt in V6_EXTENSION_STATEMENTS:
+        db.execute(stmt)
 
 
 def create_v6_schema(db):

@@ -150,6 +150,7 @@ def create_app(db_path, *, allow_testserver=None):
                 raise LookupError("标的不存在")
             snap = fetch(asset, datetime.now(TZ).date().isoformat())
             storage.save_bars(db_path, asset_id, snap)
+            workspace.refresh_signal_summaries(db_path, asset_ids=[asset_id])
             return workspace.compute_asset_chart(db_path, asset_id)
 
         return guarded(_fetch)
@@ -237,6 +238,17 @@ def create_app(db_path, *, allow_testserver=None):
             "total": storage.count_signals(db_path, asset_id=asset_id, strategy_id=strategy_id),
             "signals": [{**s, "direction": event_direction(s["event_kind"])} for s in rows],
         }
+
+    @app.post("/api/v1/summaries/refresh")
+    def api_refresh_summaries(request: Request, payload: dict = Body(default={})):
+        require_csrf(request, payload)
+        asset_ids = payload.get("asset_ids") if isinstance(payload, dict) else None
+        if asset_ids is not None:
+            if not isinstance(asset_ids, list) or any(
+                not isinstance(x, str) or not x.strip() for x in asset_ids
+            ):
+                raise HTTPException(400, "asset_ids 须为非空字符串列表")
+        return guarded(lambda: workspace.refresh_signal_summaries(db_path, asset_ids=asset_ids))
 
     @app.get("/api/v1/runs")
     def api_runs(limit: int = 30):

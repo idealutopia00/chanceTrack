@@ -37,24 +37,28 @@ try {
   );
   assert.equal(overflowDesktop, 0, "Desktop workspace must have zero horizontal overflow");
 
-  // 1b. Verify "有信号记录" filter, badge label, and count alignment
+  // 1b. Verify "有事件" filter, per-strategy summary rows, check date badge, refresh button, and count alignment
   const signalFilterBtn = page.locator('[data-watchlist-filter="signal"]');
   await signalFilterBtn.waitFor();
   assert.ok(
-    (await signalFilterBtn.textContent())?.includes("有信号记录"),
-    "Watchlist signal filter should be named 有信号记录",
+    (await signalFilterBtn.textContent())?.includes("有事件"),
+    "Watchlist signal filter should be named 有事件",
   );
   const navCountEl = page.locator('[data-testid="nav-signal-record-count"]');
   const navCount = (await navCountEl.count()) ? Number((await navCountEl.textContent())?.trim()) : 0;
   await signalFilterBtn.click();
   const filteredCards = await page.locator("[data-asset-card]").count();
-  assert.equal(filteredCards, navCount, "Nav badge count must match 有信号记录 filtered card count");
+  assert.equal(filteredCards, navCount, "Nav badge count must match 有事件 filtered card count");
   if (filteredCards > 0) {
-    const firstBadge = page.locator("[data-latest-signal-badge]").first();
-    const badgeText = (await firstBadge.textContent()) ?? "";
-    assert.ok(badgeText.includes("最近记录"), "Watchlist signal badge must label 最近记录");
+    const firstRow = page.locator("[data-strategy-summary-row]").first();
+    await firstRow.waitFor();
+    const rowText = (await firstRow.textContent()) ?? "";
+    assert.ok(rowText.includes("MACD"), "Watchlist per-strategy row must show enabled strategy name");
+    await page.locator("[data-asset-check-date]").first().waitFor();
   }
   await page.locator('[data-watchlist-filter="all"]').click();
+  await page.locator('[data-testid="refresh-summaries-btn"]').click();
+  await page.getByText(/已重算/).waitFor();
   await saveShot("01_desktop_dark_workspace.png");
 
   // 2. Switch asset & verify reload persistence

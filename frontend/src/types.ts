@@ -16,6 +16,26 @@ export interface StrategyRule {
   assets?: { id: string; label: string }[];
 }
 
+export interface AssetStrategySummary {
+  asset_id: string;
+  strategy_id: string;
+  strategy_name: string;
+  strategy_kind: string;
+  strategy_version: string;
+  bar_date: string | null;
+  bar_is_provisional: boolean;
+  event_date: string | null;
+  event_kind: string | null;
+  direction: SignalDirection | null;
+  detail: string;
+  event_is_provisional: boolean;
+  state: string;
+  checked_event_kind: string | null;
+  checked_event_date: string | null;
+  checked_is_provisional: boolean;
+  refreshed_at: string;
+}
+
 export interface AssetSummary {
   id: string;
   label: string;
@@ -42,6 +62,7 @@ export interface AssetSummary {
   fetched_at: string | null;
   status: "ok" | "warning" | "error" | "disabled" | "idle";
   error: string | null;
+  strategy_summaries?: AssetStrategySummary[];
   latest_signal: {
     event_date: string;
     event_kind: string;

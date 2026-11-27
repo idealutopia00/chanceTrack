@@ -17,7 +17,7 @@ from .configuration import (
 )
 from .data import TZ, fetch, provider_label
 from .presentation import fetch_state_summary
-from .strategies import benchmark_context, chart_events, evaluate
+from .strategies import benchmark_context, chart_events, evaluate, event_direction
 
 
 def search_catalog(path, query=""):
@@ -176,11 +176,7 @@ def asset_summaries(path):
     """Build lightweight summary cards for every configured asset (used in /api/v1/bootstrap)."""
     config = load_configuration(path)
     latest_items = storage.latest_run_items_by_asset(path)
-    recent_signals = storage.list_signals(path, limit=100)
-    latest_sig_by_asset = {}
-    for sig in recent_signals:
-        if sig["asset_id"] not in latest_sig_by_asset:
-            latest_sig_by_asset[sig["asset_id"]] = sig
+    latest_sig_by_asset = storage.latest_signals_by_asset(path)
 
     summaries = []
     with storage.connect(path) as db:
@@ -216,6 +212,7 @@ def asset_summaries(path):
                         {
                             "event_date": sig["event_date"],
                             "event_kind": sig["event_kind"],
+                            "direction": event_direction(sig["event_kind"]),
                             "strategy_name": sig["strategy_name"],
                             "is_provisional": sig["is_provisional"],
                         }

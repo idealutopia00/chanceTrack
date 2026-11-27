@@ -36,6 +36,25 @@ try {
     () => document.documentElement.scrollWidth - window.innerWidth,
   );
   assert.equal(overflowDesktop, 0, "Desktop workspace must have zero horizontal overflow");
+
+  // 1b. Verify "有信号记录" filter, badge label, and count alignment
+  const signalFilterBtn = page.locator('[data-watchlist-filter="signal"]');
+  await signalFilterBtn.waitFor();
+  assert.ok(
+    (await signalFilterBtn.textContent())?.includes("有信号记录"),
+    "Watchlist signal filter should be named 有信号记录",
+  );
+  const navCountEl = page.locator('[data-testid="nav-signal-record-count"]');
+  const navCount = (await navCountEl.count()) ? Number((await navCountEl.textContent())?.trim()) : 0;
+  await signalFilterBtn.click();
+  const filteredCards = await page.locator("[data-asset-card]").count();
+  assert.equal(filteredCards, navCount, "Nav badge count must match 有信号记录 filtered card count");
+  if (filteredCards > 0) {
+    const firstBadge = page.locator("[data-latest-signal-badge]").first();
+    const badgeText = (await firstBadge.textContent()) ?? "";
+    assert.ok(badgeText.includes("最近记录"), "Watchlist signal badge must label 最近记录");
+  }
+  await page.locator('[data-watchlist-filter="all"]').click();
   await saveShot("01_desktop_dark_workspace.png");
 
   // 2. Switch asset & verify reload persistence

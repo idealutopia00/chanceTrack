@@ -16,7 +16,8 @@ import { api } from "../api";
 import { CandleChart } from "../components/CandleChart";
 import { sortEventsChronologically } from "../lib/chartMarkers";
 import {
-  hasRecordedSignal,
+  getDirectionGlyph,
+  hasAssetSignalSummary,
   resolveEventDirection,
   SIGNAL_DIRECTION_STYLES,
 } from "../lib/signals";
@@ -100,7 +101,7 @@ export function WorkspaceView({
     [assets],
   );
   const recordedSignalCount = useMemo(
-    () => activeAssets.filter(hasRecordedSignal).length,
+    () => activeAssets.filter(hasAssetSignalSummary).length,
     [activeAssets],
   );
 
@@ -158,7 +159,7 @@ export function WorkspaceView({
     const groups = new Map<string, AssetSummary[]>();
     for (const a of activeAssets) {
       if (wlFilter === "star" && !a.priority) continue;
-      if (wlFilter === "signal" && !hasRecordedSignal(a)) continue;
+      if (wlFilter === "signal" && !hasAssetSignalSummary(a)) continue;
       if (wlFilter === "pending" && !a.is_provisional) continue;
       if (q) {
         const hay = `${a.label} ${a.code} ${a.ticker} ${(a.aliases || []).join(" ")}`.toLowerCase();
@@ -324,6 +325,30 @@ export function WorkspaceView({
     }
   }
 
+  async function handleRefreshSummaries() {
+    setBusyAction("summaries");
+    setStatusMessage(null);
+    try {
+      const res = await api.refreshSummaries();
+      await onRefreshBootstrap();
+      if (currentAssetId && !explorationRules) {
+        const reqAssetId = currentAssetId;
+        const seq = ++requestSeqRef.current;
+        const refreshed = await api.assetBars(reqAssetId);
+        if (activeAssetRef.current === reqAssetId && seq === requestSeqRef.current) {
+          setChartData(refreshed);
+        }
+      }
+      setStatusMessage(
+        `已重算 ${res.refreshed_assets} 个标的共 ${res.summary_rows} 条指标事件摘要（不补发通知）`,
+      );
+    } catch (e) {
+      setStatusMessage(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function handleSaveTemplate() {
     if (!explorationRules?.length || !templateName.trim()) return;
     setBusyAction("template");
@@ -369,6 +394,22 @@ export function WorkspaceView({
               />
               <button
                 type="button"
+                disabled={busyAction !== null}
+                onClick={handleRefreshSummaries}
+                data-testid="refresh-summaries-btn"
+                title="用已保存日线重算所有标的指标事件摘要（不联网、不补发通知）"
+                aria-label="重算事件摘要"
+                className="h-7 w-7 rounded-md border flex items-center justify-center shrink-0 cursor-pointer"
+                style={{
+                  background: "var(--app-elev)",
+                  borderColor: "var(--app-border)",
+                  color: "var(--app-muted)",
+                }}
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${busyAction === "summaries" ? "animate-spin" : ""}`} />
+              </button>
+              <button
+                type="button"
                 onClick={onOpenAddAsset}
                 title="搜索或添加新标的 (/)"
                 aria-label="添加标的"
@@ -386,7 +427,7 @@ export function WorkspaceView({
               {(
                 [
                   ["all", "全部"],
-                  ["signal", "有信号记录"],
+                  ["signal", "有事件"],
                   ["star", "重点"],
                   ["pending", "盘中"],
                 ] as const
@@ -398,12 +439,12 @@ export function WorkspaceView({
                   onClick={() => setWlFilter(key)}
                   title={
                     key === "signal"
-                      ? `筛选已有入库信号记录的标的（${recordedSignalCount}）`
+                      ? `筛选当前启用监测指标已有可重现事件的标的（${recordedSignalCount}）`
                       : undefined
                   }
                   className="min-w-0 py-1 px-1.5 rounded-md cursor-pointer transition-colors whitespace-nowrap inline-flex items-center justify-center gap-1"
                   style={{
-                    flex: key === "signal" ? "1.8 1 auto" : "1 1 auto",
+                    flex: key === "signal" ? "1.4 1 auto" : "1 1 auto",
                     background: wlFilter === key ? "var(--app-elev)" : "transparent",
                     color: wlFilter === key ? "var(--app-text)" : "var(--app-muted)",
                     fontWeight: wlFilter === key ? 600 : 400,
@@ -477,15 +518,31 @@ export function WorkspaceView({
                         </span>
                       </div>
 
-                      <div className="flex items-center justify-between gap-2">
-                        <span
-                          className="text-[10.5px] font-mono tabular"
-                          style={{ color: "var(--app-faint)" }}
-                        >
-                          {a.code}
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            className="text-[10.5px] font-mono tabular shrink-0"
+                            style={{ color: "var(--app-faint)" }}
+                          >
+                            {a.code}
+                          </span>
+                          {a.bar_date && (
+                            <span
+                              data-asset-check-date={a.id}
+                              data-asset-provisional={a.is_provisional ? "true" : "false"}
+                              title={`最新行情日期 ${a.bar_date}（${a.is_provisional ? "盘中未收盘" : "已收盘确认"}）`}
+                              className="text-[9.5px] px-1 py-0 rounded font-mono tabular truncate"
+                              style={{
+                                background: a.is_provisional ? "var(--app-warn-soft)" : "var(--app-bg)",
+                                color: a.is_provisional ? "var(--app-warn)" : "var(--app-faint)",
+                              }}
+                            >
+                              {a.bar_date.slice(5)} {a.is_provisional ? "盘中" : "收盘"}
+                            </span>
+                          )}
                         </span>
                         <span
-                          className="text-[11px] font-medium tabular"
+                          className="text-[11px] font-medium tabular shrink-0"
                           style={{
                             color:
                               a.change_pct === null
@@ -502,26 +559,13 @@ export function WorkspaceView({
                       </div>
 
                       {(() => {
-                        const latestSig = a.latest_signal;
-                        const sigDir = latestSig
-                          ? resolveEventDirection(latestSig.event_kind, latestSig.direction)
-                          : null;
-                        const sigStyle = sigDir ? SIGNAL_DIRECTION_STYLES[sigDir] : null;
-                        const showObserveOnly =
-                          a.status !== "error" &&
-                          !a.is_provisional &&
-                          !latestSig &&
-                          !a.strategies.length;
-                        if (
-                          a.status !== "error" &&
-                          !a.is_provisional &&
-                          !latestSig &&
-                          !showObserveOnly
-                        ) {
+                        const stratRows = a.strategy_summaries ?? [];
+                        const showObserveOnly = !a.strategies.length && stratRows.length === 0;
+                        if (a.status !== "error" && stratRows.length === 0 && !showObserveOnly) {
                           return null;
                         }
                         return (
-                          <div className="flex flex-wrap items-center gap-1">
+                          <div className="flex flex-col gap-1 pt-0.5">
                             {a.status === "error" && (
                               <span
                                 className="text-[10px] px-1.5 py-0.5 rounded w-fit font-medium"
@@ -533,40 +577,75 @@ export function WorkspaceView({
                                 采集异常 · 历史快照
                               </span>
                             )}
-                            {a.status !== "error" && a.is_provisional && (
-                              <span
-                                className="text-[10px] px-1.5 py-0.5 rounded w-fit font-medium"
-                                style={{
-                                  background: "var(--app-warn-soft)",
-                                  color: "var(--app-warn)",
-                                }}
+                            {stratRows.length > 0 && (
+                              <div
+                                data-strategy-summary-list={a.id}
+                                className="flex flex-col gap-1"
                               >
-                                盘中未收盘
-                              </span>
-                            )}
-                            {latestSig && sigDir && sigStyle && (
-                              <span
-                                data-latest-signal-badge={a.id}
-                                data-signal-direction={sigDir}
-                                title={`最近入库记录：${latestSig.strategy_name ? `${latestSig.strategy_name} · ` : ""}${latestSig.event_kind}（${latestSig.event_date}）`}
-                                className="text-[10px] px-1.5 py-0.5 rounded w-fit max-w-full font-medium inline-flex items-center gap-1"
-                                style={{
-                                  background: sigStyle.soft,
-                                  color: sigStyle.text,
-                                }}
-                              >
-                                <span className="shrink-0">最近记录</span>
-                                <span aria-hidden="true" className="shrink-0 opacity-60">
-                                  ·
-                                </span>
-                                <span className="truncate">{latestSig.event_kind}</span>
-                                <span aria-hidden="true" className="shrink-0 opacity-60">
-                                  ·
-                                </span>
-                                <span className="shrink-0 tabular">
-                                  {latestSig.event_date.slice(5)}
-                                </span>
-                              </span>
+                                {stratRows.map((s) => {
+                                  const hasEvent = Boolean(s.event_kind && s.event_date);
+                                  const dir = hasEvent
+                                    ? resolveEventDirection(s.event_kind, s.direction)
+                                    : null;
+                                  const style = dir ? SIGNAL_DIRECTION_STYLES[dir] : null;
+                                  const isProv = Boolean(s.event_is_provisional);
+                                  const tooltip = hasEvent
+                                    ? `${s.strategy_name} · 最近事件：${isProv ? "盘中暂态 " : ""}${s.event_kind}（${s.event_date}）${s.bar_date ? `；检查日 ${s.bar_date}${s.bar_is_provisional ? "（盘中）" : "（收盘）"}` : ""}`
+                                    : `${s.strategy_name} · 可用历史内暂无触发事件${s.bar_date ? `（检查日 ${s.bar_date}${s.bar_is_provisional ? " 盘中" : " 收盘"}）` : ""}`;
+                                  return (
+                                    <div
+                                      key={s.strategy_id}
+                                      data-strategy-summary-row={`${a.id}:${s.strategy_id}`}
+                                      data-signal-direction={dir ?? "none"}
+                                      data-event-provisional={isProv ? "true" : "false"}
+                                      title={tooltip}
+                                      className="flex items-center justify-between gap-1.5 text-[10px] leading-tight"
+                                    >
+                                      <span
+                                        className="truncate min-w-0 font-medium"
+                                        style={{ color: "var(--app-muted)" }}
+                                      >
+                                        {s.strategy_name}
+                                      </span>
+                                      {hasEvent && dir && style ? (
+                                        <span
+                                          data-strategy-event-pill={`${a.id}:${s.strategy_id}`}
+                                          className="px-1.5 py-0.5 rounded shrink-0 inline-flex items-center gap-0.5 font-medium tabular"
+                                          style={{
+                                            background: isProv ? "transparent" : style.soft,
+                                            color: style.text,
+                                            borderWidth: 1,
+                                            borderStyle: isProv ? "dashed" : "solid",
+                                            borderColor: isProv ? style.text : "transparent",
+                                          }}
+                                        >
+                                          <span aria-hidden="true">
+                                            {getDirectionGlyph(dir, isProv)}
+                                          </span>
+                                          <span className="max-w-[72px] truncate">
+                                            {isProv ? `盘中·${s.event_kind}` : s.event_kind}
+                                          </span>
+                                          <span aria-hidden="true" className="opacity-60">
+                                            ·
+                                          </span>
+                                          <span>{s.event_date?.slice(5)}</span>
+                                        </span>
+                                      ) : (
+                                        <span
+                                          data-strategy-event-empty={`${a.id}:${s.strategy_id}`}
+                                          className="px-1.5 py-0.5 rounded shrink-0"
+                                          style={{
+                                            background: "var(--app-bg)",
+                                            color: "var(--app-faint)",
+                                          }}
+                                        >
+                                          暂无事件
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             )}
                             {showObserveOnly && (
                               <span
@@ -1055,51 +1134,102 @@ export function WorkspaceView({
                     )}
                   </div>
                   {chartData?.result?.strategies?.length ? (
-                    chartData.result.strategies.map((s) => {
-                      const evStyle = s.event
-                        ? SIGNAL_DIRECTION_STYLES[resolveEventDirection(s.event)]
-                        : null;
-                      return (
-                        <div
-                          key={s.id}
-                          className="p-2.5 rounded-lg border flex flex-col gap-1"
-                          style={{
-                            background: "var(--app-elev)",
-                            borderColor: "var(--app-border)",
-                          }}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-semibold">{s.name}</span>
-                            <span
-                              className="text-[10px] px-1.5 py-0.5 rounded font-medium"
-                              style={{
-                                background: s.preview_event
-                                  ? "var(--app-warn-soft)"
-                                  : evStyle
-                                    ? evStyle.soft
-                                    : "var(--app-bg)",
-                                color: s.preview_event
-                                  ? "var(--app-warn)"
-                                  : evStyle
-                                    ? evStyle.text
-                                    : "var(--app-muted)",
-                              }}
-                            >
-                              {s.preview_event
-                                ? `盘中 ${s.preview_event}`
-                                : s.event
-                                  ? `${s.event} · ${s.event_date?.slice(5)}`
-                                  : "无新事件"}
-                            </span>
-                          </div>
-                          {s.detail && (
-                            <div className="text-[11px]" style={{ color: "var(--app-muted)" }}>
-                              {s.detail}
-                            </div>
-                          )}
-                        </div>
+                    (() => {
+                      const summaryMap = new Map(
+                        (activeAssetSummary?.strategy_summaries ?? []).map((item) => [
+                          item.strategy_id,
+                          item,
+                        ]),
                       );
-                    })
+                      return chartData.result.strategies.map((s) => {
+                        const evStyle = s.event
+                          ? SIGNAL_DIRECTION_STYLES[resolveEventDirection(s.event)]
+                          : null;
+                        const summary = summaryMap.get(s.id);
+                        const sumHasEvent = Boolean(summary?.event_kind && summary?.event_date);
+                        const sumDir = sumHasEvent
+                          ? resolveEventDirection(summary?.event_kind, summary?.direction)
+                          : null;
+                        const sumStyle = sumDir ? SIGNAL_DIRECTION_STYLES[sumDir] : null;
+                        const sumProv = Boolean(summary?.event_is_provisional);
+                        return (
+                          <div
+                            key={s.id}
+                            data-drawer-strategy-card={s.id}
+                            className="p-2.5 rounded-lg border flex flex-col gap-1.5"
+                            style={{
+                              background: "var(--app-elev)",
+                              borderColor: "var(--app-border)",
+                            }}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-semibold truncate">{s.name}</span>
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"
+                                style={{
+                                  background: s.preview_event
+                                    ? "var(--app-warn-soft)"
+                                    : evStyle
+                                      ? evStyle.soft
+                                      : "var(--app-bg)",
+                                  color: s.preview_event
+                                    ? "var(--app-warn)"
+                                    : evStyle
+                                      ? evStyle.text
+                                      : "var(--app-muted)",
+                                }}
+                              >
+                                {s.preview_event
+                                  ? `本次盘中 · ${s.preview_event}`
+                                  : s.event
+                                    ? `本次 ${s.event} · ${s.event_date?.slice(5)}`
+                                    : "本次无新事件"}
+                              </span>
+                            </div>
+
+                            {!explorationRules && (
+                              <div className="flex items-center justify-between gap-2 text-[10.5px]">
+                                <span style={{ color: "var(--app-faint)" }}>最近可重现事件</span>
+                                {sumHasEvent && sumDir && sumStyle && summary?.event_date ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onFocusDateChange(summary.event_date!)}
+                                    data-drawer-summary-event={s.id}
+                                    data-signal-direction={sumDir}
+                                    data-event-provisional={sumProv ? "true" : "false"}
+                                    className="px-1.5 py-0.5 rounded inline-flex items-center gap-1 font-medium tabular cursor-pointer"
+                                    style={{
+                                      background: sumProv ? "transparent" : sumStyle.soft,
+                                      color: sumStyle.text,
+                                      borderWidth: 1,
+                                      borderStyle: sumProv ? "dashed" : "solid",
+                                      borderColor: sumProv ? sumStyle.text : "transparent",
+                                    }}
+                                  >
+                                    <span aria-hidden="true">
+                                      {getDirectionGlyph(sumDir, sumProv)}
+                                    </span>
+                                    <span>
+                                      {sumProv ? `盘中·${summary.event_kind}` : summary.event_kind}
+                                    </span>
+                                    <span aria-hidden="true" className="opacity-60">·</span>
+                                    <span>{summary.event_date}</span>
+                                  </button>
+                                ) : (
+                                  <span style={{ color: "var(--app-faint)" }}>暂无事件</span>
+                                )}
+                              </div>
+                            )}
+
+                            {s.detail && (
+                              <div className="text-[11px]" style={{ color: "var(--app-muted)" }}>
+                                {s.detail}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      });
+                    })()
                   ) : (
                     <div
                       className="p-3 rounded-lg border text-xs"
@@ -1130,7 +1260,7 @@ export function WorkspaceView({
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-[11px] font-semibold" style={{ color: "var(--app-muted)" }}>
-                            最近入库记录
+                            原始入库记录（追溯）
                           </span>
                           {latestSig && sigDir && sigStyle ? (
                             <span
@@ -1153,7 +1283,7 @@ export function WorkspaceView({
                           {latestSig?.strategy_name
                             ? `来源：${latestSig.strategy_name}。`
                             : ""}
-                          图表标记按当前规则历史回放，仅反映规则回溯，不等同于本次检查或已入库记录。
+                          保留原始入库记录仅供追溯；自选卡片按当前配置与已保存日线分别重算，重算不改写历史记录、不补发通知。
                         </div>
                       </div>
                     );

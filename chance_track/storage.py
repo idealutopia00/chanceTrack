@@ -10,7 +10,13 @@ from uuid import uuid4
 
 from .data import TZ, resolve_asset_kind
 from .market_sessions import PROFILES
-from .schema import SCHEMA_VERSION, _upsert_snapshot_bars, create_v6_schema, migrate_to_v6
+from .schema import (
+    SCHEMA_VERSION,
+    _upsert_snapshot_bars,
+    create_v6_schema,
+    ensure_v6_extensions,
+    migrate_to_v6,
+)
 
 
 def event_key(item, rule_version):
@@ -45,11 +51,14 @@ def initialize(path, *, upgrade_configuration=False):
         if version > SCHEMA_VERSION:
             raise ValueError(f"数据库结构版本 {version} 高于本程序支持的 {SCHEMA_VERSION}")
         if version == SCHEMA_VERSION:
+            ensure_v6_extensions(db)
+            db.commit()
             db.execute("PRAGMA journal_mode=WAL")
             return
         db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if version == SCHEMA_VERSION:
+            ensure_v6_extensions(db)
             db.commit()
             db.execute("PRAGMA journal_mode=WAL")
             return
@@ -711,6 +720,100 @@ def count_signals(path, *, asset_id=None, strategy_id=None):
     clause = ("WHERE " + " AND ".join(where)) if where else ""
     with connect(path) as db:
         return int(db.execute(f"SELECT count(*) FROM signal_events {clause}", params).fetchone()[0])
+
+
+# ---------------------------------------------------------------------------
+# Recomputed Per-Asset / Per-Strategy Signal Summaries
+# ---------------------------------------------------------------------------
+
+
+def asset_bar_fingerprints(path):
+    """Return lightweight per-asset OHLCV fingerprint metadata from market_bars."""
+    with connect(path) as db:
+        rows = db.execute(
+            """SELECT b1.asset_id,
+                      count(*) AS bar_count,
+                      min(b1.bar_date) AS min_bar_date,
+                      max(b1.bar_date) AS max_bar_date,
+                      max(b1.fetched_at) AS max_fetched_at,
+                      coalesce(sum(CASE WHEN b1.is_provisional=1 THEN 1 ELSE 0 END), 0) AS prov_count,
+                      (SELECT b2.close FROM market_bars b2
+                       WHERE b2.asset_id = b1.asset_id
+                       ORDER BY b2.bar_date DESC LIMIT 1) AS last_close,
+                      (SELECT b2.provider FROM market_bars b2
+                       WHERE b2.asset_id = b1.asset_id
+                       ORDER BY b2.bar_date DESC LIMIT 1) AS last_provider,
+                      (SELECT b2.quote_currency FROM market_bars b2
+                       WHERE b2.asset_id = b1.asset_id
+                       ORDER BY b2.bar_date DESC LIMIT 1) AS last_quote_currency
+               FROM market_bars b1
+               GROUP BY b1.asset_id"""
+        ).fetchall()
+        return {row["asset_id"]: dict(row) for row in rows}
+
+
+def list_asset_strategy_summaries(path, *, asset_id=None):
+    """Return persisted per-(asset_id, strategy_id) recomputed summaries."""
+    with connect(path) as db:
+        if asset_id is not None:
+            rows = db.execute(
+                "SELECT * FROM asset_strategy_summaries WHERE asset_id=?",
+                (asset_id,),
+            ).fetchall()
+        else:
+            rows = db.execute("SELECT * FROM asset_strategy_summaries").fetchall()
+        out = {}
+        for r in rows:
+            d = dict(r)
+            d["bar_is_provisional"] = bool(d["bar_is_provisional"])
+            d["event_is_provisional"] = bool(d["event_is_provisional"])
+            d["checked_is_provisional"] = bool(d["checked_is_provisional"])
+            out.setdefault(d["asset_id"], {})[d["strategy_id"]] = d
+        return out
+
+
+def replace_asset_strategy_summaries(path, summaries_by_asset, *, prune_asset_ids=()):
+    """Atomically replace recomputed strategy summaries for the specified assets."""
+    with connect(path) as db:
+        db.execute("BEGIN IMMEDIATE")
+        for aid in prune_asset_ids:
+            db.execute("DELETE FROM asset_strategy_summaries WHERE asset_id=?", (aid,))
+        for aid, rows in summaries_by_asset.items():
+            db.execute("DELETE FROM asset_strategy_summaries WHERE asset_id=?", (aid,))
+            if not rows:
+                continue
+            db.executemany(
+                """INSERT INTO asset_strategy_summaries (
+                     asset_id, strategy_id, strategy_name, strategy_kind, strategy_version,
+                     bar_date, bar_is_provisional, event_date, event_kind, direction,
+                     detail, event_is_provisional, state,
+                     checked_event_kind, checked_event_date, checked_is_provisional,
+                     source_fingerprint, refreshed_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        aid,
+                        row["strategy_id"],
+                        row.get("strategy_name") or "",
+                        row.get("strategy_kind") or "",
+                        row.get("strategy_version") or "",
+                        row.get("bar_date"),
+                        1 if row.get("bar_is_provisional") else 0,
+                        row.get("event_date"),
+                        row.get("event_kind"),
+                        row.get("direction"),
+                        row.get("detail") or "",
+                        1 if row.get("event_is_provisional") else 0,
+                        row.get("state") or "idle",
+                        row.get("checked_event_kind"),
+                        row.get("checked_event_date"),
+                        1 if row.get("checked_is_provisional") else 0,
+                        row.get("source_fingerprint") or "",
+                        row["refreshed_at"],
+                    )
+                    for row in rows
+                ],
+            )
 
 
 def get_notification(path, run_id):

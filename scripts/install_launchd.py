@@ -16,7 +16,7 @@ from urllib.request import urlopen
 
 from check_project import validate_source
 
-from chance_track import configuration, storage
+from chance_track import configuration, storage, workspace
 from chance_track.runner import check_lock
 from chance_track.schema import SCHEMA_VERSION
 
@@ -67,6 +67,7 @@ def prepare_schema_upgrade(target_db, *, adopting=False):
         rehearsed_cfg = configuration.load_configuration(trial)
         configuration.validate_configuration(rehearsed_cfg)
         configuration.save_configuration(trial, rehearsed_cfg, rehearsed_cfg["version"])
+        workspace.refresh_signal_summaries(trial)
     print(f"已验证 Schema v{version} -> v{SCHEMA_VERSION} 升级预演并保存恢复备份：{bundle}")
     return backup
 
@@ -159,6 +160,7 @@ def main():
             recover_old_jobs = False
             deploy_runtime()
             storage.initialize(target_db, upgrade_configuration=True)
+            workspace.refresh_signal_summaries(target_db)
     except Exception:
         if recover_old_jobs:
             for plist in reversed(active):

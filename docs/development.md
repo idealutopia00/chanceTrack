@@ -31,11 +31,13 @@ uv run python scripts/check_project.py
 uv run pytest -q
 ```
 
-`scripts/check_project.py` 会依次校验 Python 语法、`catalog.json`、`uv.lock` 一致性，以及 `frontend/` 的 TypeScript 类型检查与 Vite 生产构建产物。
+`scripts/check_project.py` 会依次校验 Python 语法、`catalog.json`、`uv.lock` 一致性、`frontend/` 的 TypeScript 类型检查、Vite 生产构建产物，以及 `tests/check_chart_markers.mjs`（主图事件标记、错层胶囊与决策徽章在桌面与窄屏画布上的零重叠、折叠计数障碍与隐藏事件防误点回归检查）。
 
 ## 工作台交互验证
 
-使用隔离的临时 SQLite 合成数据启动测试服务，再运行 `tests/check_v1_app.mjs`（Playwright + 本机 Chrome）验证桌面 `1280×900` 与窄屏 `390×844`、浅/深双主题、4 个一级视图（工作台 / 信号流 / 规则库 / 备忘录）、指标探索、决策追加与 K 线标注、关联备忘与零横向溢出。
+使用隔离的临时 SQLite 合成数据启动测试服务，再运行 `tests/check_v1_app.mjs`（Playwright + 本机 Chrome）验证桌面 `1280×900` 与窄屏 `390×844`、浅/深双主题、4 个一级视图（工作台 / 信号流 / 规则库 / 备忘录）、指标探索、决策追加与 K 线标注、主图 `__ctMarkers` 画布几何零重叠、关联备忘与零横向溢出。
+
+改动图表标记、图内标签或决策徽章布局时，必须在桌面与窄屏（`390×844`）同时验证实际画布矩形（胶囊、箭头、收拢计数圆徽章与决策徽章彼此零重叠且位于画布边界内），并确认隐藏事件后点击画布不触发事件选中。
 
 ## Schema v5 → v6 升级与恢复
 

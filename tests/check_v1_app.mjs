@@ -27,6 +27,101 @@ async function saveShot(name) {
   await page.screenshot({ path: path.join(shotDir, name), fullPage: false });
 }
 
+async function assertChartMarkerGeometry(label) {
+  await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="main-chart"]')?.__ctMarkers));
+  const report = await page.evaluate(() => {
+    const host = document.querySelector('[data-testid="main-chart"]');
+    const canvas = host?.querySelector("canvas");
+    const layout = host?.__ctMarkers;
+    const rect = canvas?.getBoundingClientRect();
+    if (!layout || !rect) return { ok: false, reason: "missing __ctMarkers or canvas" };
+
+    const overlap = (a, b) =>
+      !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
+    const arrowRect = (r) => ({
+      x: r.x - 7.5,
+      y: Math.min(r.tipY, r.baseY) - 2,
+      w: 15,
+      h: 14,
+    });
+    const foldedRect = (r) => ({
+      x: r.x + 5.5,
+      y: (r.tipY + r.baseY) / 2 - 7,
+      w: 14,
+      h: 14,
+    });
+
+    const rendered = layout.rendered ?? [];
+    const decisions = layout.decisions ?? [];
+    const violations = [];
+
+    for (let i = 0; i < rendered.length; i++) {
+      const a = rendered[i];
+      if (!a.pillRect) continue;
+      if (
+        a.pillRect.x < -1 ||
+        a.pillRect.y < -1 ||
+        a.pillRect.x + a.pillRect.w > rect.width + 1 ||
+        a.pillRect.y + a.pillRect.h > rect.height + 1
+      ) {
+        violations.push(`pill out of bounds: ${a.clusterId}`);
+      }
+      for (let j = i + 1; j < rendered.length; j++) {
+        const b = rendered[j];
+        if (b.pillRect && overlap(a.pillRect, b.pillRect)) {
+          violations.push(`pill overlap: ${a.clusterId} vs ${b.clusterId}`);
+        }
+      }
+      for (const other of rendered) {
+        if (other.clusterId !== a.clusterId && overlap(a.pillRect, arrowRect(other))) {
+          violations.push(`pill-arrow overlap: ${a.clusterId} vs ${other.clusterId}`);
+        }
+      }
+    }
+
+    const obstacles = [];
+    for (const r of rendered) {
+      obstacles.push({ id: `arrow:${r.clusterId}`, rect: arrowRect(r) });
+      if (r.pillRect) obstacles.push({ id: `pill:${r.clusterId}`, rect: r.pillRect });
+      else if (r.eventCount > 1) obstacles.push({ id: `folded:${r.clusterId}`, rect: foldedRect(r) });
+    }
+    for (let i = 0; i < decisions.length; i++) {
+      const d = decisions[i];
+      if (
+        d.rect.x < -1 ||
+        d.rect.y < -1 ||
+        d.rect.x + d.rect.w > rect.width + 1 ||
+        d.rect.y + d.rect.h > rect.height + 1
+      ) {
+        violations.push(`decision out of bounds: ${d.barTime}:${d.action}`);
+      }
+      for (const ob of obstacles) {
+        if (overlap(d.rect, ob.rect)) {
+          violations.push(`decision overlap: ${d.barTime}:${d.action} vs ${ob.id}`);
+        }
+      }
+      for (let j = i + 1; j < decisions.length; j++) {
+        if (overlap(d.rect, decisions[j].rect)) {
+          violations.push(`decision-decision overlap: ${d.barTime} vs ${decisions[j].barTime}`);
+        }
+      }
+    }
+
+    return {
+      ok: violations.length === 0,
+      violations,
+      visibleCount: layout.visibleCount,
+      decisionCount: decisions.length,
+    };
+  });
+  assert.equal(
+    report.ok,
+    true,
+    `${label} chart marker geometry violations: ${JSON.stringify(report.violations ?? report.reason)}`,
+  );
+  return report;
+}
+
 try {
   // 1. Desktop Dark Mode: Workspace initial load
   await page.emulateMedia({ colorScheme: "dark" });
@@ -106,6 +201,9 @@ try {
   await page.locator("textarea").fill("Playwright v1 合成决策验证");
   await page.getByRole("button", { name: "保存本次判断" }).click();
   await page.getByText("Playwright v1 合成决策验证").waitFor();
+  await page.waitForTimeout(120);
+  const desktopGeom = await assertChartMarkerGeometry("desktop-1280x900");
+  assert.ok(desktopGeom.decisionCount >= 1, "Recorded decision must render on main chart canvas");
 
   // 7. Pinned note modal opens cleanly without duplicate H1
   await page.getByRole("button", { name: /合成观察备忘/ }).click();
@@ -185,6 +283,8 @@ try {
   assert.equal(mobileChecks.overlap, false, "Mobile header buttons must not overlap");
   assert.equal(mobileChecks.tallButton, false, "Mobile header buttons must stay single-line");
   assert.equal(mobileChecks.activeRail, "工作台", "Workspace rail item must be active");
+  const mobileGeom = await assertChartMarkerGeometry("mobile-390x844");
+  assert.ok(mobileGeom.decisionCount >= 1, "Recorded decision must render on mobile chart canvas");
   await saveShot("07_mobile_light_workspace.png");
 
   assert.deepEqual(errors, [], `Unexpected browser errors: ${errors.join("; ")}`);

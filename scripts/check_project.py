@@ -46,8 +46,14 @@ def validate_source(root, *, build_frontend=True):
         dist_index = package / "static" / "dist" / "index.html"
         if not dist_index.is_file() or not dist_index.read_text(encoding="utf-8").strip():
             raise ValueError("前端构建产物缺失：chance_track/static/dist/index.html")
+        marker_check = root / "tests" / "check_chart_markers.mjs"
+        if marker_check.is_file():
+            node = shutil.which("node")
+            if not node:
+                raise ValueError("缺少 node，无法执行主图标记几何回归检查")
+            subprocess.run([node, str(marker_check)], cwd=str(root), check=True)
 
 
 if __name__ == "__main__":
     validate_source(Path(__file__).resolve().parent.parent)
-    print("项目检查通过：Python、catalog.json、依赖锁、TypeScript 与前端构建产物")
+    print("项目检查通过：Python、catalog.json、依赖锁、TypeScript、前端构建产物与主图标记几何回归")
